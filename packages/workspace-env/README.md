@@ -12,6 +12,19 @@ subclass that stamps toolchain cache env vars relative to each call's workdir
 instead of `~/.cache/uv`, `~/.cache/go-build`, `~/go/pkg/mod`, or
 `~/.config/go/telemetry`.
 
+Two execution surfaces are covered:
+
+- **Agent bash tool** — through the executor subclass's `resolve()`.
+- **Interactive PTY terminals** (terminal-bash/pwsh) — they bypass `ctx.shell`
+  and build their own child env, so the plugin also wraps
+  `ctx.subprocess.spawnTerminal` for its lifetime and stamps the same entries
+  from the PTY's cwd. Registering a wrapping backend is not possible
+  (`DUPLICATE_BACKEND`), so the wrap is installed in the plugin constructor
+  and removed on dispose.
+
+Not covered: LSP servers (e.g. gopls) spawned by the harness run unconfined
+and keep using host toolchain caches.
+
 ## Toolchains and layout
 
 | Toolchain | State dir | Env vars stamped |
@@ -51,7 +64,7 @@ Verify the layer with `dsh --profile <name> --dump-config` (look for the
 ## Configuration
 
 All knobs ride the ordinary environment layers (`~/.dsh/.env` or the
-invocation `.env`), read once at plugin load:
+invocation `.env`), read at each call:
 
 | Env var | Default | Meaning |
 |---|---|---|
@@ -70,3 +83,14 @@ Add the state directories to the project `.gitignore` (`.uv-cache/`,
 The user profile's own `cordis.patch.yml` applies after every bundle layer,
 so a profile can disable this row (`- id: bash-workspace-env` /
 `disabled: true`) or override it without touching this package.
+
+## Tests
+
+```sh
+node --test tests/
+```
+
+The tests import the peer `@deepseek-ai/dsh-bash-sandbox`; link a local copy
+from a DeepSeek Harness checkout first (`node_modules/@deepseek-ai/dsh-bash-sandbox`
+→ the checkout's `packages/shell/bash-sandbox`). It is gitignored and only
+needed for tests; the dsh runtime resolves the peer itself.

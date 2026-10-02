@@ -55,29 +55,77 @@ const TOOLCHAINS = {
  */
 
 /** Comma-separated enabled toolchain list; default: all of them. */
-const enabled = (process.env.DSH_WORKSPACE_ENV_TOOLS ?? Object.keys(TOOLCHAINS).join(','))
-  .split(',')
-  .map(tool => tool.trim())
-  .filter(tool => tool !== '')
+function enabledTools() {
+  return (process.env.DSH_WORKSPACE_ENV_TOOLS ?? Object.keys(TOOLCHAINS).join(','))
+    .split(',')
+    .map(tool => tool.trim())
+    .filter(tool => tool !== '')
+}
+
+/**
+ * Toolchain env entries for one root, skipping names the caller already set —
+ * the same precedence the executor's resolve() applies.
+ * @param {string} root - workspace root the state directories hang off.
+ * @param {Record<string, string> | undefined} env - explicit caller entries that always win.
+ * @returns {Record<string, string>} stamped entries to merge into the child env.
+ */
+export function stampTerminalEnv(root, env = {}) {
+  const stamped = {}
+  for (const tool of enabledTools()) {
+    const chain = TOOLCHAINS[tool]
+    if (chain === undefined) continue
+    const state = `${root}/${process.env[chain.dirnameEnv] ?? chain.dirname}`
+    for (const [name, subdir] of Object.entries(chain.env)) {
+      if (env[name] === undefined) stamped[name] = `${state}/${subdir}`
+    }
+  }
+  return stamped
+}
+
+/**
+ * Stamp toolchain cache env onto every PTY spawn. The interactive terminal
+ * backend (terminal-bash/pwsh) builds its own child env and never crosses
+ * ctx.shell, so the only seam that sees its spawns is ctx.subprocess.spawnTerminal;
+ * the spec there carries the PTY cwd and env. Registering a wrapping backend
+ * is not possible (DUPLICATE_BACKEND), so wrap the spawn method for this
+ * plugin's lifetime and restore it on dispose.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
+ * @returns {(() => void) | undefined} disposer, or undefined when there is nothing to patch.
+ */
+export function patchSubprocessTerminals(ctx) {
+  if (process.platform === 'win32') return undefined
+  const sub = ctx.subprocess
+  if (sub === undefined || typeof sub.spawnTerminal !== 'function') return undefined
+  const original = sub.spawnTerminal
+  const hadOwn = Object.prototype.hasOwnProperty.call(sub, 'spawnTerminal')
+  sub.spawnTerminal = function stampedSpawnTerminal(spec) {
+    const root = spec?.cwd
+    if (root === undefined) return original.call(this, spec)
+    return original.call(this, { ...spec, env: { ...stampTerminalEnv(root, spec.env), ...spec.env } })
+  }
+  return () => {
+    if (sub.spawnTerminal !== original) {
+      if (hadOwn) sub.spawnTerminal = original
+      else delete sub.spawnTerminal
+    }
+  }
+}
 
 export class WorkspaceEnvBashExecutor extends SandboxBashExecutor {
   /** Same wiring as the stock sandboxing executor: confinement stays intact. */
   static inject = SandboxBashExecutor.inject
 
+  constructor(ctx, config) {
+    super(ctx, config)
+    // The interactive terminal bypasses ctx.shell: patch its PTY spawns too.
+    ctx.effect(() => patchSubprocessTerminals(ctx), 'workspace-env terminal stamp')
+  }
+
   resolve(request) {
     const spec = super.resolve(request)
     const root = spec.workdir
     if (root === undefined) return spec
-    const env = { ...spec.env }
-    for (const tool of enabled) {
-      const chain = TOOLCHAINS[tool]
-      if (chain === undefined) continue
-      const state = `${root}/${process.env[chain.dirnameEnv] ?? chain.dirname}`
-      for (const [name, subdir] of Object.entries(chain.env)) {
-        if (env[name] === undefined) env[name] = `${state}/${subdir}`
-      }
-    }
-    return { ...spec, env }
+    return { ...spec, env: { ...stampTerminalEnv(root, spec.env), ...spec.env } }
   }
 }
 
