@@ -1,0 +1,11 @@
+{
+  "name": "dsh-plugins",
+  "private": true,
+  "version": "0.0.0",
+  "description": "DeepSeek Harness plugin bundles — one installable dsh bundle per package under packages/",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "pack:all": "pnpm -r pack"
+  }
+}

@@ -1,0 +1,9 @@
+# dsh-workspace-env bundle layer: replace the stock confined bash executor
+# with a subclass stamping uv / Go toolchain cache env from the per-call
+# workdir (the session workspace root).
+- id: bash-sandbox
+  disabled: true
+- insert:
+    - id: bash-workspace-env
+      name: dsh-workspace-env
+      disabled: !!js process.platform === 'win32'

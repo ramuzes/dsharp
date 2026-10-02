@@ -1,0 +1,19 @@
+{
+  "name": "dsh-workspace-env",
+  "version": "0.1.0",
+  "description": "Workspace-local toolchain state (uv, Go) for every confined bash call — no sandbox holes",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml", "README.md"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-bash-sandbox": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-bash-sandbox": "*"
+  }
+}
