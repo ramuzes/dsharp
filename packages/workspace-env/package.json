@@ -6,7 +6,7 @@
   "main": "index.js",
   "files": ["index.js", "cordis.patch.yml", "README.md"],
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test \"tests/*.spec.js\""
   },
   "dsh": {
     "bundle": {

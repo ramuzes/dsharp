@@ -1,0 +1,32 @@
+{
+  "name": "dsh-airboard",
+  "version": "0.1.0",
+  "description": "AirBoard reader for the dsh web GUI: a right-Sidebar tab browsing ADR/PRD/SPEC/PLAN/ISSUE markdown over a Host-side read-only proxy",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale", "icon.svg", "README.md"],
+  "scripts": {
+    "test": "node --test \"tests/*.spec.js\""
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-sidebar-right"]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  }
+}

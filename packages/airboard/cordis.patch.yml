@@ -1,0 +1,15 @@
+# dsh-airboard bundle layer: one row mounting the package's Host half (the
+# read-only /airboard proxy). The same package also carries the browser half
+# (package.json dsh.client + ./client export), which the client module system
+# attaches to this row.
+#
+# Config defaults come from the environment so ~/.dsh/.env or the invocation
+# .env can set AIRBOARD_BASE_URL / AIRBOARD_TOKEN; anything saved through the
+# Plugins page form lands in a later layer (the profile's cordis.patch.yml)
+# and wins, per the usual layer order.
+- insert:
+    - id: airboard
+      name: dsh-airboard
+      config:
+        baseUrl: !!js "process.env.AIRBOARD_BASE_URL ?? 'http://ab.antaresy.cc'"
+        token: !!js "process.env.AIRBOARD_TOKEN ?? ''"

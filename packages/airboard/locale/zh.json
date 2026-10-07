@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "AirBoard",
+    "description": "只读 AirBoard 阅读器：在右侧 Sidebar 标签页浏览项目的 ADR / PRD / SPEC / PLAN / ISSUE 文档，经宿主侧代理携带访问令牌。"
+  }
+}
