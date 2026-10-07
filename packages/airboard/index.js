@@ -38,6 +38,8 @@ const ALLOWED_SUBPATHS = [
 
 /** Upstream request timeout; AirBoard answers in well under a second locally. */
 const UPSTREAM_TIMEOUT_MS = 15_000
+/** Response size cap: docs are small; anything huge is a misrouted origin. */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 /**
  * Decide whether a request may be proxied, and to which upstream path.
@@ -146,11 +148,21 @@ export function makeProxyHandler(config, options = {}) {
       return
     }
     const contentType = upstream.headers.get('content-type') ?? 'application/json; charset=utf-8'
+    if (upstream.status >= 300 && upstream.status < 400) {
+      // redirect: 'manual' means a redirecting origin surfaces here, not as a
+      // silent second hop; tell the operator to point baseUrl at the final one.
+      sendJson(res, 502, 'AIRBOARD_UNREACHABLE', `AirBoard at ${baseUrl} answered a redirect (${upstream.status}); set baseUrl to the service's final origin`)
+      return
+    }
     let body
     try {
       body = Buffer.from(await upstream.arrayBuffer())
     } catch (error) {
       sendJson(res, 502, 'AIRBOARD_UNREACHABLE', `AirBoard response was not readable: ${/** @type {Error} */ (error)?.message}`)
+      return
+    }
+    if (body.byteLength > MAX_RESPONSE_BYTES) {
+      sendJson(res, 502, 'AIRBOARD_RESPONSE_TOO_LARGE', `AirBoard response was ${body.byteLength} bytes; the cap is ${MAX_RESPONSE_BYTES}`)
       return
     }
     if (res.writableEnded) return

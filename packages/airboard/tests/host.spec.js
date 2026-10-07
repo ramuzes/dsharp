@@ -182,13 +182,32 @@ test('makeProxyHandler maps upstream failures to 502 AIRBOARD_UNREACHABLE', asyn
   assert.match(state.body, /ECONNREFUSED/)
 })
 
-test('makeProxyHandler reports an unusable baseUrl as 503 NOT_CONFIGURED', async () => {
+test('makeProxyHandler reports an unusable baseUrl as 503 AIRBOARD_BASE_URL_MISSING', async () => {
   const [calls, impl] = mockFetch()
   const handler = makeProxyHandler({ baseUrl: '', token: '' }, { fetchImpl: impl })
   const state = await round(handler, { url: '/airboard/api/projects' })
   assert.equal(state.status, 503)
-  assert.match(state.body, /AIRBOARD_BASE_URL/)
+  assert.match(state.body, /AIRBOARD_BASE_URL_MISSING/)
   assert.equal(calls.length, 0)
+})
+
+test('makeProxyHandler maps an upstream redirect to 502 naming the fix', async () => {
+  const [, impl] = mockFetch({ status: 301, body: '' })
+  const handler = makeProxyHandler({ baseUrl: 'http://ab.example', token: '' }, { fetchImpl: impl })
+  const state = await round(handler, { url: '/airboard/api/projects' })
+  assert.equal(state.status, 502)
+  assert.match(state.body, /AIRBOARD_UNREACHABLE/)
+  assert.match(state.body, /redirect \(301\)/)
+  assert.match(state.body, /final origin/)
+})
+
+test('makeProxyHandler refuses oversized upstream bodies', async () => {
+  const big = 'x'.repeat(9 * 1024 * 1024)
+  const [, impl] = mockFetch({ status: 200, body: big, contentType: 'text/plain' })
+  const handler = makeProxyHandler({ baseUrl: 'http://ab.example', token: '' }, { fetchImpl: impl })
+  const state = await round(handler, { url: '/airboard/api/agents/instructions' })
+  assert.equal(state.status, 502)
+  assert.match(state.body, /AIRBOARD_RESPONSE_TOO_LARGE/)
 })
 
 test('makeProxyHandler reads volatile config values per request', async () => {

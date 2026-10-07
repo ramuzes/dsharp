@@ -45,12 +45,16 @@ function createHarness() {
       return [slot.value, setState]
     },
     useEffect(effect, deps) {
-      const slot = hooks[cursor] ??= { hasRun: false, deps: undefined }
+      const slot = hooks[cursor] ??= { hasRun: false, deps: undefined, cleanup: undefined }
       cursor += 1
       const same = slot.hasRun && deps !== undefined
         && deps.length === (slot.deps?.length ?? 0)
         && deps.every((dep, index) => Object.is(dep, slot.deps[index]))
-      if (!same) pending.push(effect)
+      if (!same) {
+        // React runs the previous effect's cleanup before the effect re-runs.
+        if (typeof slot.cleanup === 'function') slot.cleanup()
+        pending.push(() => { slot.cleanup = effect() ?? undefined })
+      }
       slot.hasRun = true
       slot.deps = deps
     },
@@ -173,9 +177,11 @@ function keys(value, prefix = '') {
 /** Render the tab body against a fetch stub this test controls. */
 async function renderBody(routes) {
   const calls = []
-  globalThis.fetch = async (url) => {
+  const signals = []
+  globalThis.fetch = async (url, init) => {
     const text = String(url)
     calls.push(text)
+    signals.push({ url: text, signal: init?.signal })
     const route = routes[text]
     if (route === undefined) {
       return { ok: false, status: 404, json: async () => ({ error: { code: 'NOT_FOUND', message: text } }) }
@@ -201,7 +207,7 @@ async function renderBody(routes) {
       },
     }),
   }
-  const view = { vdom: undefined, calls, commands, harness }
+  const view = { vdom: undefined, calls, signals, commands, harness }
   const render = () => { view.vdom = harness.render(body, props) }
   render()
   await harness.settle()
@@ -360,6 +366,22 @@ test('a project with no visible resources shows the empty note', async () => {
   })
   const note = find(view.vdom, (node) => node.props['data-airboard-note'] !== undefined)
   assert.ok(texts(note).join(' ').includes('t:empty.resources'))
+})
+
+test('switching projects aborts the superseded resources fetch', async () => {
+  const view = await renderBody({
+    '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }, { key: 'OPS', name: 'Operations' }] },
+    '/airboard/api/projects/CORE/resources': { body: RESOURCES },
+    '/airboard/api/projects/OPS/resources': { body: [] },
+  })
+  const core = view.signals.find((entry) => entry.url.endsWith('/CORE/resources'))
+  assert.equal(core.signal.aborted, false)
+  await view.interact(() => {
+    const select = find(view.vdom, (node) => node.props['data-airboard-project'] !== undefined)
+    select.props.onChange({ target: { value: 'OPS' } })
+  })
+  // The cleanup of the superseded effect aborted the CORE fetch's controller.
+  assert.equal(core.signal.aborted, true)
 })
 
 test('no visible projects shows the projects hint', async () => {

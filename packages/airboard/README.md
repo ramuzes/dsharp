@@ -1,7 +1,7 @@
 # dsh-airboard
 
-A read-only [AirBoard](https://github.com/) viewer for the dsh web GUI. Adds an
-**AirBoard** tab to the right Sidebar — the surface where workspace files
+A read-only [AirBoard](http://ab.antaresy.cc/) viewer for the dsh web GUI. Adds
+an **AirBoard** tab to the right Sidebar — the surface where workspace files
 preview — that lists your AirBoard projects and their resources (ADR / PRD /
 SPEC / PLAN / ISSUE, grouped by kind, dotted by lifecycle state) and renders the
 selected resource's markdown with the GUI's shared markdown renderer (GFM,
@@ -45,7 +45,8 @@ through the Plugins page wins, per the usual layer order.
 
 Tip: mint a **project-scoped, non-global** token on AirBoard's `/tokens` page
 for the viewer — least privilege (AirBoard tokens are not read-only; this plugin
-simply never calls a write endpoint, and neither does its proxy).
+simply never calls a write endpoint, and neither does its proxy). Trust posture:
+anyone who can open this GUI can read everything the configured token can read.
 
 ## Install
 

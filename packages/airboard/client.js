@@ -32,6 +32,10 @@ window.__ModuleLoader__.load({
     const PROXY = '/airboard'
     /** AirBoard's five resource kinds, in display order. */
     const KIND_ORDER = ['ADR', 'PRD', 'SPEC', 'PLAN', 'ISSUE']
+    // Note: AirBoard's list endpoint hides cancelled resources unless a status
+    // filter asks for them, so the cancelled dot/locale below is normally
+    // unreachable — it stays for the day the service (or a status filter UI)
+    // lists them.
 
     const zh = {
       'type.title': 'AirBoard',
@@ -133,7 +137,7 @@ window.__ModuleLoader__.load({
     function errorLine(t, error) {
       if (error?.status === 401 || error?.code === 'UNAUTHORIZED') return t('error.unauthorized')
       if (error?.status === 0 || error?.code === 'NETWORK' || error?.code === 'AIRBOARD_UNREACHABLE') return t('error.unreachable')
-      return `${t('error.generic')}${error?.message === undefined ? '' : `：${error.message}`}`
+      return `${t('error.generic')}${error?.message === undefined ? '' : `: ${error.message}`}`
     }
 
     /** Labels for the shared markdown renderer's copy-dependent chrome. */
