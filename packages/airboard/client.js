@@ -61,6 +61,16 @@ window.__ModuleLoader__.load({
       'code.wrap': '换行',
       'code.unwrap': '取消换行',
       'code.footnotes': '脚注',
+      'config.summary': 'AirBoard 服务地址与访问令牌',
+      'config.baseUrl': '服务地址',
+      'config.baseUrlHint': 'AirBoard 服务的来源地址，例如 http://ab.antaresy.cc',
+      'config.token': '访问令牌',
+      'config.tokenHint': 'AirBoard 的 abt_… 访问令牌；保存后只保存在宿主进程，不会进入浏览器',
+      'config.save': '保存',
+      'config.saving': '保存中…',
+      'config.saveFailed': '保存未被接受，请重试',
+      'config.readOnly': '当前连接不支持写入配置',
+      'config.unavailable': '配置暂不可用',
     }
     const en = {
       'type.title': 'AirBoard',
@@ -86,6 +96,16 @@ window.__ModuleLoader__.load({
       'code.wrap': 'Wrap',
       'code.unwrap': 'Unwrap',
       'code.footnotes': 'Footnotes',
+      'config.summary': 'AirBoard service address and access token',
+      'config.baseUrl': 'Service address',
+      'config.baseUrlHint': 'The AirBoard service origin, e.g. http://ab.antaresy.cc',
+      'config.token': 'Access token',
+      'config.tokenHint': 'The AirBoard abt_… token; after saving it stays in the Host process and never reaches the browser',
+      'config.save': 'Save',
+      'config.saving': 'Saving…',
+      'config.saveFailed': 'The save was not accepted, try again',
+      'config.readOnly': 'This connection does not support writing configuration',
+      'config.unavailable': 'Configuration is unavailable',
     }
 
     /**
@@ -305,6 +325,16 @@ window.__ModuleLoader__.load({
 .airboard-doc-id { flex: none; font-size: 12px; font-weight: 600; letter-spacing: 0.03em; color: var(--dsw-alias-label-secondary); }
 .airboard-doc-title { flex: 1; min-width: 200px; margin: 0; font-size: 18px; font-weight: 600; }
 .airboard-doc-meta { flex: none; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.airboard-config { display: flex; flex-direction: column; gap: 10px; max-width: 480px; padding: 16px 0; }
+.airboard-config-note { margin: 0; padding: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.airboard-field { display: flex; flex-direction: column; gap: 4px; }
+.airboard-field-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.airboard-field input { box-sizing: border-box; width: 100%; font: inherit; font-size: 13px; color: inherit; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); padding: 6px 8px; }
+.airboard-field-hint { margin: 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.airboard-config-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.airboard-config-actions button { font: inherit; font-size: 12px; padding: 6px 14px; border: none; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); cursor: pointer; }
+.airboard-config-actions button:disabled { opacity: 0.5; cursor: default; }
+.airboard-config-failed { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
 `
 
     function injectStyles() {
@@ -316,10 +346,89 @@ window.__ModuleLoader__.load({
       return () => { style.remove() }
     }
 
+    /** The scoped config form card, keyed `dsh-airboard#airboard`. */
+    const ROW_CONFIG_KEY = `${ID}#airboard`
+
+    /**
+     * The Plugins-page row config card: renders the row's volatile fields
+     * (baseUrl, token) over the shared ConfigForm, staging edits locally and
+     * writing them in one atomic save.
+     * @param {any} props - `view`, `t`, the face's `useSnapshot` selector hook, and `save`.
+     */
+    function AirboardConfigCard(props) {
+      const { view, t, useSnapshot, save } = props
+      const snapshot = useSnapshot()
+      const [draft, setDraft] = React.useState(null)
+      const [saveState, setSaveState] = React.useState('idle')
+      if (view === 'summary') return t('config.summary')
+      if (snapshot.status !== 'ready') {
+        return h('p', { className: 'airboard-config-note', 'data-airboard-config': snapshot.status },
+          snapshot.status === 'loading' ? t('loading') : t('config.unavailable'))
+      }
+      const accepted = snapshot.value ?? {}
+      const staged = draft ?? { baseUrl: accepted.baseUrl ?? '', token: accepted.token ?? '' }
+      const onEdit = (field) => (event) => {
+        const next = event.target.value
+        // Functional update: edits from one committed render must merge.
+        setDraft((prev) => {
+          const base = prev ?? { baseUrl: accepted.baseUrl ?? '', token: accepted.token ?? '' }
+          return { ...base, [field]: next }
+        })
+      }
+      const onSave = () => {
+        const ops = []
+        if (staged.baseUrl !== (accepted.baseUrl ?? '')) ops.push({ op: 'set', path: ['baseUrl'], value: staged.baseUrl })
+        if (staged.token !== (accepted.token ?? '')) ops.push({ op: 'set', path: ['token'], value: staged.token })
+        if (ops.length === 0) {
+          setDraft(null)
+          return
+        }
+        setSaveState('saving')
+        save(ops).then((accepted_) => {
+          setSaveState(accepted_ ? 'idle' : 'failed')
+          if (accepted_) setDraft(null)
+        }).catch(() => { setSaveState('failed') })
+      }
+      const saving = saveState === 'saving'
+      return h('form', { className: 'airboard-config', 'data-airboard-config': 'page', onSubmit: (event) => { event.preventDefault(); onSave() } },
+        snapshot.writable ? null : h('p', { className: 'airboard-config-note' }, t('config.readOnly')),
+        h('label', { className: 'airboard-field' },
+          h('span', { className: 'airboard-field-label' }, t('config.baseUrl')),
+          h('input', {
+            type: 'text', value: staged.baseUrl, spellCheck: false,
+            disabled: !snapshot.writable || saving, onChange: onEdit('baseUrl'),
+          })),
+        h('p', { className: 'airboard-field-hint' }, t('config.baseUrlHint')),
+        h('label', { className: 'airboard-field' },
+          h('span', { className: 'airboard-field-label' }, t('config.token')),
+          h('input', {
+            type: 'password', value: staged.token, autoComplete: 'off', spellCheck: false,
+            disabled: !snapshot.writable || saving, onChange: onEdit('token'),
+          })),
+        h('p', { className: 'airboard-field-hint' }, t('config.tokenHint')),
+        h('div', { className: 'airboard-config-actions' },
+          h('button', { type: 'submit', disabled: !snapshot.writable || saving || draft === null },
+            saving ? t('config.saving') : t('config.save')),
+          saveState === 'failed' ? h('span', { className: 'airboard-config-failed', role: 'status', 'data-airboard-config-failed': '' }, t('config.saveFailed')) : null))
+    }
+
+    /**
+     * The config card's inject face: the row's ConfigForm as a reactive
+     * snapshot hook, and the atomic save callback.
+     * @param {any} form - `ctx.configForms.get('airboard')`.
+     */
+    function configCardFace(form) {
+      return () => ({
+        hooks: { snapshot: form },
+        save: (ops) => form.mutate(ops),
+      })
+    }
+
     return {
-      inject: ['slots', 'locale', 'sidebarRightTabs'],
+      inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms'],
       apply(ctx) {
         const t = ctx.locale.bind(NS)
+        const configForm = ctx.configForms.get('airboard')
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-airboard: dictionaries')
         ctx.effect(() => ctx.sidebarRightTabs.register({
           id: ID,
@@ -338,6 +447,10 @@ window.__ModuleLoader__.load({
           { name: 'sidebar.right.pane.tab', key: ID, locale: NS },
           AirboardBody,
         )), 'dsh-airboard: airboard tab body')
+        ctx.effect(() => ctx.slots.inject('plugins.row.config', () => ctx.slots.register(
+          { name: 'plugins.row.config', key: ROW_CONFIG_KEY, locale: NS, inject: configCardFace(configForm) },
+          AirboardConfigCard,
+        )), 'dsh-airboard: row config card')
         ctx.effect(() => injectStyles(), 'dsh-airboard: styles')
       },
     }

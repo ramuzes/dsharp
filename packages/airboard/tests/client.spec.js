@@ -138,7 +138,7 @@ function bootPlugin() {
 }
 
 /** A cordis ctx double recording every registration the plugin makes. */
-function makeCtx() {
+function makeCtx({ configForm } = {}) {
   const recorded = { tabs: [], injects: [], registers: [], namespaces: [] }
   const ctx = {
     effect(fn) { return fn() ?? undefined },
@@ -147,6 +147,7 @@ function makeCtx() {
       register: (ns, dicts) => { recorded.namespaces.push({ ns, dicts }) },
     },
     sidebarRightTabs: { register: (definition) => { recorded.tabs.push(definition); return () => {} } },
+    configForms: { get: (entryId) => configForm ?? { entryId } },
     slots: {
       inject: (name, begin) => { recorded.injects.push(name); return begin() },
       register: (declaration, Component) => { recorded.registers.push({ declaration, Component }); return () => {} },
@@ -237,7 +238,7 @@ test('client.js registers one module named dsh-airboard in the factory format', 
 
 test('the factory returns a plugin injecting the documented services only', () => {
   const { plugin } = bootPlugin()
-  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'configForms'])
   assert.equal(typeof plugin.apply, 'function')
 })
 
@@ -279,6 +280,118 @@ test('apply registers the tab type, the keyed body seat, dictionaries, and scope
   assert.match(style.textContent, /\[data-airboard/)
   style.remove()
   assert.equal(removed, 1)
+})
+
+/** The config card's inject face and component, captured from a fresh apply. */
+function bootConfigCard(configForm) {
+  const { harness, plugin } = bootPlugin()
+  const [ctx, recorded] = makeCtx({ configForm })
+  withDocument(
+    { createElement: () => ({ dataset: {}, textContent: '', remove() {} }), head: { append() {} } },
+    () => plugin.apply(ctx),
+  )
+  const seat = recorded.registers.find(({ declaration }) => declaration.name === 'plugins.row.config')
+  assert.ok(seat, 'the config card seat is registered')
+  assert.equal(seat.declaration.key, 'dsh-airboard#airboard')
+  return { harness, face: seat.declaration.inject(), Component: seat.Component }
+}
+
+test('apply registers the row config card under dsh-airboard#airboard', () => {
+  const mutateCalls = []
+  const configForm = {
+    getSnapshot: () => ({}),
+    subscribe: () => () => {},
+    mutate: (ops) => { mutateCalls.push(ops); return Promise.resolve(true) },
+  }
+  const { face } = bootConfigCard(configForm)
+  // The face binds the form as a bare observable hook plus a save callback.
+  assert.equal(face.hooks.snapshot, configForm)
+  const ops = [{ op: 'set', path: ['token'], value: 'abt_x' }]
+  face.save(ops)
+  assert.deepEqual(mutateCalls, [ops])
+})
+
+/** Render the config card the way the renderer would: face-bound hooks as use* props. */
+function renderCard(harness, Component, face, { view: cardView = 'page', snapshot, save = () => Promise.resolve(true) } = {}) {
+  const saves = []
+  const view = { vdom: undefined, saves }
+  const props = {
+    view: cardView,
+    t: makeT(),
+    useSnapshot: () => snapshot,
+    save: (ops) => { saves.push(ops); return save(ops) },
+  }
+  const render = () => { view.vdom = harness.render(Component, props) }
+  render()
+  view.submit = async () => {
+    // React re-rendered after the staged edits, so read the live handlers.
+    render()
+    const formNode = find(view.vdom, (node) => node.type === 'form')
+    formNode.props.onSubmit({ preventDefault() {} })
+    await harness.settle(2)
+    render()
+    return view.vdom
+  }
+  return view
+}
+
+test('the config card renders the fields and saves staged edits atomically', async () => {
+  const { harness, face, Component } = bootConfigCard()
+  const snapshot = {
+    status: 'ready', writable: true, revision: 3,
+    value: { baseUrl: 'http://ab.antaresy.cc', token: '' },
+  }
+  const view = renderCard(harness, Component, face, { snapshot })
+  const inputs = findAll(view.vdom, (node) => node.type === 'input')
+  assert.equal(inputs.length, 2)
+  assert.equal(inputs[0].props.type, 'text')
+  assert.equal(inputs[0].props.value, 'http://ab.antaresy.cc')
+  assert.equal(inputs[1].props.type, 'password')
+  assert.equal(inputs[1].props.value, '')
+  // Stage both fields, then save: one atomic mutate with both ops.
+  inputs[0].props.onChange({ target: { value: 'http://other:3010' } })
+  inputs[1].props.onChange({ target: { value: 'abt_secret' } })
+  await view.submit()
+  assert.equal(view.saves.length, 1)
+  assert.deepEqual(view.saves[0], [
+    { op: 'set', path: ['baseUrl'], value: 'http://other:3010' },
+    { op: 'set', path: ['token'], value: 'abt_secret' },
+  ])
+  // Accepted values flowed back; the staged draft cleared.
+  const after = findAll(view.vdom, (node) => node.type === 'input')
+  assert.equal(after[0].props.value, 'http://ab.antaresy.cc')
+  assert.equal(after[1].props.value, '')
+})
+
+test('the config card keeps the draft when the Host refuses the write', async () => {
+  const { harness, face, Component } = bootConfigCard()
+  const snapshot = { status: 'ready', writable: true, revision: 3, value: { token: '' } }
+  const view = renderCard(harness, Component, face, { snapshot, save: () => Promise.resolve(false) })
+  const input = findAll(view.vdom, (node) => node.type === 'input')[1]
+  input.props.onChange({ target: { value: 'abt_bad' } })
+  await view.submit()
+  assert.deepEqual(view.saves[0], [{ op: 'set', path: ['token'], value: 'abt_bad' }])
+  const failed = find(view.vdom, (node) => node.props['data-airboard-config-failed'] !== undefined)
+  assert.ok(texts(failed).includes('t:config.saveFailed'))
+  // The staged token stays so the user can retry.
+  const staged = findAll(view.vdom, (node) => node.type === 'input')[1]
+  assert.equal(staged.props.value, 'abt_bad')
+})
+
+test('the config card shows notes for summary, unavailable, and read-only', () => {
+  const { harness, face, Component } = bootConfigCard()
+  const summary = harness.render(Component, { view: 'summary', t: makeT(), useSnapshot: () => ({ status: 'ready' }), save: () => {} })
+  assert.deepEqual(texts(summary), ['t:config.summary'])
+  const unavailable = harness.render(Component, { view: 'page', t: makeT(), useSnapshot: () => ({ status: 'unavailable' }), save: () => {} })
+  assert.deepEqual(texts(unavailable), ['t:config.unavailable'])
+  const readOnly = harness.render(Component, {
+    view: 'page', t: makeT(),
+    useSnapshot: () => ({ status: 'ready', writable: false, value: { baseUrl: 'http://x' } }),
+    save: () => {},
+  })
+  assert.ok(texts(readOnly).includes('t:config.readOnly'))
+  const saveButton = find(readOnly, (node) => node.type === 'button')
+  assert.equal(saveButton.props.disabled, true)
 })
 
 test('the body loads projects and resources through the same-origin proxy', async () => {
