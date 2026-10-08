@@ -447,19 +447,19 @@ test('the body loads projects and resources through the same-origin proxy', asyn
   assert.equal(select.type, 'select')
   assert.deepEqual(select.children.map((option) => option.props.value), ['CORE', 'OPS'])
   assert.equal(select.props.value, 'CORE')
-  // Groups follow the AirBoard kind order, resources by number inside.
+  // Groups follow the AirBoard kind order, most recently updated first inside.
   const kinds = findAll(view.vdom, (node) => node.props['data-airboard-kind'] !== undefined)
     .map((node) => node.props['data-airboard-kind'])
   assert.deepEqual(kinds, ['ADR', 'PRD', 'ISSUE'])
   const adrRows = findAll(view.vdom, (node) => typeof node.props['data-airboard-row'] === 'string')
     .filter((row) => texts(row).some((text) => text.startsWith('ADR-')))
-  assert.deepEqual(adrRows.map((row) => texts(row)[0]), ['ADR-1', 'ADR-2'])
+  assert.deepEqual(adrRows.map((row) => texts(row)[0]), ['ADR-2', 'ADR-1'])
   // Status dots carry the lifecycle state for styling.
-  assert.equal(adrRows[0].children[0].props['data-status'], 'done')
-  assert.equal(adrRows[1].children[0].props['data-status'], 'active')
+  assert.equal(adrRows[0].children[0].props['data-status'], 'active')
+  assert.equal(adrRows[1].children[0].props['data-status'], 'done')
   // First resource preselected: its markdown and labels reach the shared renderer.
   const markdown = find(view.vdom, (node) => node.type === MarkdownText)
-  assert.equal(markdown.props.text, '# ADR-1\nFast and strict.')
+  assert.equal(markdown.props.text, '# ADR-2\nBecause one file is enough.')
   assert.equal(markdown.props.labels.code.copyLabel, 't:code.copy')
   assert.equal(markdown.props.labels.footnotes, 't:code.footnotes')
 })

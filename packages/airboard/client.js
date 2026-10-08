@@ -150,7 +150,9 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Group resources by kind in AirBoard's kind order, numerically within.
+     * Group resources by kind in AirBoard's kind order, most recently updated
+     * first within each group (AirBoard's `updated_at` is UTC
+     * "YYYY-MM-DD HH:MM:SS", so plain string comparison orders it).
      * @param {ReadonlyArray<Record<string, unknown>>} resources - one project's list.
      * @returns {[string, Record<string, unknown>[]][]} non-empty groups.
      */
@@ -162,7 +164,9 @@ window.__ModuleLoader__.load({
         bucket.push(resource)
       }
       for (const list of groups.values()) {
-        list.sort((left, right) => (left.number ?? 0) - (right.number ?? 0) || String(left.id).localeCompare(String(right.id)))
+        list.sort((left, right) =>
+          String(right.updated_at ?? right.created_at ?? '').localeCompare(String(left.updated_at ?? left.created_at ?? ''))
+          || String(left.id).localeCompare(String(right.id)))
       }
       return [...groups.entries()].filter(([, list]) => list.length > 0)
     }
