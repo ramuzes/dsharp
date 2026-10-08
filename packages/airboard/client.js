@@ -34,6 +34,65 @@ window.__ModuleLoader__.load({
     const NS = 'airboard'
     /** The Host half's same-origin proxy prefix. */
     const PROXY = '/airboard'
+    /** Resource-address prefix this tab claims (deep links from the chat side). */
+    const RESOURCE_PREFIX = 'dsh-resource://airboard/'
+    /** One AirBoard resource id as it appears in prose: ADR-7, ISSUE-345, … */
+    const ID_PATTERN = /\b(ADR|PRD|SPEC|PLAN|ISSUE)-(\d{1,6})\b/g
+
+    /**
+     * Build the resource address of one document.
+     * @param {string} projectKey - the project the document lives in.
+     * @param {string} docId - the document's public id (`ADR-7`).
+     * @returns {string} the address openResource routes to this tab.
+     */
+    function airboardAddress(projectKey, docId) {
+      return `${RESOURCE_PREFIX}${encodeURIComponent(projectKey)}/${encodeURIComponent(docId)}`
+    }
+
+    /**
+     * Read the document target a resource address carries.
+     * @param {string | undefined} address - a navigation address.
+     * @returns {{ projectKey: string | null, docId: string } | null} the target, or null for pages.
+     */
+    function parseAirboardAddress(address) {
+      if (typeof address !== 'string' || !address.startsWith(RESOURCE_PREFIX)) return null
+      const segments = address.slice(RESOURCE_PREFIX.length).split('/').filter((part) => part !== '')
+      if (segments.length === 2) return { projectKey: decodeURIComponent(segments[0]), docId: decodeURIComponent(segments[1]) }
+      if (segments.length === 1) return { projectKey: null, docId: decodeURIComponent(segments[0]) }
+      return null
+    }
+
+    /**
+     * Extract AirBoard document ids from prose, deduped and capped.
+     * @param {string} text - any prose.
+     * @returns {string[]} ids in first-appearance order (uppercase), at most 8.
+     */
+    function extractIds(text) {
+      const seen = new Set()
+      for (const [, kind, number] of text.matchAll(ID_PATTERN)) {
+        seen.add(`${kind.toUpperCase()}-${number}`)
+        if (seen.size >= 8) break
+      }
+      return [...seen]
+    }
+
+    /**
+     * Read the AirBoard ids mentioned in the same chat turn as an element.
+     * Every chat node seat carries `data-chat-turn`, so the seats of one turn
+     * — the assistant markdown included — are addressable from the button.
+     * @param {Element | null | undefined} anchor - the clicked control.
+     * @returns {string[]} ids found around it.
+     */
+    function idsAround(anchor) {
+      if (typeof document === 'undefined' || anchor?.closest === undefined) return []
+      const turn = anchor.closest('[data-chat-turn]')?.getAttribute('data-chat-turn')
+      if (turn === null || turn === undefined) return []
+      let text = ''
+      for (const seat of document.querySelectorAll(`[data-chat-turn="${CSS.escape(turn)}"]`)) {
+        text += `${seat.textContent ?? ''}\n`
+      }
+      return extractIds(text)
+    }
     /** AirBoard's five resource kinds, in display order. */
     const KIND_ORDER = ['ADR', 'PRD', 'SPEC', 'PLAN', 'ISSUE']
     // Note: AirBoard's list endpoint hides cancelled resources unless a status
@@ -80,6 +139,10 @@ window.__ModuleLoader__.load({
       'config.invalid': '输入无效',
       'config.tokenSet': '已配置',
       'config.tokenUnset': '未配置',
+      'action.open': '在 AirBoard 打开',
+      'action.searching': '查找中…',
+      'action.notFound': '未找到 {id}',
+      'action.error': '查找失败',
     }
     const en = {
       'type.title': 'AirBoard',
@@ -120,6 +183,10 @@ window.__ModuleLoader__.load({
       'config.invalid': 'Invalid input',
       'config.tokenSet': 'Configured',
       'config.tokenUnset': 'Not set',
+      'action.open': 'Open in AirBoard',
+      'action.searching': 'Searching…',
+      'action.notFound': '{id} not found',
+      'action.error': 'Search failed',
     }
 
     /**
@@ -249,6 +316,26 @@ window.__ModuleLoader__.load({
 
       const selected = resources.phase === 'ready' ? resources.list.find((item) => item.id === selectedId) : undefined
       const labels = markdownLabels(t)
+      const target = React.useMemo(
+        () => parseAirboardAddress(tab?.navigation?.address),
+        [tab?.navigation?.address],
+      )
+      // A deep-linked tab follows its address: switch project when named, and
+      // select and reveal the document once its list is loaded.
+      React.useEffect(() => {
+        if (target?.projectKey == null) return
+        setProjectKey((current) => (current === target.projectKey ? current : target.projectKey))
+      }, [target])
+      React.useEffect(() => {
+        if (target === null || resources.phase !== 'ready') return
+        if (resources.list.some((item) => item.id === target.docId)) {
+          setSelectedId(target.docId)
+          if (typeof document !== 'undefined') {
+            document.querySelector(`[data-airboard-row="${CSS.escape(target.docId)}"]`)
+              ?.scrollIntoView({ block: 'center' })
+          }
+        }
+      }, [target, resources.phase])
       const onChangeProject = (event) => {
         setProjectKey(event.target.value)
         setSelectedId(null)
@@ -311,7 +398,7 @@ window.__ModuleLoader__.load({
     }
 
     /** Scoped sheet, appended once per activation and removed with the plugin. */
-    const CSS = `
+    const STYLES = `
 [data-airboard] { display: flex; height: 100%; min-height: 0; color: var(--dsw-alias-label-primary); }
 .airboard-list { width: 264px; flex: none; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--dsw-alias-border-l2); }
 .airboard-bar { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
@@ -343,13 +430,25 @@ window.__ModuleLoader__.load({
 .airboard-doc-id { flex: none; font-size: 12px; font-weight: 600; letter-spacing: 0.03em; color: var(--dsw-alias-label-secondary); }
 .airboard-doc-title { flex: 1; min-width: 200px; margin: 0; font-size: 18px; font-weight: 600; }
 .airboard-doc-meta { flex: none; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.airboard-action { display: inline-flex; position: relative; }
+.airboard-actionbtn { display: inline-flex; align-items: center; justify-content: center; padding: 4px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; cursor: pointer; }
+.airboard-actionbtn:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.airboard-actionbtn:disabled { opacity: 0.5; cursor: default; }
+.airboard-menu-layer { position: static; }
+.airboard-menu-backdrop { position: fixed; inset: 0; z-index: 1; border: none; padding: 0; background: transparent; cursor: default; }
+.airboard-menu { position: fixed; z-index: 2; min-width: 200px; display: flex; flex-direction: column; padding: 4px; background: var(--dsw-alias-bg-layer-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); }
+.airboard-menu-note { padding: 6px 8px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.airboard-menu-item { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 8px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.airboard-menu-item:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.airboard-menu-id { font-variant-numeric: tabular-nums; }
+.airboard-menu-project { font-size: 11px; color: var(--dsw-alias-label-secondary); }
 `
 
     function injectStyles() {
       if (typeof document === 'undefined') return undefined
       const style = document.createElement('style')
       style.dataset.plugin = ID
-      style.textContent = CSS
+      style.textContent = STYLES
       document.head.append(style)
       return () => { style.remove() }
     }
@@ -444,8 +543,128 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * The per-assistant-message action in the chat action row: open the
+     * AirBoard documents this message mentions. One id resolves through the
+     * proxy's search endpoint and jumps straight in; several (or a hit in
+     * several projects) open a small picker; none just opens the tab page.
+     * @param {any} props - `t` plus the face's `resolve`, `openTab`, `openResource`.
+     */
+    function AirboardMessageAction(props) {
+      const { t, resolve, openTab, openResource } = props
+      const [menu, setMenu] = React.useState(null)
+      const [busy, setBusy] = React.useState(false)
+      React.useEffect(() => {
+        if (menu === null) return undefined
+        const onKey = (event) => { if (event.key === 'Escape') setMenu(null) }
+        document.addEventListener('keydown', onKey)
+        return () => { document.removeEventListener('keydown', onKey) }
+      }, [menu === null])
+      const showMenu = (anchor, items, note) => {
+        const rect = anchor.getBoundingClientRect()
+        setMenu({ x: rect.left, y: rect.bottom + 6, items, note })
+      }
+      const candidatesFor = async (docId) => {
+        const hits = await resolve(docId)
+        return hits.filter((hit) => hit.id === docId)
+      }
+      const onClick = async (event) => {
+        const anchor = event.currentTarget
+        const ids = idsAround(anchor)
+        if (ids.length === 0) {
+          openTab()
+          return
+        }
+        if (ids.length === 1) {
+          setBusy(true)
+          try {
+            const hits = await candidatesFor(ids[0])
+            if (hits.length === 1) {
+              openResource(hits[0].project_key, hits[0].id)
+              return
+            }
+            showMenu(anchor, hits.map((hit) => ({ id: hit.id, project: hit.project_key })),
+              hits.length === 0 ? t('action.notFound', { id: ids[0] }) : null)
+          } catch {
+            showMenu(anchor, [], t('action.error'))
+          } finally {
+            setBusy(false)
+          }
+          return
+        }
+        showMenu(anchor, ids.map((id) => ({ id })), null)
+      }
+      const pick = async (item) => {
+        if (item.project !== undefined) {
+          openResource(item.project, item.id)
+          setMenu(null)
+          return
+        }
+        setBusy(true)
+        try {
+          const hits = await candidatesFor(item.id)
+          if (hits.length === 1) {
+            openResource(hits[0].project_key, hits[0].id)
+            setMenu(null)
+          } else {
+            setMenu({
+              ...menu,
+              items: hits.map((hit) => ({ id: hit.id, project: hit.project_key })),
+              note: hits.length === 0 ? t('action.notFound', { id: item.id }) : null,
+            })
+          }
+        } catch {
+          setMenu({ ...menu, note: t('action.error') })
+        } finally {
+          setBusy(false)
+        }
+      }
+      return h('span', { className: 'airboard-action', 'data-airboard-action': '' },
+        h('button', {
+          type: 'button',
+          className: 'airboard-actionbtn',
+          disabled: busy,
+          'aria-label': t('action.open'),
+          title: t('action.open'),
+          onClick,
+        }, h('svg', {
+          viewBox: '0 0 64 64', width: 14, height: 14, 'aria-hidden': true, className: 'airboard-actionicon',
+        },
+        h('rect', { x: 8, y: 14, width: 40, height: 36, rx: 6, fill: 'none', stroke: 'currentColor', strokeWidth: 6 }),
+        h('rect', { x: 36, y: 32, width: 20, height: 24, rx: 4, fill: 'currentColor' }))),
+        menu === null ? null : h('span', { className: 'airboard-menu-layer', 'data-airboard-menu': '' },
+          h('button', {
+            type: 'button', className: 'airboard-menu-backdrop', 'aria-hidden': 'true', tabIndex: -1,
+            onClick: () => { setMenu(null) },
+          }),
+          h('span', { className: 'airboard-menu', role: 'menu', style: { left: `${menu.x}px`, top: `${menu.y}px` } },
+            busy ? h('span', { className: 'airboard-menu-note' }, t('action.searching')) : null,
+            menu.note === null || menu.note === undefined ? null : h('span', { className: 'airboard-menu-note' }, menu.note),
+            menu.items.map((item) => h('button', {
+              type: 'button', role: 'menuitem', key: `${item.project ?? ''}/${item.id}`,
+              className: 'airboard-menu-item', onClick: () => { void pick(item) },
+            },
+            h('span', { className: 'airboard-menu-id' }, item.id),
+            item.project === undefined ? null : h('span', { className: 'airboard-menu-project' }, item.project))))))
+      }
+
+    /**
+     * The message action's inject face: search resolution and the two opens.
+     * @param {any} ctx - client context carrying sidebarRight.
+     */
+    function messageActionFace(ctx) {
+      return () => ({
+        resolve: async (docId) => {
+          const hits = await apiFetch(`/api/search?q=${encodeURIComponent(docId)}`)
+          return Array.isArray(hits) ? hits : []
+        },
+        openTab: () => { ctx.sidebarRight.openTab(KIND) },
+        openResource: (projectKey, docId) => { ctx.sidebarRight.openResource(airboardAddress(projectKey, docId)) },
+      })
+    }
+
     return {
-      inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms'],
+      inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight'],
       apply(ctx) {
         const t = ctx.locale.bind(NS)
         const card = buildConfigCard(ctx)
@@ -456,7 +675,8 @@ window.__ModuleLoader__.load({
           kind: KIND,
           priority: 'extension',
           keepMounted: true,
-          title: () => t('type.title'),
+          patterns: [`${RESOURCE_PREFIX}**`],
+          title: (address) => parseAirboardAddress(address)?.docId ?? t('type.title'),
           guide: [{
             id: 'airboard',
             order: 40,
@@ -472,6 +692,10 @@ window.__ModuleLoader__.load({
           { name: 'plugins.bundle.config', key: ID, locale: NS, inject: card.face },
           AirboardConfigCard,
         )), 'dsh-airboard: bundle config card')
+        ctx.effect(() => ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register(
+          { name: 'conversation.chat.assistant-actions', id: 'airboard-open', order: 30, locale: NS, inject: messageActionFace(ctx) },
+          AirboardMessageAction,
+        )), 'dsh-airboard: assistant message action')
         ctx.effect(() => injectStyles(), 'dsh-airboard: styles')
       },
     }

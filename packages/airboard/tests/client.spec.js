@@ -248,7 +248,7 @@ function keys(value, prefix = '') {
 }
 
 /** Render the tab body against a fetch stub this test controls. */
-async function renderBody(routes) {
+async function renderBody(routes, { address } = {}) {
   const calls = []
   const signals = []
   globalThis.fetch = async (url, init) => {
@@ -275,7 +275,7 @@ async function renderBody(routes) {
     useTabInfo: () => ({
       tab: {
         id: 'tab-1',
-        navigation: { revision: 1 },
+        navigation: { revision: 1, ...(address === undefined ? {} : { address }) },
         actions: { bindCommands: (given) => { Object.assign(commands, given); return () => {} } },
       },
     }),
@@ -310,7 +310,7 @@ test('client.js registers one module named dsh-airboard in the factory format', 
 
 test('the factory returns a plugin injecting the documented services only', () => {
   const { plugin } = bootPlugin()
-  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'configForms'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight'])
   assert.equal(typeof plugin.apply, 'function')
 })
 
@@ -434,6 +434,172 @@ test('the config card renders the summary one-liner when asked', () => {
     useConfig: (select) => select(bound.hooks.config.getSnapshot()),
   })
   assert.deepEqual(texts(summary), ['t:config.summary'])
+})
+
+/** Boot the message action and return its face, component, and a sidebarRight double. */
+function bootMessageAction() {
+  const { harness, plugin } = bootPlugin()
+  const opened = { tabs: 0, resources: [] }
+  const ctx = {
+    effect(fn) { return fn() ?? undefined },
+    locale: { bind: () => makeT(), register() {} },
+    sidebarRightTabs: { register: () => () => {} },
+    configForms: {
+      get: () => ({ getSnapshot: () => ({ status: 'ready', writable: true, value: {}, user: {} }), subscribe: () => () => {}, mutate: () => Promise.resolve(true), set: () => Promise.resolve(true) }),
+      describe: () => ({ getSnapshot: () => ({ view: { namespaces: [] } }) }),
+    },
+    sidebarRight: {
+      openTab: () => { opened.tabs += 1 },
+      openResource: (address) => { opened.resources.push(address) },
+    },
+    slots: { inject: (name, begin) => begin(), register: (declaration, Component) => ({ declaration, Component }) },
+  }
+  const registrations = []
+  ctx.slots.register = (declaration, Component) => { registrations.push({ declaration, Component }); return () => {} }
+  withDocument(
+    { createElement: () => ({ dataset: {}, textContent: '', remove() {} }), head: { append() {} } },
+    () => plugin.apply(ctx),
+  )
+  const seat = registrations.find(({ declaration }) => declaration.name === 'conversation.chat.assistant-actions')
+  assert.ok(seat, 'the assistant action seat is registered')
+  return { harness, face: seat.declaration.inject(), Component: seat.Component, opened }
+}
+
+/** A document double whose one chat turn mentions the given text. */
+function chatDocument(turnText) {
+  return {
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector() { return undefined },
+    querySelectorAll() { return [{ textContent: turnText }] },
+  }
+}
+
+/** An anchor double for the action button, sitting in turn 5. */
+function anchorDouble() {
+  return {
+    closest: () => ({ getAttribute: () => '5' }),
+    getBoundingClientRect: () => ({ left: 10, bottom: 20 }),
+  }
+}
+
+/** Render the action with the given face-bound props and a search stub. */
+function renderAction(harness, Component, face, { resolve } = {}) {
+  const searches = []
+  const props = {
+    t: makeT(),
+    ...face,
+    resolve: async (id) => { searches.push(id); return resolve(id) },
+  }
+  const view = { vdom: undefined, searches }
+  const render = () => { view.vdom = harness.render(Component, props) }
+  render()
+  view.render = render
+  view.click = async () => {
+    render()
+    const button = find(view.vdom, (node) => node.type === 'button' && node.props['aria-label'] === 't:action.open')
+    button.props.onClick({ currentTarget: anchorDouble() })
+    await harness.settle(2)
+    render()
+    return view.vdom
+  }
+  return view
+}
+
+test('the tab type claims airboard resource addresses and titles them by document', () => {
+  const { plugin } = bootPlugin()
+  const [ctx, recorded] = makeCtx()
+  withDocument(
+    { createElement: () => ({ dataset: {}, textContent: '', remove() {} }), head: { append() {} } },
+    () => plugin.apply(ctx),
+  )
+  const [definition] = recorded.tabs
+  assert.deepEqual(definition.patterns, ['dsh-resource://airboard/**'])
+  assert.equal(definition.title('dsh-resource://airboard/CORE/ADR-7'), 'ADR-7')
+  assert.equal(definition.title('dsh-resource://airboard/CORE/PRD-2%20x'), 'PRD-2 x')
+  assert.equal(definition.title(undefined), 't:type.title')
+})
+
+test('the message action opens a single mentioned document directly', async () => {
+  const { harness, face, Component, opened } = bootMessageAction()
+  const previous = globalThis.document
+  globalThis.document = chatDocument('decided in ADR-7, see also adr-12')
+  globalThis.CSS = { escape: (value) => value }
+  try {
+    const view = renderAction(harness, Component, face, {
+      resolve: (id) => [{ id: 'ADR-7', project_key: 'CORE' }],
+    })
+    await view.click()
+    assert.deepEqual(view.searches, ['ADR-7'])
+    assert.deepEqual(opened.resources, ['dsh-resource://airboard/CORE/ADR-7'])
+    // No menu: the jump was unambiguous.
+    assert.equal(find(view.vdom, (node) => node.props?.['data-airboard-menu'] !== undefined), undefined)
+  } finally {
+    globalThis.CSS = undefined
+    if (previous === undefined) delete globalThis.document
+    else globalThis.document = previous
+  }
+})
+
+test('the message action offers a picker for several mentions or projects', async () => {
+  const { harness, face, Component, opened } = bootMessageAction()
+  const previous = globalThis.document
+  globalThis.document = chatDocument('ADR-7 fixes ISSUE-3')
+  globalThis.CSS = { escape: (value) => value }
+  try {
+    const view = renderAction(harness, Component, face, {
+      resolve: (id) => (id === 'ADR-7'
+        ? [{ id: 'ADR-7', project_key: 'CORE' }, { id: 'ADR-7', project_key: 'OPS' }]
+        : [{ id: 'ISSUE-3', project_key: 'CORE' }]),
+    })
+    await view.click()
+    // Both ids appear in the menu; the ADR one still has no project picked yet.
+    const menu = find(view.vdom, (node) => node.props?.['data-airboard-menu'] !== undefined)
+    const items = findAll(menu, (node) => node.props?.role === 'menuitem')
+    assert.deepEqual(items.map((item) => texts(item)[0]).sort(), ['ADR-7', 'ISSUE-3'])
+    // Picking ISSUE-3 resolves to one project and jumps.
+    items.find((item) => texts(item)[0] === 'ISSUE-3').props.onClick()
+    await harness.settle(2)
+    view.render()
+    assert.deepEqual(opened.resources, ['dsh-resource://airboard/CORE/ISSUE-3'])
+    assert.equal(find(view.vdom, (node) => node.props?.['data-airboard-menu'] !== undefined), undefined)
+  } finally {
+    globalThis.CSS = undefined
+    if (previous === undefined) delete globalThis.document
+    else globalThis.document = previous
+  }
+})
+
+test('the message action opens the tab page when the turn mentions nothing', async () => {
+  const { harness, face, Component, opened } = bootMessageAction()
+  const previous = globalThis.document
+  globalThis.document = chatDocument('no documents here')
+  globalThis.CSS = { escape: (value) => value }
+  try {
+    const view = renderAction(harness, Component, face, { resolve: () => [] })
+    await view.click()
+    assert.equal(opened.tabs, 1)
+    assert.deepEqual(view.searches, [])
+    assert.deepEqual(opened.resources, [])
+    assert.equal(find(view.vdom, (node) => node.props?.['data-airboard-menu'] !== undefined), undefined)
+  } finally {
+    globalThis.CSS = undefined
+    if (previous === undefined) delete globalThis.document
+    else globalThis.document = previous
+  }
+})
+
+test('a deep-linked tab switches to the addressed project and selects the document', async () => {
+  const view = await renderBody({
+    '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }, { key: 'OPS', name: 'Operations' }] },
+    '/airboard/api/projects/CORE/resources': { body: RESOURCES },
+    '/airboard/api/projects/OPS/resources': { body: [{ id: 'SPEC-1', kind: 'SPEC', number: 1, project_key: 'OPS', title: 'Ops spec', status: 'draft', content_markdown: 'OPS spec body', rev: 1, updated_at: '2026-10-02 00:00:00' }] },
+  }, { address: 'dsh-resource://airboard/OPS/SPEC-1' })
+  assert.ok(view.calls.includes('/airboard/api/projects/OPS/resources'))
+  const markdown = find(view.vdom, (node) => node.type === MarkdownText)
+  assert.equal(markdown.props.text, 'OPS spec body')
+  const row = find(view.vdom, (node) => node.props['data-airboard-row'] === 'SPEC-1')
+  assert.equal(row.props['aria-current'], 'true')
 })
 
 test('the body loads projects and resources through the same-origin proxy', async () => {

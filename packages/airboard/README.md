@@ -3,9 +3,9 @@
 A read-only [AirBoard](http://ab.antaresy.cc/) viewer for the dsh web GUI. Adds
 an **AirBoard** tab to the right Sidebar — the surface where workspace files
 preview — that lists your AirBoard projects and their resources (ADR / PRD /
-SPEC / PLAN / ISSUE, grouped by kind, dotted by lifecycle state) and renders the
-selected resource's markdown with the GUI's shared markdown renderer (GFM,
-KaTeX, code highlighting).
+SPEC / PLAN / ISSUE, grouped by kind, most recently updated first, dotted by
+lifecycle state) and renders the selected resource's markdown with the GUI's
+shared markdown renderer (GFM, KaTeX, code highlighting).
 
 Plain JavaScript, no build step: the Host half is an ordinary cordis plugin, the
 browser half is one self-contained script in the client module system's factory
@@ -28,6 +28,16 @@ browser tab ──same-origin GET──▶ /airboard/api/… ──Host proxy─
 - AirBoard has no push channel, so the tab loads on open and re-navigation and
   refreshes through the tab's refresh command (the sidebar chrome's refresh
   control).
+
+## Conversation linkage
+
+Every finalized assistant message gains an **Open in AirBoard** action in its
+hover action row. Clicking it scans that turn's text for AirBoard document ids
+(`ADR-7`, `issue-12`, …): one id resolves through the service's search endpoint
+and jumps straight to the document; several (or a hit in several projects) open
+a small picker; none opens the plain board page. Jumps address
+`dsh-resource://airboard/<project>/<id>`, which the tab claims — the tab
+switches to the addressed project, selects the document, and scrolls to it.
 
 ## Configuration
 
