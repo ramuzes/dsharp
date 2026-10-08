@@ -712,3 +712,69 @@ test('no visible projects shows the projects hint', async () => {
   const note = find(view.vdom, (node) => node.props['data-airboard-note'] !== undefined)
   assert.ok(texts(note).join(' ').includes('t:empty.projects'))
 })
+
+test('the picker flips above the control near the viewport bottom and clamps horizontally', async () => {
+  const { harness, face, Component } = bootMessageAction()
+  const previous = globalThis.document
+  const previousInnerHeight = globalThis.window.innerHeight
+  const previousInnerWidth = globalThis.window.innerWidth
+  globalThis.document = chatDocument('see ADR-7 and ISSUE-3')
+  globalThis.CSS = { escape: (value) => value }
+  Object.assign(globalThis.window, { innerHeight: 700, innerWidth: 500 })
+  // The anchor sits low (bottom 620 of a 700px viewport) and near the right edge.
+  const anchor = {
+    closest: () => ({ getAttribute: () => '5' }),
+    getBoundingClientRect: () => ({ left: 480, bottom: 620, top: 600 }),
+  }
+  try {
+    const searches = []
+    const props = { t: makeT(), ...face, resolve: async (id) => { searches.push(id); return [] } }
+    let vdom = harness.render(Component, props)
+    const button = find(vdom, (node) => node.type === 'button' && node.props['aria-label'] === 't:action.open')
+    button.props.onClick({ currentTarget: anchor })
+    await harness.settle(2)
+    vdom = harness.render(Component, props)
+    const menu = find(vdom, (node) => node.props?.['data-airboard-menu'] !== undefined)
+    const style = find(menu, (node) => node.props?.className === 'airboard-menu').props.style
+    // Opens upward from the anchor's top edge (bottom = 240 - 180 + 6), left clamped in.
+    assert.equal(style.bottom, '106px')
+    assert.equal(style.top, undefined)
+    assert.equal(style.left, '292px')
+  } finally {
+    Object.assign(globalThis.window, {
+      innerHeight: previousInnerHeight,
+      innerWidth: previousInnerWidth,
+    })
+    globalThis.CSS = undefined
+    if (previous === undefined) delete globalThis.document
+    else globalThis.document = previous
+  }
+})
+
+test('the picker opens below and follows the anchor when there is room', async () => {
+  const { harness, face, Component } = bootMessageAction()
+  const previous = globalThis.document
+  globalThis.document = chatDocument('see ADR-7 and ISSUE-3')
+  globalThis.CSS = { escape: (value) => value }
+  const anchor = {
+    closest: () => ({ getAttribute: () => '5' }),
+    getBoundingClientRect: () => ({ left: 40, bottom: 60, top: 40 }),
+  }
+  try {
+    const props = { t: makeT(), ...face, resolve: async () => [] }
+    let vdom = harness.render(Component, props)
+    const button = find(vdom, (node) => node.type === 'button' && node.props['aria-label'] === 't:action.open')
+    button.props.onClick({ currentTarget: anchor })
+    await harness.settle(2)
+    vdom = harness.render(Component, props)
+    const menu = find(vdom, (node) => node.props?.['data-airboard-menu'] !== undefined)
+    const style = find(menu, (node) => node.props?.className === 'airboard-menu').props.style
+    assert.equal(style.top, '66px')
+    assert.equal(style.bottom, undefined)
+    assert.equal(style.left, '40px')
+  } finally {
+    globalThis.CSS = undefined
+    if (previous === undefined) delete globalThis.document
+    else globalThis.document = previous
+  }
+})

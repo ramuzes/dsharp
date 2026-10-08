@@ -435,8 +435,8 @@ window.__ModuleLoader__.load({
 .airboard-actionbtn:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .airboard-actionbtn:disabled { opacity: 0.5; cursor: default; }
 .airboard-menu-layer { position: static; }
-.airboard-menu-backdrop { position: fixed; inset: 0; z-index: 1; border: none; padding: 0; background: transparent; cursor: default; }
-.airboard-menu { position: fixed; z-index: 2; min-width: 200px; display: flex; flex-direction: column; padding: 4px; background: var(--dsw-alias-bg-layer-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); }
+.airboard-menu-backdrop { position: fixed; inset: 0; z-index: 299; border: none; padding: 0; background: transparent; cursor: default; }
+.airboard-menu { position: fixed; z-index: 300; min-width: 200px; max-height: 260px; overflow: auto; display: flex; flex-direction: column; padding: 4px; background: var(--dsw-alias-bg-layer-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); }
 .airboard-menu-note { padding: 6px 8px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .airboard-menu-item { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 8px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .airboard-menu-item:hover { background: var(--dsw-alias-interactive-bg-hover); }
@@ -562,7 +562,20 @@ window.__ModuleLoader__.load({
       }, [menu === null])
       const showMenu = (anchor, items, note) => {
         const rect = anchor.getBoundingClientRect()
-        setMenu({ x: rect.left, y: rect.bottom + 6, items, note })
+        const viewportHeight = typeof window !== 'undefined' && typeof window.innerHeight === 'number' ? window.innerHeight : 800
+        const viewportWidth = typeof window !== 'undefined' && typeof window.innerWidth === 'number' ? window.innerWidth : 1200
+        // Prefer opening below the control; flip above it when the composer
+        // (or the viewport edge) leaves no room, and keep the menu on-screen.
+        const MENU_MIN_WIDTH = 200
+        const MENU_EST_HEIGHT = 220
+        const openUp = rect.bottom + 6 + MENU_EST_HEIGHT > viewportHeight && rect.top > MENU_EST_HEIGHT + 6
+        setMenu({
+          x: Math.max(8, Math.min(rect.left, viewportWidth - MENU_MIN_WIDTH - 8)),
+          top: openUp ? undefined : rect.bottom + 6,
+          bottom: openUp ? viewportHeight - rect.top + 6 : undefined,
+          items,
+          note,
+        })
       }
       const candidatesFor = async (docId) => {
         const hits = await resolve(docId)
@@ -637,7 +650,15 @@ window.__ModuleLoader__.load({
             type: 'button', className: 'airboard-menu-backdrop', 'aria-hidden': 'true', tabIndex: -1,
             onClick: () => { setMenu(null) },
           }),
-          h('span', { className: 'airboard-menu', role: 'menu', style: { left: `${menu.x}px`, top: `${menu.y}px` } },
+          h('span', {
+            className: 'airboard-menu',
+            role: 'menu',
+            style: {
+              left: `${menu.x}px`,
+              ...(menu.top === undefined ? {} : { top: `${menu.top}px` }),
+              ...(menu.bottom === undefined ? {} : { bottom: `${menu.bottom}px` }),
+            },
+          },
             busy ? h('span', { className: 'airboard-menu-note' }, t('action.searching')) : null,
             menu.note === null || menu.note === undefined ? null : h('span', { className: 'airboard-menu-note' }, menu.note),
             menu.items.map((item) => h('button', {
