@@ -19,7 +19,11 @@ window.__ModuleLoader__.load({
   id: 'dsh-airboard',
   factory(require) {
     const React = require('react')
-    const { MarkdownText, IconRefreshOutlineRegular } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const {
+      MarkdownText, IconRefreshOutlineRegular,
+      SettingsForm, SettingsValueField, SettingsSecretField,
+      SettingsFormModel, settingsTextField,
+    } = require('@deepseek-ai/dsh-client-ui-primitives')
     const h = React.createElement
 
     /** Registration identity: the package name, the key the body registers under. */
@@ -65,12 +69,17 @@ window.__ModuleLoader__.load({
       'config.baseUrl': '服务地址',
       'config.baseUrlHint': 'AirBoard 服务的来源地址，例如 http://ab.antaresy.cc',
       'config.token': '访问令牌',
-      'config.tokenHint': 'AirBoard 的 abt_… 访问令牌；保存后只保存在宿主进程，不会进入浏览器',
+      'config.tokenHint': 'AirBoard 的 abt_… 访问令牌；保存后只保存在宿主进程，不会进入浏览器。留空表示不修改已保存的令牌',
       'config.save': '保存',
       'config.saving': '保存中…',
       'config.saveFailed': '保存未被接受，请重试',
       'config.readOnly': '当前连接不支持写入配置',
       'config.unavailable': '配置暂不可用',
+      'config.overridden': '已覆盖',
+      'config.reset': '重置',
+      'config.invalid': '输入无效',
+      'config.tokenSet': '已配置',
+      'config.tokenUnset': '未配置',
     }
     const en = {
       'type.title': 'AirBoard',
@@ -100,12 +109,17 @@ window.__ModuleLoader__.load({
       'config.baseUrl': 'Service address',
       'config.baseUrlHint': 'The AirBoard service origin, e.g. http://ab.antaresy.cc',
       'config.token': 'Access token',
-      'config.tokenHint': 'The AirBoard abt_… token; after saving it stays in the Host process and never reaches the browser',
+      'config.tokenHint': 'The AirBoard abt_… token; after saving it stays in the Host process and never reaches the browser. Leave blank to keep the saved token',
       'config.save': 'Save',
       'config.saving': 'Saving…',
       'config.saveFailed': 'The save was not accepted, try again',
       'config.readOnly': 'This connection does not support writing configuration',
       'config.unavailable': 'Configuration is unavailable',
+      'config.overridden': 'Overridden',
+      'config.reset': 'Reset',
+      'config.invalid': 'Invalid input',
+      'config.tokenSet': 'Configured',
+      'config.tokenUnset': 'Not set',
     }
 
     /**
@@ -325,16 +339,6 @@ window.__ModuleLoader__.load({
 .airboard-doc-id { flex: none; font-size: 12px; font-weight: 600; letter-spacing: 0.03em; color: var(--dsw-alias-label-secondary); }
 .airboard-doc-title { flex: 1; min-width: 200px; margin: 0; font-size: 18px; font-weight: 600; }
 .airboard-doc-meta { flex: none; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
-.airboard-config { display: flex; flex-direction: column; gap: 10px; max-width: 480px; padding: 16px 0; }
-.airboard-config-note { margin: 0; padding: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
-.airboard-field { display: flex; flex-direction: column; gap: 4px; }
-.airboard-field-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
-.airboard-field input { box-sizing: border-box; width: 100%; font: inherit; font-size: 13px; color: inherit; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); padding: 6px 8px; }
-.airboard-field-hint { margin: 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
-.airboard-config-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-.airboard-config-actions button { font: inherit; font-size: 12px; padding: 6px 14px; border: none; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); cursor: pointer; }
-.airboard-config-actions button:disabled { opacity: 0.5; cursor: default; }
-.airboard-config-failed { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
 `
 
     function injectStyles() {
@@ -346,90 +350,103 @@ window.__ModuleLoader__.load({
       return () => { style.remove() }
     }
 
-    /** The scoped config form card, keyed `dsh-airboard#airboard`. */
-    const ROW_CONFIG_KEY = `${ID}#airboard`
-
     /**
-     * The Plugins-page row config card: renders the row's volatile fields
-     * (baseUrl, token) over the shared ConfigForm, staging edits locally and
-     * writing them in one atomic save.
-     * @param {any} props - `view`, `t`, the face's `useSnapshot` selector hook, and `save`.
+     * The bundle's own config card on the Plugins page (the Web-Search-style
+     * placement: click the bundle card and the form is right there, between
+     * the description and the rows). Follows the shipped companion packages:
+     * a SettingsFormModel stages edits over the shared ConfigForm, the token
+     * is a write-through secret control whose literal never rides a response,
+     * and the face injects the model's store as a selector hook plus its
+     * staged-form actions.
      */
-    function AirboardConfigCard(props) {
-      const { view, t, useSnapshot, save } = props
-      const snapshot = useSnapshot()
-      const [draft, setDraft] = React.useState(null)
-      const [saveState, setSaveState] = React.useState('idle')
-      if (view === 'summary') return t('config.summary')
-      if (snapshot.status !== 'ready') {
-        return h('p', { className: 'airboard-config-note', 'data-airboard-config': snapshot.status },
-          snapshot.status === 'loading' ? t('loading') : t('config.unavailable'))
+
+    /** Labels the shared SettingsForm chrome asks for. */
+    function formLabels(t) {
+      return {
+        unavailable: t('config.unavailable'),
+        readOnly: t('config.readOnly'),
+        saveFailed: t('config.saveFailed'),
+        save: t('config.save'),
+        saving: t('config.saving'),
       }
-      const accepted = snapshot.value ?? {}
-      const staged = draft ?? { baseUrl: accepted.baseUrl ?? '', token: accepted.token ?? '' }
-      const onEdit = (field) => (event) => {
-        const next = event.target.value
-        // Functional update: edits from one committed render must merge.
-        setDraft((prev) => {
-          const base = prev ?? { baseUrl: accepted.baseUrl ?? '', token: accepted.token ?? '' }
-          return { ...base, [field]: next }
-        })
-      }
-      const onSave = () => {
-        const ops = []
-        if (staged.baseUrl !== (accepted.baseUrl ?? '')) ops.push({ op: 'set', path: ['baseUrl'], value: staged.baseUrl })
-        if (staged.token !== (accepted.token ?? '')) ops.push({ op: 'set', path: ['token'], value: staged.token })
-        if (ops.length === 0) {
-          setDraft(null)
-          return
-        }
-        setSaveState('saving')
-        save(ops).then((accepted_) => {
-          setSaveState(accepted_ ? 'idle' : 'failed')
-          if (accepted_) setDraft(null)
-        }).catch(() => { setSaveState('failed') })
-      }
-      const saving = saveState === 'saving'
-      return h('form', { className: 'airboard-config', 'data-airboard-config': 'page', onSubmit: (event) => { event.preventDefault(); onSave() } },
-        snapshot.writable ? null : h('p', { className: 'airboard-config-note' }, t('config.readOnly')),
-        h('label', { className: 'airboard-field' },
-          h('span', { className: 'airboard-field-label' }, t('config.baseUrl')),
-          h('input', {
-            type: 'text', value: staged.baseUrl, spellCheck: false,
-            disabled: !snapshot.writable || saving, onChange: onEdit('baseUrl'),
-          })),
-        h('p', { className: 'airboard-field-hint' }, t('config.baseUrlHint')),
-        h('label', { className: 'airboard-field' },
-          h('span', { className: 'airboard-field-label' }, t('config.token')),
-          h('input', {
-            type: 'password', value: staged.token, autoComplete: 'off', spellCheck: false,
-            disabled: !snapshot.writable || saving, onChange: onEdit('token'),
-          })),
-        h('p', { className: 'airboard-field-hint' }, t('config.tokenHint')),
-        h('div', { className: 'airboard-config-actions' },
-          h('button', { type: 'submit', disabled: !snapshot.writable || saving || draft === null },
-            saving ? t('config.saving') : t('config.save')),
-          saveState === 'failed' ? h('span', { className: 'airboard-config-failed', role: 'status', 'data-airboard-config-failed': '' }, t('config.saveFailed')) : null))
     }
 
     /**
-     * The config card's inject face: the row's ConfigForm as a reactive
-     * snapshot hook, and the atomic save callback.
-     * @param {any} form - `ctx.configForms.get('airboard')`.
+     * The config card: shared form chrome, the baseUrl value field, and the
+     * token secret field. Everything flows through the model's injected face.
+     * @param {any} props - `view`, `t`, the face's `useConfig` hook and the staged-form actions.
      */
-    function configCardFace(form) {
-      return () => ({
-        hooks: { snapshot: form },
-        save: (ops) => form.mutate(ops),
-      })
+    function AirboardConfigCard(props) {
+      const { view, t, useConfig, edit, resetField, save, discard } = props
+      const state = useConfig(snapshot => snapshot)
+      if (view === 'summary') return t('config.summary')
+      return h(SettingsForm, { labels: formLabels(t), state, onSave: save, onDiscard: discard },
+        h(SettingsValueField, {
+          id: 'airboard-config-base-url',
+          label: t('config.baseUrl'),
+          hint: t('config.baseUrlHint'),
+          overriddenLabel: t('config.overridden'),
+          resetLabel: t('config.reset'),
+          invalidLabel: t('config.invalid'),
+          disabled: !state.writable,
+          ...state.baseUrl,
+          onEdit: (text) => { edit('baseUrl', text) },
+          onReset: () => { resetField('baseUrl') },
+        }),
+        h(SettingsSecretField, {
+          id: 'airboard-config-token',
+          label: t('config.token'),
+          hint: t('config.tokenHint'),
+          disabled: !state.writable,
+          text: state.token.text,
+          configured: state.tokenConfigured,
+          stateLabel: state.tokenConfigured ? t('config.tokenSet') : t('config.tokenUnset'),
+          onEdit: (text) => { edit('token', text) },
+        }))
+    }
+
+    /**
+     * Build the model, its store, and the describe-derived token presence.
+     * @param {any} ctx - client context carrying configForms.
+     * @returns {{store: object, face: () => object, dispose: () => void}} the registration inputs.
+     */
+    function buildConfigCard(ctx) {
+      const configForm = ctx.configForms.get('airboard')
+      const describe = ctx.configForms.describe?.()
+      const model = new SettingsFormModel(
+        configForm,
+        [settingsTextField('baseUrl')],
+        [{ field: 'token', write: (text) => configForm.set('token', text) }],
+      )
+      const tokenConfigured = () => {
+        try {
+          const namespaces = describe?.getSnapshot?.()?.view?.namespaces ?? []
+          const served = namespaces.find((entry) => entry.ns === 'airboard')
+          return served?.secrets?.some((secret) => secret.path?.[0] === 'token' && secret.set) ?? false
+        } catch {
+          return false
+        }
+      }
+      const store = model.bind(() => ({
+        ...model.shell(),
+        baseUrl: model.field('baseUrl'),
+        token: model.field('token'),
+        tokenConfigured: tokenConfigured(),
+      }))
+      return {
+        store,
+        face: () => ({ hooks: { config: store }, ...model.actions() }),
+        dispose: () => { model.dispose() },
+      }
     }
 
     return {
       inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms'],
       apply(ctx) {
         const t = ctx.locale.bind(NS)
-        const configForm = ctx.configForms.get('airboard')
+        const card = buildConfigCard(ctx)
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-airboard: dictionaries')
+        ctx.effect(() => () => { card.dispose() }, 'dsh-airboard: config model')
         ctx.effect(() => ctx.sidebarRightTabs.register({
           id: ID,
           kind: KIND,
@@ -447,10 +464,10 @@ window.__ModuleLoader__.load({
           { name: 'sidebar.right.pane.tab', key: ID, locale: NS },
           AirboardBody,
         )), 'dsh-airboard: airboard tab body')
-        ctx.effect(() => ctx.slots.inject('plugins.row.config', () => ctx.slots.register(
-          { name: 'plugins.row.config', key: ROW_CONFIG_KEY, locale: NS, inject: configCardFace(configForm) },
+        ctx.effect(() => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
+          { name: 'plugins.bundle.config', key: ID, locale: NS, inject: card.face },
           AirboardConfigCard,
-        )), 'dsh-airboard: row config card')
+        )), 'dsh-airboard: bundle config card')
         ctx.effect(() => injectStyles(), 'dsh-airboard: styles')
       },
     }

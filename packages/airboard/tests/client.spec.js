@@ -21,6 +21,70 @@ function MarkdownText(props) { return null }
 /** Marker for the refresh icon primitive. */
 function IconRefreshOutlineRegular(props) { return null }
 
+/** Marker components standing in for the shared staged-form chrome. */
+function SettingsForm(props) { return { type: 'settings-form', props } }
+function SettingsValueField(props) { return { type: 'settings-value-field', props } }
+function SettingsSecretField(props) { return { type: 'settings-secret-field', props } }
+
+/**
+ * A fake SettingsFormModel over a stub scope: stage per field, project the
+ * shell, and forward secret writes to the scope's set() — enough contract for
+ * the card tests.
+ */
+class FakeFormModel {
+  constructor(scope, specs, secrets = []) {
+    this.scope = scope
+    this.specs = new Map(specs.map((spec) => [spec.field, spec]))
+    this.secrets = new Map(secrets.map((spec) => [spec.field, spec]))
+    this.staged = new Map()
+    this.disposed = false
+  }
+  bind(project) {
+    this.project = project
+    return { getSnapshot: () => project(), subscribe: () => () => {} }
+  }
+  shell() {
+    const snapshot = this.scope.getSnapshot()
+    return {
+      available: snapshot.status === 'ready',
+      writable: snapshot.writable,
+      dirty: this.staged.size > 0,
+      invalid: false,
+      saving: false,
+      failed: false,
+    }
+  }
+  field(name) {
+    const snapshot = this.scope.getSnapshot()
+    const accepted = this.specs.get(name) !== undefined
+      ? (this.specs.get(name).format(snapshot.value?.[name])) : ''
+    const staged = this.staged.get(name)
+    return {
+      text: staged === undefined ? accepted : staged,
+      overridden: snapshot.user !== null && typeof snapshot.user === 'object' && snapshot.user[name] !== undefined,
+      invalid: false,
+    }
+  }
+  actions() {
+    return {
+      edit: (field, text) => { this.staged.set(field, text) },
+      resetField: (field) => { this.staged.delete(field) },
+      save: () => {},
+      discard: () => { this.staged.clear() },
+    }
+  }
+  dispose() { this.disposed = true }
+}
+
+/** The primitives module the factory's require hands out. */
+function primitives() {
+  return {
+    MarkdownText, IconRefreshOutlineRegular,
+    SettingsForm, SettingsValueField, SettingsSecretField,
+    SettingsFormModel: FakeFormModel, settingsTextField: (field) => ({ field, format: (value) => (typeof value === 'string' ? value : '') }),
+  }
+}
+
 /**
  * Fake React: vdom-building createElement plus the hook subset the body uses.
  * Hook state lives in the harness, so one harness == one component instance.
@@ -131,14 +195,14 @@ function bootPlugin() {
   const harness = createHarness()
   const require = (specifier) => {
     if (specifier === 'react') return harness.React
-    if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return { MarkdownText, IconRefreshOutlineRegular }
+    if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives()
     throw new Error(`unexpected require: ${specifier}`)
   }
   return { harness, plugin: loaded[0].factory(require) }
 }
 
 /** A cordis ctx double recording every registration the plugin makes. */
-function makeCtx({ configForm } = {}) {
+function makeCtx({ configForm, describe } = {}) {
   const recorded = { tabs: [], injects: [], registers: [], namespaces: [] }
   const ctx = {
     effect(fn) { return fn() ?? undefined },
@@ -147,7 +211,15 @@ function makeCtx({ configForm } = {}) {
       register: (ns, dicts) => { recorded.namespaces.push({ ns, dicts }) },
     },
     sidebarRightTabs: { register: (definition) => { recorded.tabs.push(definition); return () => {} } },
-    configForms: { get: (entryId) => configForm ?? { entryId } },
+    configForms: {
+      get: (entryId) => configForm ?? {
+        getSnapshot: () => ({ status: 'ready', writable: true, revision: 0, value: {}, user: {} }),
+        subscribe: () => () => {},
+        mutate: () => Promise.resolve(true),
+        set: () => Promise.resolve(true),
+      },
+      describe: () => describe ?? { getSnapshot: () => ({ view: { namespaces: [] } }) },
+    },
     slots: {
       inject: (name, begin) => { recorded.injects.push(name); return begin() },
       register: (declaration, Component) => { recorded.registers.push({ declaration, Component }); return () => {} },
@@ -282,116 +354,86 @@ test('apply registers the tab type, the keyed body seat, dictionaries, and scope
   assert.equal(removed, 1)
 })
 
-/** The config card's inject face and component, captured from a fresh apply. */
-function bootConfigCard(configForm) {
+/** The config card's seat and face, captured from a fresh apply. */
+function bootConfigCard({ configForm, describe } = {}) {
   const { harness, plugin } = bootPlugin()
-  const [ctx, recorded] = makeCtx({ configForm })
+  const [ctx, recorded] = makeCtx({ configForm, describe })
   withDocument(
     { createElement: () => ({ dataset: {}, textContent: '', remove() {} }), head: { append() {} } },
     () => plugin.apply(ctx),
   )
-  const seat = recorded.registers.find(({ declaration }) => declaration.name === 'plugins.row.config')
-  assert.ok(seat, 'the config card seat is registered')
-  assert.equal(seat.declaration.key, 'dsh-airboard#airboard')
-  return { harness, face: seat.declaration.inject(), Component: seat.Component }
+  const seat = recorded.registers.find(({ declaration }) => declaration.name === 'plugins.bundle.config')
+  assert.ok(seat, 'the bundle config card seat is registered')
+  assert.equal(seat.declaration.key, 'dsh-airboard')
+  return { harness, face: seat.declaration.inject(), Component: seat.Component, ctx }
 }
 
-test('apply registers the row config card under dsh-airboard#airboard', () => {
-  const mutateCalls = []
+test('apply registers the bundle config card over the shared staged-form model', () => {
+  const setCalls = []
   const configForm = {
-    getSnapshot: () => ({}),
+    getSnapshot: () => ({ status: 'ready', writable: true, revision: 3, value: { baseUrl: 'http://ab.antaresy.cc' }, user: {} }),
     subscribe: () => () => {},
-    mutate: (ops) => { mutateCalls.push(ops); return Promise.resolve(true) },
+    mutate: () => Promise.resolve(true),
+    set: (field, value) => { setCalls.push({ field, value }); return Promise.resolve(true) },
   }
-  const { face } = bootConfigCard(configForm)
-  // The face binds the form as a bare observable hook plus a save callback.
-  assert.equal(face.hooks.snapshot, configForm)
-  const ops = [{ op: 'set', path: ['token'], value: 'abt_x' }]
-  face.save(ops)
-  assert.deepEqual(mutateCalls, [ops])
+  const describe = { getSnapshot: () => ({ view: { namespaces: [{ ns: 'airboard', secrets: [{ path: ['token'], set: true }] }] } }) }
+  const { face } = bootConfigCard({ configForm, describe })
+  const bound = face
+  // The face binds the model's store as a selector hook plus staged-form actions.
+  assert.equal(typeof bound.hooks.config.getSnapshot, 'function')
+  for (const action of ['edit', 'resetField', 'save', 'discard']) {
+    assert.equal(typeof bound[action], 'function', action)
+  }
+  // The projection derives the token's configured state from the describe sidecar.
+  const state = bound.hooks.config.getSnapshot()
+  assert.equal(state.tokenConfigured, true)
+  assert.equal(state.available, true)
+  assert.equal(state.baseUrl.text, 'http://ab.antaresy.cc')
 })
 
-/** Render the config card the way the renderer would: face-bound hooks as use* props. */
-function renderCard(harness, Component, face, { view: cardView = 'page', snapshot, save = () => Promise.resolve(true) } = {}) {
-  const saves = []
-  const view = { vdom: undefined, saves }
+test('the config card renders the shared chrome with both fields wired to the face', () => {
+  const { harness, Component, face } = bootConfigCard()
+  const bound = face
+  const edits = []
   const props = {
-    view: cardView,
+    view: 'page',
     t: makeT(),
-    useSnapshot: () => snapshot,
-    save: (ops) => { saves.push(ops); return save(ops) },
+    useConfig: (select) => select(bound.hooks.config.getSnapshot()),
+    ...Object.fromEntries(Object.entries(bound).filter(([key]) => key !== 'hooks').map(([key, value]) => [key, (key === 'edit')
+      ? (field, text) => { edits.push({ field, text }); value(field, text) }
+      : value])),
   }
-  const render = () => { view.vdom = harness.render(Component, props) }
-  render()
-  view.submit = async () => {
-    // React re-rendered after the staged edits, so read the live handlers.
-    render()
-    const formNode = find(view.vdom, (node) => node.type === 'form')
-    formNode.props.onSubmit({ preventDefault() {} })
-    await harness.settle(2)
-    render()
-    return view.vdom
-  }
-  return view
-}
-
-test('the config card renders the fields and saves staged edits atomically', async () => {
-  const { harness, face, Component } = bootConfigCard()
-  const snapshot = {
-    status: 'ready', writable: true, revision: 3,
-    value: { baseUrl: 'http://ab.antaresy.cc', token: '' },
-  }
-  const view = renderCard(harness, Component, face, { snapshot })
-  const inputs = findAll(view.vdom, (node) => node.type === 'input')
-  assert.equal(inputs.length, 2)
-  assert.equal(inputs[0].props.type, 'text')
-  assert.equal(inputs[0].props.value, 'http://ab.antaresy.cc')
-  assert.equal(inputs[1].props.type, 'password')
-  assert.equal(inputs[1].props.value, '')
-  // Stage both fields, then save: one atomic mutate with both ops.
-  inputs[0].props.onChange({ target: { value: 'http://other:3010' } })
-  inputs[1].props.onChange({ target: { value: 'abt_secret' } })
-  await view.submit()
-  assert.equal(view.saves.length, 1)
-  assert.deepEqual(view.saves[0], [
-    { op: 'set', path: ['baseUrl'], value: 'http://other:3010' },
-    { op: 'set', path: ['token'], value: 'abt_secret' },
+  const vdom = harness.render(Component, props)
+  // Shared form chrome carries the localized labels and the save/discard wiring.
+  const form = find(vdom, (node) => node.type === SettingsForm)
+  assert.deepEqual(Object.keys(form.props.labels).sort(), ['readOnly', 'save', 'saveFailed', 'saving', 'unavailable'])
+  assert.equal(form.props.onSave, bound.save)
+  assert.equal(form.props.onDiscard, bound.discard)
+  // The baseUrl value field and the token secret field carry their copy.
+  const valueField = find(vdom, (node) => node.type === SettingsValueField)
+  assert.equal(valueField.props.id, 'airboard-config-base-url')
+  assert.equal(valueField.props.label, 't:config.baseUrl')
+  assert.equal(valueField.props.disabled, false)
+  const secretField = find(vdom, (node) => node.type === SettingsSecretField)
+  assert.equal(secretField.props.id, 'airboard-config-token')
+  assert.equal(secretField.props.stateLabel, bound.hooks.config.getSnapshot().tokenConfigured ? 't:config.tokenSet' : 't:config.tokenUnset')
+  // Edits route through the injected staged-form action.
+  valueField.props.onEdit('http://other:3010')
+  secretField.props.onEdit('abt_secret')
+  assert.deepEqual(edits, [
+    { field: 'baseUrl', text: 'http://other:3010' },
+    { field: 'token', text: 'abt_secret' },
   ])
-  // Accepted values flowed back; the staged draft cleared.
-  const after = findAll(view.vdom, (node) => node.type === 'input')
-  assert.equal(after[0].props.value, 'http://ab.antaresy.cc')
-  assert.equal(after[1].props.value, '')
 })
 
-test('the config card keeps the draft when the Host refuses the write', async () => {
-  const { harness, face, Component } = bootConfigCard()
-  const snapshot = { status: 'ready', writable: true, revision: 3, value: { token: '' } }
-  const view = renderCard(harness, Component, face, { snapshot, save: () => Promise.resolve(false) })
-  const input = findAll(view.vdom, (node) => node.type === 'input')[1]
-  input.props.onChange({ target: { value: 'abt_bad' } })
-  await view.submit()
-  assert.deepEqual(view.saves[0], [{ op: 'set', path: ['token'], value: 'abt_bad' }])
-  const failed = find(view.vdom, (node) => node.props['data-airboard-config-failed'] !== undefined)
-  assert.ok(texts(failed).includes('t:config.saveFailed'))
-  // The staged token stays so the user can retry.
-  const staged = findAll(view.vdom, (node) => node.type === 'input')[1]
-  assert.equal(staged.props.value, 'abt_bad')
-})
-
-test('the config card shows notes for summary, unavailable, and read-only', () => {
-  const { harness, face, Component } = bootConfigCard()
-  const summary = harness.render(Component, { view: 'summary', t: makeT(), useSnapshot: () => ({ status: 'ready' }), save: () => {} })
-  assert.deepEqual(texts(summary), ['t:config.summary'])
-  const unavailable = harness.render(Component, { view: 'page', t: makeT(), useSnapshot: () => ({ status: 'unavailable' }), save: () => {} })
-  assert.deepEqual(texts(unavailable), ['t:config.unavailable'])
-  const readOnly = harness.render(Component, {
-    view: 'page', t: makeT(),
-    useSnapshot: () => ({ status: 'ready', writable: false, value: { baseUrl: 'http://x' } }),
-    save: () => {},
+test('the config card renders the summary one-liner when asked', () => {
+  const { harness, Component, face } = bootConfigCard()
+  const bound = face
+  const summary = harness.render(Component, {
+    view: 'summary', t: makeT(),
+    useConfig: (select) => select(bound.hooks.config.getSnapshot()),
   })
-  assert.ok(texts(readOnly).includes('t:config.readOnly'))
-  const saveButton = find(readOnly, (node) => node.type === 'button')
-  assert.equal(saveButton.props.disabled, true)
+  assert.deepEqual(texts(summary), ['t:config.summary'])
 })
 
 test('the body loads projects and resources through the same-origin proxy', async () => {

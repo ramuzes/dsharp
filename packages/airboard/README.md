@@ -31,8 +31,12 @@ browser tab ──same-origin GET──▶ /airboard/api/… ──Host proxy─
 
 ## Configuration
 
-Two fields on the `airboard` row, editable live on the **Plugins** page
-(saves persist into the profile's `cordis.patch.yml`):
+The **Plugins** page shows the form directly on the AirBoard bundle's own page
+(the same placement as the shipped Web Search plugin): click the AirBoard card
+and edit the fields there; saves persist into the profile's `cordis.patch.yml`
+and apply live. The form is the shared staged-form pattern (`SettingsFormModel`
+from `ui-primitives`) — edits stage until you press Save, and the token is a
+write-only secret control whose literal never rides a response:
 
 | Field | Default | Meaning |
 |---|---|---|
