@@ -778,3 +778,47 @@ test('the picker opens below and follows the anchor when there is room', async (
     else globalThis.document = previous
   }
 })
+
+test('resolution falls back to the project scan when search misses the id', async () => {
+  const { face } = bootMessageAction()
+  const calls = []
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    calls.push(text)
+    const route = {
+      '/airboard/api/search?q=ADR-54': { status: 200, body: [] },
+      '/airboard/api/projects': { status: 200, body: [{ key: 'CORE' }, { key: 'OPS' }] },
+      '/airboard/api/projects/CORE/resources': { status: 200, body: [{ id: 'ADR-54', kind: 'ADR' }] },
+      '/airboard/api/projects/OPS/resources': { status: 200, body: [] },
+    }[text]
+    if (route === undefined) return { ok: false, status: 404, json: async () => ({}) }
+    return { ok: true, status: route.status, json: async () => route.body }
+  }
+  // The service's FTS does not index ids, so the search misses; the scan of
+  // the per-project lists (where every id lives) is authoritative.
+  const hits = await face.resolve('ADR-54')
+  assert.deepEqual(hits, [{ id: 'ADR-54', project_key: 'CORE' }])
+  assert.deepEqual(calls, [
+    '/airboard/api/search?q=ADR-54',
+    '/airboard/api/projects',
+    '/airboard/api/projects/CORE/resources',
+    '/airboard/api/projects/OPS/resources',
+  ])
+})
+
+test('resolution keeps only exact-id search hits across projects', async () => {
+  const { face } = bootMessageAction()
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => [
+      { id: 'ADR-5', project_key: 'CORE' },
+      { id: 'ADR-54', project_key: 'OPS' },
+      { id: 'ADR-54', project_key: 'CORE' },
+    ],
+  })
+  const hits = await face.resolve('ADR-54')
+  assert.deepEqual(hits, [
+    { id: 'ADR-54', project_key: 'OPS' },
+    { id: 'ADR-54', project_key: 'CORE' },
+  ])
+})

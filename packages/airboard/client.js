@@ -95,6 +95,12 @@ window.__ModuleLoader__.load({
     }
     /** AirBoard's five resource kinds, in display order. */
     const KIND_ORDER = ['ADR', 'PRD', 'SPEC', 'PLAN', 'ISSUE']
+    /**
+     * Project key → its full resource list, as the board tab last loaded it.
+     * The chat action's id scan reads and fills the same cache, so a jump to
+     * an already-browsed project costs no extra request.
+     */
+    const projectListCache = new Map()
     // Note: AirBoard's list endpoint hides cancelled resources unless a status
     // filter asks for them, so the cancelled dot/locale below is normally
     // unreachable — it stays for the day the service (or a status filter UI)
@@ -300,6 +306,7 @@ window.__ModuleLoader__.load({
           .then((list) => {
             if (!alive) return
             const items = Array.isArray(list) ? list : []
+            projectListCache.set(projectKey, items)
             setResources({ phase: 'ready', list: items })
             const firstDisplayed = groupByKind(items)[0]?.[1]?.[0]?.id ?? null
             setSelectedId((current) => (items.some((item) => item.id === current) ? current : firstDisplayed))
@@ -671,13 +678,52 @@ window.__ModuleLoader__.load({
 
     /**
      * The message action's inject face: search resolution and the two opens.
+     *
+     * Resolution is two-stage. The service's full-text search indexes only
+     * titles and bodies — NOT document ids — so an id query hits only when the
+     * prose happens to name the document. The authoritative fallback scans the
+     * per-project resource lists (where every id lives), reusing the lists the
+     * board tab already loaded.
      * @param {any} ctx - client context carrying sidebarRight.
      */
     function messageActionFace(ctx) {
+      /** Every project carrying `docId`, from cache or the list endpoints. */
+      const scanProjectsFor = async (docId) => {
+        const found = []
+        let projects = []
+        try {
+          const listing = await apiFetch('/api/projects')
+          projects = Array.isArray(listing) ? listing : []
+        } catch {
+          return found
+        }
+        for (const project of projects) {
+          let items = projectListCache.get(project.key)
+          if (items === undefined) {
+            try {
+              const list = await apiFetch(`/api/projects/${encodeURIComponent(project.key)}/resources`)
+              items = Array.isArray(list) ? list : []
+              projectListCache.set(project.key, items)
+            } catch {
+              continue
+            }
+          }
+          for (const item of items) {
+            if (item.id === docId) found.push({ id: item.id, project_key: project.key })
+          }
+        }
+        return found
+      }
       return () => ({
         resolve: async (docId) => {
-          const hits = await apiFetch(`/api/search?q=${encodeURIComponent(docId)}`)
-          return Array.isArray(hits) ? hits : []
+          try {
+            const hits = await apiFetch(`/api/search?q=${encodeURIComponent(docId)}`)
+            const exact = (Array.isArray(hits) ? hits : []).filter((hit) => hit.id === docId)
+            if (exact.length > 0) return exact
+          } catch {
+            // The search endpoint failing must not block the scan below.
+          }
+          return scanProjectsFor(docId)
         },
         openTab: () => { ctx.sidebarRight.openTab(KIND) },
         openResource: (projectKey, docId) => { ctx.sidebarRight.openResource(airboardAddress(projectKey, docId)) },
