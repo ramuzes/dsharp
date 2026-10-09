@@ -40,20 +40,41 @@ test('formatAndSendText: plain text goes out as text chunks', async () => {
   assert.ok(sent.every(s => s.type === 'text'))
 })
 
-test('formatAndSendText: markdown prefers post, falls back to stripped text per chunk', async () => {
+test('formatAndSendText: markdown post failure yields a single stripped text fallback', async () => {
+  const sent = []
+  const postCalls = []
+  const client = {
+    sendText: async (c, t) => sent.push({ type: 'text', text: t }),
+    sendJson: async (c, msgType, content) => {
+      postCalls.push(content)
+      throw new Error('230025 content too large')
+    },
+  }
+  const input = '# Title\nbody'
+  await formatAndSendText(client, 'oc_1', input, { chunkLimit: 8000 })
+  // Exactly one delivery per chunk: the stripped plain-text fallback, no post retry.
+  assert.equal(sent.length, 1)
+  assert.equal(postCalls.length, 1)
+  assert.equal(sent[0].type, 'text')
+  assert.equal(sent[0].text, stripMarkdown(input))
+})
+
+test('formatAndSendText: multi-chunk markdown delivers each chunk once with per-chunk fallback', async () => {
   const sent = []
   let failPost = true
   const client = {
     sendText: async (c, t) => sent.push({ type: 'text', text: t }),
     sendJson: async (c, msgType, content) => {
-      if (failPost) { failPost = false; throw new Error('230025 content too large') }
+      if (failPost) { failPost = false; throw new Error('transient') }
       sent.push({ type: msgType, content })
     },
   }
-  await formatAndSendText(client, 'oc_1', '# Title\nbody', { chunkLimit: 8000 })
-  assert.equal(sent.length, 2)
-  assert.equal(sent[0].type, 'text')
-  assert.equal(sent[0].text, 'Title\nbody')  // heading marker stripped
+  const input = '# A\n' + 'x'.repeat(80) + '\n# B\n' + 'y'.repeat(80)
+  await formatAndSendText(client, 'oc_1', input, { chunkLimit: 100 })
+  assert.ok(sent.length === 2) // 2 chunks, each delivered exactly once
+  assert.equal(sent[0].type, 'text')       // chunk 1: post failed → stripped text
+  assert.equal(sent[1].type, 'post')       // chunk 2: post succeeded
+  assert.deepEqual(sent.map(s => s.type).filter(t => t === 'text').length, 1) // no duplicate text sends
 })
 
 test('buildStatusCard renders workspace/session/model with pending marker', () => {

@@ -46,10 +46,9 @@ export function buildPostContent(text) {
 
 /**
  * Send text through the fallback chain: markdown chunks go post(md)-first and
- * fall back to stripped plain text per chunk when the post send is rejected;
- * after the plain-text safety net, one best-effort post retry with the
- * stripped content restores rich rendering when the failure was transient
- * (e.g. 230025 content too large on the md-rich body).
+ * fall back to exactly one stripped plain-text send per chunk when the post
+ * send is rejected. No retry follows the fallback: each chunk is delivered at
+ * most once.
  * @param {{ sendText: Function, sendJson: Function }} client
  */
 export async function formatAndSendText(client, chatId, text, { chunkLimit = 8000 } = {}) {
@@ -59,9 +58,7 @@ export async function formatAndSendText(client, chatId, text, { chunkLimit = 800
     if (md) {
       try { await client.sendJson(chatId, 'post', buildPostContent(chunk)); continue }
       catch { /* fall through to stripped text */ }
-      const plain = stripMarkdown(chunk)
-      await client.sendText(chatId, plain)
-      try { await client.sendJson(chatId, 'post', buildPostContent(plain)) } catch { /* text already delivered */ }
+      await client.sendText(chatId, stripMarkdown(chunk))
     } else {
       await client.sendText(chatId, chunk)
     }
