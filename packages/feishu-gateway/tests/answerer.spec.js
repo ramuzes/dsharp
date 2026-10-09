@@ -121,6 +121,59 @@ test('pending map evicts oldest dead entries at the cap', async () => {
   await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_3', kind: 'answer', questionId: 'q3', choice: 0 } })
 })
 
+test('aborting request.signal marks the pending entry dead and late clicks route to userQuestions.answer', async () => {
+  const { answerer, sent } = makeAnswerer()
+  const answered = []
+  answerer.setUserQuestionsService({ answer: async (agent, callId, ans) => answered.push({ callId, ans }) })
+  const controller = new AbortController()
+  const request = feishuRequest([{ id: 'q1', question: 'x', options: [{ label: 'A' }] }])
+  request.signal = controller.signal
+  const p = answerer.roundTrip('oc_1', 'act_1', 'question', request, {})
+  await Promise.resolve()
+  controller.abort() // the turn's cancellation signal fired — production killPending seam
+  assert.deepEqual(await p, { timedOut: true })
+  // a late click must now route to the fake service instead of the waterfall
+  await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'answer', questionId: 'q1', choice: 0 } })
+  assert.equal(answered.length, 1)
+  assert.equal(answered[0].callId, 'call_1')
+  assert.deepEqual(answered[0].ans.answers, [{ id: 'q1', selected: ['A'] }])
+})
+
+test('abort listener cleanup: aborting after the entry resolved does not throw', async () => {
+  const { answerer } = makeAnswerer()
+  const controller = new AbortController()
+  const request = feishuRequest([{ id: 'q1', question: 'x', options: [{ label: 'A' }] }])
+  request.signal = controller.signal
+  const p = answerer.roundTrip('oc_1', 'act_1', 'question', request, {})
+  await Promise.resolve()
+  await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'answer', questionId: 'q1', choice: 0 } })
+  assert.deepEqual(await p, { value: { actionId: 'act_1', kind: 'answer', questionId: 'q1', choice: 0 }, timedOut: false })
+  // entry already resolved and deleted: the stale abort must be a safe no-op
+  assert.doesNotThrow(() => controller.abort())
+  assert.equal(answerer.pending.has('act_1'), false)
+})
+
+test('multi-question late click does not call userQuestions.answer and sends a friendly text', async () => {
+  const { answerer, sent, debug } = makeAnswerer()
+  const answered = []
+  answerer.setUserQuestionsService({ answer: async (...args) => answered.push(args) })
+  const controller = new AbortController()
+  const request = feishuRequest([
+    { id: 'q1', question: 'a', options: [{ label: 'A' }] },
+    { id: 'q2', question: 'b', options: [{ label: 'B' }] },
+  ])
+  request.signal = controller.signal
+  const p = answerer.roundTrip('oc_1', 'act_1', 'question', request, {})
+  await Promise.resolve()
+  controller.abort()
+  await p
+  await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'answer', questionId: 'q1', choice: 0 } })
+  assert.equal(answered.length, 0, 'userQuestions.answer must not be called for multi-question cards')
+  assert.ok(debug.some(m => /multi-question/i.test(m)), 'drop is logged')
+  assert.ok(sent.some(s => s.type === 'text' && /过期|重新/.test(s.text)), 'friendly chat message sent')
+  assert.equal(answerer.pending.has('act_1'), false, 'entry evicted')
+})
+
 test('unknown action ids are ignored', async () => {
   const { answerer } = makeAnswerer()
   assert.equal(await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'nope', kind: 'answer', choice: 0 } }), undefined)

@@ -21,6 +21,12 @@ let sdkOverride = undefined
 /** Test seam: inject a fake SDK (Client/WSClient/EventDispatcher/LoggerLevel). */
 export function setSdkForTests(fake) { sdkOverride = fake }
 
+/** @type {any} */
+let lastAnswererForTests = undefined
+
+/** Test seam: the answerer constructed by the most recent successful boot. */
+export function getLastAnswererForTests() { return lastAnswererForTests }
+
 /**
  * SDK loader used for BOTH the API client and the WebSocket transport, so a
  * test seam replaces the SDK everywhere and the real package is never loaded.
@@ -115,6 +121,10 @@ async function boot(scope, resolved) {
   await router.load()
 
   const answerer = new GatewayAnswerer({ lark, config: resolved, logger: scope.logger, makeActionId })
+  // The late-answer channel: without the service, late card clicks after the
+  // timed window closes cannot reach userQuestions.answer.
+  if (scope.userQuestions !== undefined) answerer.setUserQuestionsService(scope.userQuestions)
+  lastAnswererForTests = answerer
   const driver = new GatewayDriver({
     ctx: scope, lark, router, config: resolved, logger: scope.logger, makeActionId,
     answererCallback: action => answerer.handleCardAction(action),

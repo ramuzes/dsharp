@@ -96,27 +96,42 @@ export class GatewayAnswerer {
   /** Send the card and await the matching card action (or timeout). */
   roundTrip(chatId, actionId, kind, request, card) {
     return new Promise(resolve => {
-      const entry = { resolve, kind, request, dead: false }
+      const entry = { resolve, kind, request, dead: false, cleanup: () => {} }
       this.evictDeadPending()
       this.pending.set(actionId, entry)
+      // The request event carries an AbortSignal (AskUserQuestionRequestEvent
+      // and the approval request both have signal?: AbortSignal): when the
+      // timed window / turn is cancelled, mark the entry dead so eviction and
+      // late-answer routing run. One subscription covers both kinds.
+      const signal = request?.signal
+      if (signal !== undefined) {
+        const onAbort = () => this.killPending(actionId)
+        entry.cleanup = () => {
+          if (typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort)
+        }
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      }
       this.lark.sendJson(chatId, 'interactive', card).catch(error => {
         this.logger?.warn?.(`feishu-gateway: card send failed: ${String(error)}`)
+        entry.cleanup()
         this.pending.delete(actionId)
         resolve({ timedOut: true })
       })
     })
   }
 
-  /** Test seam marking a pending entry dead (the timed window closed). */
+  /** Mark a pending entry dead (the timed window closed / signal aborted). */
   killPending(actionId) {
     const entry = this.pending.get(actionId)
-    if (entry !== undefined) {
-      entry.dead = true
-      entry.resolve({ timedOut: true })
-      // keep the entry so a late click can still route to userQuestions.answer;
-      // callId lives at request.wait.callId in the real event shape
-      entry.late = { callId: entry.request.wait?.callId ?? entry.request.callId, agent: entry.request.agent }
-    }
+    if (entry === undefined) return // already resolved and deleted — safe no-op
+    entry.cleanup?.()
+    if (entry.dead) return
+    entry.dead = true
+    entry.resolve({ timedOut: true })
+    // keep the entry so a late click can still route to userQuestions.answer;
+    // callId lives at request.wait.callId in the real event shape
+    entry.late = { callId: entry.request.wait?.callId ?? entry.request.callId, agent: entry.request.agent }
   }
 
   /** Resolve one card action against the pending map (or late-answer path). */
@@ -126,8 +141,17 @@ export class GatewayAnswerer {
     const entry = this.pending.get(value.actionId)
     if (entry === undefined) return undefined
     if (entry.dead) {
-      // late answer: the waterfall already closed — route via userQuestions.answer
-      if (entry.kind === 'question' && entry.late !== undefined && entry.late.callId !== undefined && this.userQuestions !== undefined) {
+      // late answer: the waterfall already closed. v1 late-answers only
+      // single-question cards — userQuestions.answer throws on partial
+      // batches ("must name each question exactly once"), so a multi-question
+      // late click is dropped with a friendly chat message instead.
+      const singleQuestion = entry.kind === 'question' && entry.request.questions?.length === 1
+      if (entry.kind === 'question' && !singleQuestion) {
+        this.logger?.debug?.(`feishu-gateway: dropping late multi-question card click for ${String(value.actionId)} — v1 supports single-question late answers only`)
+        await this.lark.sendText(action.chatId, '这张提问卡片已过期，多问题卡片暂不支持迟到作答；请重新发送消息发起提问。').catch(error => {
+          this.logger?.warn?.(`feishu-gateway: late-click notice send failed: ${String(error)}`)
+        })
+      } else if (singleQuestion && entry.late !== undefined && entry.late.callId !== undefined && this.userQuestions !== undefined) {
         const question = entry.request.questions?.[0]
         const label = question?.options?.[value.choice]?.label ?? ''
         await this.userQuestions.answer(entry.late.agent, entry.late.callId, {
@@ -146,6 +170,7 @@ export class GatewayAnswerer {
       return undefined
     }
     this.pending.delete(value.actionId)
+    entry.cleanup?.()
     entry.resolve({ value, timedOut: false })
     return undefined
   }

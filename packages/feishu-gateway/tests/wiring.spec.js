@@ -45,6 +45,24 @@ test('apply with credentials wires transport, driver, answerer, session events',
   assert.ok(ctx.registered.effects.length > 0)
 })
 
+test('apply wires ctx.userQuestions into the answerer (late-answer channel)', async () => {
+  const ctx = makeCtx()
+  const userQuestions = { answer: async () => {} }
+  ctx.userQuestions = userQuestions
+  const { setSdkForTests, getLastAnswererForTests } = await import('../index.js')
+  setSdkForTests({
+    Client: class { constructor() { this.im = { v1: { message: { async create() {}, async reply() {} } } } } },
+    WSClient: class { async start() {} },
+    EventDispatcher: class { constructor() {} register(map) { return map } },
+    LoggerLevel: { info: 'info' },
+  })
+  apply(ctx, { appId: 'cli_x', appSecret: 'sec', domain: 'https://open.feishu.cn', commandPrefix: '/', messageChunkLimit: 8000 })
+  await new Promise(resolve => setImmediate(resolve))
+  const answerer = getLastAnswererForTests()
+  assert.ok(answerer, 'answerer was constructed')
+  assert.equal(answerer.userQuestions, userQuestions, 'setUserQuestionsService received scope.userQuestions')
+})
+
 test('package.json declares the runtime SDK dependency and bundle patch', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
