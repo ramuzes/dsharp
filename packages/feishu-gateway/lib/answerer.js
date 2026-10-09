@@ -5,8 +5,24 @@
  */
 import { buildQuestionCard, buildApprovalCard } from './formatter.js'
 
-/** The answer shape DSH's userQuestions.ask() expects. */
-const OUTCOMES = new Set(['allow-once', 'allow-session', 'allow-always', 'deny'])
+/**
+ * Card outcome vocabulary the approval card emits (formatter values) mapped to
+ * the DSH ApprovalOutcome union ('allowed-once' | 'rejected' | 'cancelled' |
+ * 'unavailable', verified against dsh user-approval/src/index.ts). DSH has no
+ * session/always grants, so every allow variant maps to 'allowed-once'.
+ */
+const CARD_TO_DSH = {
+  'allow-once': 'allowed-once',
+  'allow-session': 'allowed-once',
+  'allow-always': 'allowed-once',
+  'deny': 'rejected',
+}
+
+/** Card outcome values handleCardAction accepts on approval entries. */
+const OUTCOMES = new Set(Object.keys(CARD_TO_DSH))
+
+/** Default cap on the pending map; dead entries are evicted oldest-first. */
+const MAX_PENDING = 200
 
 /** True when the requesting agent's session belongs to this gateway. */
 function isFeishuSession(request) {
@@ -15,12 +31,13 @@ function isFeishuSession(request) {
 }
 
 export class GatewayAnswerer {
-  /** @param {{ lark: any, config?: any, logger?: any, makeActionId: () => string }} options */
-  constructor({ lark, config = {}, logger, makeActionId }) {
+  /** @param {{ lark: any, config?: any, logger?: any, makeActionId: () => string, maxPending?: number }} options */
+  constructor({ lark, config = {}, logger, makeActionId, maxPending = MAX_PENDING }) {
     this.lark = lark
     this.config = config
     this.logger = logger
     this.makeActionId = makeActionId
+    this.maxPending = maxPending
     /** @type {Map<string, { resolve: Function, kind: string, request: any }>} */
     this.pending = new Map()
     /** @type {any} */
@@ -50,7 +67,8 @@ export class GatewayAnswerer {
     if (answer.timedOut) return next()
     const choice = answer.value.choice
     const label = question.options?.[choice]?.label ?? ''
-    return { answers: [{ questionId: question.id, selectedLabels: [label] }] }
+    // DSH AskUserQuestionAnswerItem: { id, selected: string[] }
+    return { answers: [{ id: question.id, selected: [label] }] }
   }
 
   /** approval waterfall: route feishu sessions to an allow/deny card, else next(). */
@@ -61,13 +79,25 @@ export class GatewayAnswerer {
     const outcome = await this.roundTrip(chatId, actionId, 'approval', request,
       buildApprovalCard(String(request.prompt ?? request.reason ?? '权限请求'), actionId))
     if (outcome.timedOut) return next()
-    return { decision: outcome.value.outcome }
+    // The approval waterfall answerer returns the ApprovalOutcome string
+    // itself; a non-string return would be normalized to 'unavailable'.
+    return CARD_TO_DSH[outcome.value.outcome] ?? 'unavailable'
+  }
+
+  /** Drop oldest dead entries once the pending map reaches the cap. */
+  evictDeadPending() {
+    if (this.pending.size < this.maxPending) return
+    for (const key of this.pending.keys()) {
+      if (this.pending.size < this.maxPending) break
+      if (this.pending.get(key).dead) this.pending.delete(key)
+    }
   }
 
   /** Send the card and await the matching card action (or timeout). */
   roundTrip(chatId, actionId, kind, request, card) {
     return new Promise(resolve => {
       const entry = { resolve, kind, request, dead: false }
+      this.evictDeadPending()
       this.pending.set(actionId, entry)
       this.lark.sendJson(chatId, 'interactive', card).catch(error => {
         this.logger?.warn?.(`feishu-gateway: card send failed: ${String(error)}`)
@@ -83,8 +113,9 @@ export class GatewayAnswerer {
     if (entry !== undefined) {
       entry.dead = true
       entry.resolve({ timedOut: true })
-      // keep the entry so a late click can still route to userQuestions.answer
-      entry.late = { callId: entry.request.callId, agent: entry.request.agent }
+      // keep the entry so a late click can still route to userQuestions.answer;
+      // callId lives at request.wait.callId in the real event shape
+      entry.late = { callId: entry.request.wait?.callId ?? entry.request.callId, agent: entry.request.agent }
     }
   }
 
@@ -96,14 +127,22 @@ export class GatewayAnswerer {
     if (entry === undefined) return undefined
     if (entry.dead) {
       // late answer: the waterfall already closed — route via userQuestions.answer
-      if (entry.kind === 'question' && entry.late !== undefined && this.userQuestions !== undefined) {
+      if (entry.kind === 'question' && entry.late !== undefined && entry.late.callId !== undefined && this.userQuestions !== undefined) {
         const question = entry.request.questions?.[0]
         const label = question?.options?.[value.choice]?.label ?? ''
         await this.userQuestions.answer(entry.late.agent, entry.late.callId, {
-          answers: [{ questionId: value.questionId, selectedLabels: [label] }],
+          answers: [{ id: question?.id ?? value.questionId, selected: [label] }],
         })
+      } else {
+        this.logger?.debug?.(`feishu-gateway: dropping late card click (${entry.kind}) for ${String(value.actionId)} — window already closed`)
       }
       this.pending.delete(value.actionId)
+      return undefined
+    }
+    // Approval clicks outside the card vocabulary are ignored (logged), so a
+    // stale card cannot inject a rogue outcome; the entry stays answerable.
+    if (entry.kind === 'approval' && !OUTCOMES.has(value.outcome)) {
+      this.logger?.debug?.(`feishu-gateway: ignoring approval outcome ${JSON.stringify(value.outcome)} for ${String(value.actionId)} — not in card vocabulary`)
       return undefined
     }
     this.pending.delete(value.actionId)
