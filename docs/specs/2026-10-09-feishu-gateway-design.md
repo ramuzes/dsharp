@@ -54,7 +54,7 @@
 
 **模块划分**（bundle 内部，均为纯函数或薄状态类，可独立单测）：
 
-- **lark-client**：飞书 API 薄封装——tenant_access_token 获取与缓存（TTL 2h、剩余 <30min 刷新）、WebSocket 长连接（心跳/重连、事件分发）、发消息（`/im/v1/messages`、reply）、卡片回调接收。不引入官方 SDK，裸 HTTP + WebSocket 实现。
+- **lark-client**：飞书 API 封装——基于官方 Node SDK（`@larksuiteoapi/node-sdk`，本 bundle 唯一运行时依赖，纯 JS 无构建脚本）：`WSClient` 长连接（事件分发、心跳/重连内置）、`Client` API 调用（token 管理 SDK 内置）、发消息/回复。WebSocket 长连接的线缆协议（端点协商、加密、心跳）为 SDK 私有、无公开规范，这是引入 SDK 的原因（见 ADR 0003）。
 - **router**：绑定存储。持久化结构按 chat 组织：`{ chatId, workspaceId, activeSessionId, sessionHistory: [{sessionId, title}], updatedAt }`，经 dsh host 的 storage domain 设施持久化。切换 = 改指针 + 旧会话入历史。
 - **commands**：斜杠命令解析（`/ws`、`/session`、`/model`、`/status`、`/stop`、`/help`），子命令各自映射到 router / agents / model-selection 的调用。命令以外的文本视为任务消息。
 - **driver**：入站消息 → 无绑定时引导用户 `/ws use`；有绑定时 `agents.resume(activeSessionId)` + `followup`（首次走 create-with-workspace 流程，复用 webhook 模板的编排：workspace → agent → attachSession → followup）。出站：监听全局 `session/event`，按事件来源过滤出本网关管理的会话，回合结束时取最终 assistant 回复发飞书；`workspace/changes` 事件驱动改动摘要。
