@@ -15,15 +15,18 @@ dsh plugin --profile <name> add /path/to/dsharp/packages/feishu-gateway
 
 ## 配置
 
-环境层（`~/.dsh/.env` 或调用目录 `.env`），或 Plugins 页面表单（优先）：
+在 Web GUI 的 **Plugins 页面表单**（由 Config schema 自动生成）配置：
 
-```sh
-FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=xxx
-FEISHU_DOMAIN=https://open.feishu.cn   # 海外用 https://open.larksuite.com
-```
+| 字段 | 说明 |
+|---|---|
+| `appId` | 飞书自建应用 App ID（`cli_` 开头） |
+| `appSecretEnv` | 凭证引用（credential-ref）：secret 存放的环境变量名，默认 `FEISHU_APP_SECRET` |
+| `domain` | `https://open.feishu.cn`（海外用 `https://open.larksuite.com`） |
 
-未配置凭证时插件静默 inactive（日志提示一次）。
+**secret 本身不进配置层**：`appSecretEnv` 指向的凭证经 dsh 的
+credentials 服务解析（与内置模型路由同 seam）——启动环境里 export
+`FEISHU_APP_SECRET=xxx`，或存入凭证存储。未解析到时插件静默 inactive
+（日志提示一次并指明缺哪个引用）。
 
 ## 飞书开发者后台 checklist
 

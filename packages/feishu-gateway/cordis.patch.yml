@@ -1,10 +1,12 @@
 # dsh-feishu-gateway bundle layer: one row mounting the Feishu gateway.
-# Credentials default from the environment; values saved through the Plugins
-# page land in a later layer and win.
+# Configuration is the Plugins-page form generated from the Config schema:
+# appId / domain are plain fields; appSecretEnv is a credential-ref resolved
+# through the credentials service (launch environment or credential store),
+# so the secret never lands in a patch layer.
 - insert:
     - id: feishu-gateway
       name: dsh-feishu-gateway
       config:
-        appId: !!js "process.env.FEISHU_APP_ID ?? ''"
-        appSecret: !!js "process.env.FEISHU_APP_SECRET ?? ''"
-        domain: !!js "process.env.FEISHU_DOMAIN ?? 'https://open.feishu.cn'"
+        appId: ''
+        appSecretEnv: FEISHU_APP_SECRET
+        domain: https://open.feishu.cn

@@ -85,27 +85,34 @@ export const Config = RowConfig
 
 /**
  * Mount the gateway. Requires the host services the driver consumes; stays
- * inert with one log line when credentials are not configured.
+ * inert with one log line when credentials are not configured. The secret is
+ * a credential-ref (env-var name) resolved through `ctx.credentials` — the
+ * same seam the built-in model routes use — so it is read from the launch
+ * environment or the credential store, never the patch layer.
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ appId?: unknown, appSecret?: unknown, domain?: unknown, commandPrefix?: unknown, messageChunkLimit?: unknown }} config
+ * @param {{ appId?: unknown, appSecretEnv?: unknown, domain?: unknown, commandPrefix?: unknown, messageChunkLimit?: unknown }} config
  */
 export function apply(ctx, config) {
   const appId = readConfigString(config.appId)
-  const appSecret = readConfigString(config.appSecret)
-  if (appId === '' || appSecret === '') {
-    ctx.logger.info?.('feishu-gateway: FEISHU_APP_ID/FEISHU_APP_SECRET not configured — gateway inactive')
-    return
-  }
+  const appSecretEnv = readConfigString(config.appSecretEnv) || 'FEISHU_APP_SECRET'
   const resolved = {
     appId,
-    appSecret,
     domain: readConfigString(config.domain) || 'https://open.feishu.cn',
     commandPrefix: readConfigString(config.commandPrefix) || '/',
     messageChunkLimit: Number(config.messageChunkLimit) > 0 ? Number(config.messageChunkLimit) : 8000,
   }
 
-  ctx.inject(['agents', 'workspaceRegistry', 'apiSessions', 'workspaceChanges', 'llm'], (scope) => {
-    boot(scope, resolved).catch(e => ctx.logger?.warn?.(`feishu-gateway: boot failed: ${String(e)}`))
+  ctx.inject(['credentials', 'agents', 'workspaceRegistry', 'apiSessions', 'workspaceChanges', 'llm'], async (scope) => {
+    const credential = await scope.credentials.resolve(appSecretEnv)
+    const appSecret = credential?.value ?? ''
+    if (appId === '' || appSecret === '') {
+      scope.logger.info?.(
+        `feishu-gateway: appId not set or credential "${appSecretEnv}" unresolved — gateway inactive. `
+        + 'Set appId on the Plugins page form and store the secret through the credentials service (or export it).',
+      )
+      return
+    }
+    await boot(scope, { ...resolved, appSecret }).catch(e => ctx.logger?.warn?.(`feishu-gateway: boot failed: ${String(e)}`))
   })
 }
 
