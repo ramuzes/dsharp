@@ -4,9 +4,19 @@
   "description": "Feishu (Lark) bot gateway for dsh: p2p messages drive bound workspace sessions; questions/approvals round-trip as interactive cards",
   "type": "module",
   "main": "index.js",
-  "files": ["index.js", "lib", "cordis.patch.yml", "README.md"],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "files": ["index.js", "lib", "client.js", "cordis.patch.yml", "README.md"],
   "scripts": { "test": "node --test \"tests/*.spec.js\"" },
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-client-ui-settings"]
+    }
+  },
   "dependencies": { "@larksuiteoapi/node-sdk": "^1.44.0" },
   "peerDependencies": { "@deepseek-ai/schemastery": "*", "@deepseek-ai/dsh-storage-domain": "*" },
   "devDependencies": { "@deepseek-ai/schemastery": "*" }
