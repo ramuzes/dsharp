@@ -13,9 +13,14 @@
 dsh plugin --profile <name> add /path/to/dsharp/packages/feishu-gateway
 ```
 
+> **升级注意**：client module system 会把「某 Loader 行不是 client 包」的判定
+> 缓存到 host 重启为止。若先安装过不含 browser 半边的旧版本，升级后必须
+> **重启 dsh host** 并刷新页面，Plugins 页的配置卡片才会出现；全新安装
+> （host 在安装后启动/重载）不受影响。
+
 ## 配置
 
-在 Web GUI 的 **Plugins 页面表单**（由 Config schema 自动生成）配置：
+在 Web GUI 的 **Plugins 页面**（bundle 卡片的配置表单，由 browser 半边注册）配置：
 
 | 字段 | 说明 |
 |---|---|
