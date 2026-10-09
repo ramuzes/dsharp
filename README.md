@@ -11,6 +11,7 @@ no build step, so no `allowBuilds` authorization is needed.
 |---|---|
 | [`packages/workspace-env`](packages/workspace-env) | Keep uv / Go toolchain cache writes inside the `workspace-write` sandbox (workspace-local `.uv-cache/`, `.go-cache/`) |
 | [`packages/airboard`](packages/airboard) | Read-only AirBoard viewer for the web GUI: a right-Sidebar tab over a host-side `/airboard` proxy (configurable service address + token) |
+| [`packages/feishu-gateway`](packages/feishu-gateway) | Feishu (Lark) bot gateway: bind a p2p bot chat to a workspace session — messages run tasks, questions/approvals round-trip as interactive cards |
 
 ## Install from this repo
 
