@@ -48,6 +48,7 @@ function makeCtx() {
   function makeAgent(opts) {
     const id = opts.sessionId ?? `s${++seq}`
     return {
+      createdWith: opts,
       status: 'idle',
       session: { id, header: { cwd: opts.meta?.cwd ?? '/tmp/demo' }, title: () => `session ${id}`, lastAssistantText: () => `done: ${id}` },
       followuped: [],
@@ -118,6 +119,35 @@ test('switch guard blocks /session new while running', async () => {
   ctx.agents.get(binding.activeSessionId).status = 'running'
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/session new' })
   assert.match(JSON.stringify(sent), /\/stop/)
+})
+
+test('openSession marks the created session with the feishu source', async () => {
+  const ctx = makeCtx()
+  const { driver } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
+  const binding = await driver.router.get('oc_1')
+  const agent = ctx.agents.get(binding.activeSessionId)
+  assert.deepEqual(agent.createdWith.meta.source, { kind: 'feishu', chatId: 'oc_1' })
+  assert.deepEqual(agent.session.feishuSource, { chatId: 'oc_1' })
+})
+
+test('model card action while running is rejected with the /stop hint', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
+  const binding = await driver.router.get('oc_1')
+  ctx.agents.get(binding.activeSessionId).status = 'running'
+  let selectModelCalls = 0
+  ctx.apiSessions.selectModel = async () => { selectModelCalls++ }
+  await driver.handleCardAction({
+    kind: 'card-action', actionId: 'a',
+    value: { actionId: 'a', kind: 'model', provider: 'deepseek', model: 'deepseek-chat' },
+    messageId: 'om_c', chatId: 'oc_1', operatorOpenId: 'ou_a',
+  })
+  assert.match(JSON.stringify(sent), /\/stop/)
+  assert.equal(selectModelCalls, 0)
 })
 
 test('diff card action returns the file diff', async () => {

@@ -163,6 +163,10 @@ export class GatewayDriver {
         return void this.sendStatus(chatId)
       }
       if (value.kind === 'model') {
+        // Re-guard at press time: the card may be pressed long after it was
+        // rendered, and a run may have started since (TOCTOU).
+        const guard = guardDecision({ running: await this.isRunning(chatId) })
+        if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
         const binding = await this.router.get(chatId)
         await this.selectModel(chatId, binding.activeSessionId, { provider: value.provider, model: value.model })
         return void this.sendStatus(chatId)
@@ -209,9 +213,12 @@ export class GatewayDriver {
   }
 
   async openSession(chatId, binding) {
+    // SPEC: 插件创建的会话用 source kind 'feishu' 标记 — carry the origin in
+    // create meta and mirror it on the session so answerer routing can read it.
     const { agent } = await this.ctx.agents.create({
-      meta: { cwd: binding.workspacePath },
+      meta: { cwd: binding.workspacePath, source: { kind: FEISHU_SOURCE, chatId } },
     })
+    agent.session.feishuSource = { chatId }
     this.ctx.workspaceRegistry.attachSession?.(binding.workspaceId, agent.session.id)
     await this.router.setActive(chatId, agent.session.id, agent.session.title?.())
     return agent
