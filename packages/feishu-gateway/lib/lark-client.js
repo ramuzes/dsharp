@@ -1,0 +1,61 @@
+/**
+ * Outbound Feishu messaging over the official SDK client, serialized per chat
+ * (Feishu caps one bot at 5 QPS to the same chat) and always carrying the
+ * optional uuid idempotency parameter.
+ */
+
+/** Read a Config field the Loader may hand as a volatile wrapper or plain value. */
+export function readConfigString(value) {
+  const raw = typeof value?.get === 'function' ? value.get() : value
+  return typeof raw === 'string' ? raw : ''
+}
+
+export class LarkClient {
+  /** @param {{ sdkClient: any, logger?: any, sendGapMs?: number }} options */
+  constructor({ sdkClient, logger, sendGapMs = 250 }) {
+    this.sdk = sdkClient
+    this.logger = logger
+    this.sendGapMs = sendGapMs
+    /** @type {Map<string, Promise<void>>} per-chat send chains */
+    this.queues = new Map()
+  }
+
+  /** Run one send serialized per chat, with a small gap between sends. */
+  enqueue(chatId, run) {
+    const prev = this.queues.get(chatId) ?? Promise.resolve()
+    const next = prev.then(run, run)
+    const drained = next.then(
+      () => { if (this.queues.get(chatId) === drained) this.queues.delete(chatId) },
+      () => {},
+    )
+    this.queues.set(chatId, drained)
+    return next
+  }
+
+  async create(chatId, msgType, contentObj, uuid) {
+    await this.enqueue(chatId, async () => {
+      if (this.sendGapMs > 0) await new Promise(r => setTimeout(r, this.sendGapMs))
+      await this.sdk.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify(contentObj), ...(uuid ? { uuid } : {}) },
+      })
+    })
+  }
+
+  /** Send a plain text message. */
+  async sendText(chatId, text, uuid) { return this.create(chatId, 'text', { text }, uuid) }
+
+  /** Send a msg_type with a JSON content object (post / interactive / …). */
+  async sendJson(chatId, msgType, contentObj, uuid) { return this.create(chatId, msgType, contentObj, uuid) }
+
+  /** Reply to one message id. */
+  async reply(messageId, msgType, contentObj, uuid) {
+    await this.enqueue(`reply:${messageId}`, async () => {
+      if (this.sendGapMs > 0) await new Promise(r => setTimeout(r, this.sendGapMs))
+      await this.sdk.im.v1.message.reply({
+        path: { message_id: messageId },
+        data: { msg_type: msgType, content: JSON.stringify(contentObj), ...(uuid ? { uuid } : {}) },
+      })
+    })
+  }
+}
