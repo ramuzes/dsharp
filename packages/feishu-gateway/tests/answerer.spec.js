@@ -14,6 +14,9 @@ function makeAnswerer({ maxPending } = {}) {
   const answerer = new GatewayAnswerer({
     lark, config: {}, logger: { debug: m => debug.push(m), warn: () => {} },
     makeActionId: () => `act_${++n}`,
+    // The load-bearing routing path: the host exposes no
+    // session.lastUserSource(); our own router bindings map sessionId → chatId.
+    resolveChat: sessionId => (sessionId === 's1' ? 'oc_1' : undefined),
     ...(maxPending === undefined ? {} : { maxPending }),
   })
   return { answerer, sent, debug }
@@ -23,9 +26,29 @@ function feishuRequest(questions) {
   return {
     questions,
     wait: { callId: 'call_1', timed: true },
-    agent: { session: { id: 's1', lastUserSource: () => ({ kind: 'feishu', chatId: 'oc_1' }) } },
+    agent: { session: { id: 's1' } },
   }
 }
+
+test('routes questions without any host source field via resolveChat (binding lookup)', async () => {
+  const { answerer, sent } = makeAnswerer()
+  const request = feishuRequest([{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }])
+  const answerPromise = answerer.handleUserQuestions(request, async () => { throw new Error('must not delegate') })
+  await Promise.resolve()
+  assert.ok(sent.some(s => s.type === 'interactive' && /Proceed\?/.test(JSON.stringify(s.content))), 'card went to the bound chat')
+  await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'answer', questionId: 'q1', choice: 0 } })
+  assert.deepEqual((await answerPromise).answers, [{ id: 'q1', selected: ['Yes'] }])
+})
+
+test('approvals without any host source field also route via resolveChat', async () => {
+  const { answerer, sent } = makeAnswerer()
+  const request = { prompt: 'rm -rf', agent: { session: { id: 's1' } } }
+  const outcomePromise = answerer.handleApproval(request, async () => { throw new Error('must not delegate') })
+  await Promise.resolve()
+  assert.ok(sent.some(s => /允许一次/.test(JSON.stringify(s.content))))
+  await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'approval', outcome: 'deny' } })
+  assert.equal(await outcomePromise, 'rejected')
+})
 
 test('routes feishu-origin questions to a card and resolves on click', async () => {
   const { answerer, sent } = makeAnswerer()
@@ -43,7 +66,8 @@ test('routes feishu-origin questions to a card and resolves on click', async () 
 
 test('non-feishu sessions delegate via next()', async () => {
   const { answerer, sent } = makeAnswerer()
-  const request = { questions: [{ id: 'q1', question: 'x', options: [] }], agent: { session: { id: 's9', lastUserSource: () => ({ kind: 'web' }) } } }
+  // s9 has no router binding and no host source field: must delegate
+  const request = { questions: [{ id: 'q1', question: 'x', options: [] }], agent: { session: { id: 's9' } } }
   const result = await answerer.handleUserQuestions(request, async () => 'delegated')
   assert.equal(result, 'delegated')
   assert.equal(sent.length, 0)
@@ -69,7 +93,8 @@ test('late answer after window close goes through userQuestions.answer', async (
 
 test('approval card values map to DSH ApprovalOutcome vocabulary', async () => {
   const { answerer, sent } = makeAnswerer()
-  const request = { prompt: 'rm -rf', agent: { session: { id: 's1', lastUserSource: () => ({ kind: 'feishu', chatId: 'oc_1' }) } } }
+  // s2 has no router binding: the lastUserSource read stays as the secondary signal
+  const request = { prompt: 'rm -rf', agent: { session: { id: 's2', lastUserSource: () => ({ kind: 'feishu', chatId: 'oc_1' }) } } }
   const outcomePromise = answerer.handleApproval(request, async () => 'delegated')
   await Promise.resolve()
   assert.ok(sent.some(s => /允许一次/.test(JSON.stringify(s.content))))

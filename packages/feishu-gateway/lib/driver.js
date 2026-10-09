@@ -3,11 +3,69 @@
  * Session orchestration: inbound messages and card actions in, assistant
  * output and previews out. Owns no transport — the caller wires normalized
  * events to handleInbound/handleCardAction/onSessionEvent.
+ *
+ * Host API surface this module relies on (verified against the dsh checkout):
+ * - Agent.followup(input: UserMessage) / Agent.steer(input: UserMessage)
+ *   (packages/core/agent-loop/src/agent.ts)
+ * - Agent.cancel(cause: AgentCancelCause) with cause { kind: 'user' }
+ *   (packages/core/agent-loop/src/agent.ts)
+ * - Session.deriveMessages(): Message[] and Session.requestHeader()
+ *   (packages/core/session/src/index.ts)
+ * - ctx.sessionTitle.get(session) → { title } snapshot
+ *   (packages/session/session-title/src/index.ts)
+ * - ctx.workspaceChanges.summary(sessionId, seq) /
+ *   .diff(sessionId, seq, index) (packages/deliverables/workspace-changes/src/types.ts)
  */
+import { randomUUID } from 'node:crypto'
 import { parseCommand, guardDecision, translateGuardError, HELP_TEXT } from './commands.js'
-import { formatAndSendText, buildStatusCard, renderChangesCard, renderDiffMessage, buildPostContent } from './formatter.js'
+import { formatAndSendText, buildStatusCard, renderChangesCard, renderDiffMessage, renderDiffBody, buildPostContent } from './formatter.js'
 
 const FEISHU_SOURCE = 'feishu'
+
+/**
+ * The real createUserMessage from '@deepseek-ai/dsh-llm' when the host peer
+ * package resolves (it does inside dsh; webhook src/session.ts uses it). The
+ * local fallback replicates its exact output shape: a frozen message with a
+ * fresh uuid identity, role 'user', content blocks, and the source object.
+ */
+let hostCreateUserMessage = undefined
+import('@deepseek-ai/dsh-llm')
+  .then(m => { if (typeof m?.createUserMessage === 'function') hostCreateUserMessage = m.createUserMessage })
+  .catch(() => { /* standalone/test context: the local fallback below is used */ })
+
+/** Build the UserMessage object followup/steer expect (webhook template shape). */
+function makeUserMessage(text, source) {
+  const content = [{ type: 'text', text }]
+  if (hostCreateUserMessage !== undefined) return hostCreateUserMessage({ content, source })
+  return Object.freeze({
+    id: randomUUID(),
+    role: 'user',
+    content: Object.freeze([{ ...content[0] }]),
+    source,
+  })
+}
+
+/**
+ * The final assistant text of a turn, read from the REAL session surface:
+ * deriveMessages() returns the model-visible Message[] in order, so the last
+ * assistant message's text blocks are the turn's answer. `event` (turn/end)
+ * carries only { turn, reason } — no message payload — so the session is the
+ * source. Graceful '' when the surface is unavailable or holds no assistant
+ * message.
+ */
+export function lastAssistantText(session, _event) {
+  const messages = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : undefined
+  if (!Array.isArray(messages)) return ''
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message?.role !== 'assistant') continue
+    return (message.content ?? [])
+      .filter(block => block?.type === 'text')
+      .map(block => block.text)
+      .join('')
+  }
+  return ''
+}
 
 export class GatewayDriver {
   /** @param {{ ctx: any, lark: any, router: any, config: any, logger?: any, makeActionId?: () => string, answererCallback?: Function, listBindings?: () => Iterable<any> }} options */
@@ -41,7 +99,11 @@ export class GatewayDriver {
         case 'status': return void this.sendStatus(chatId)
         case 'stop': {
           const agent = await this.activeAgent(chatId)
-          agent?.interrupt?.()
+          // Real cancellation API (agent-loop src/agent.ts): cancel(cause, options).
+          // interrupt() stays only as a fallback guard for agents without it.
+          if (agent === undefined) return void this.sendStatus(chatId)
+          if (typeof agent.cancel === 'function') agent.cancel({ kind: 'user' })
+          else agent?.interrupt?.()
           return void this.sendStatus(chatId)
         }
         case 'ws': return this.runWs(cmd, message)
@@ -152,8 +214,14 @@ export class GatewayDriver {
     try {
       if (value.kind === 'diff') {
         const binding = await this.router.get(chatId)
-        const diff = await this.ctx.workspaceChanges.diff(binding?.activeSessionId, 0, 0)
-        return void this.lark.sendJson(chatId, 'post', renderDiffMessage(value.path, diff?.diff ?? String(diff)))
+        const sessionId = binding?.activeSessionId
+        if (sessionId === undefined) return void this.lark.sendText(chatId, '当前没有活动会话。')
+        // Real host surface: diff(sessionId, seq, index) — the card carried the
+        // workspace/changes event seq and the file's index in the summary.
+        const result = await this.ctx.workspaceChanges.diff(sessionId, value.seq ?? 0, value.index ?? 0)
+        if (result?.kind === 'binary') return void this.lark.sendText(chatId, `「${value.path}」是二进制文件，无法展示文本 diff。`)
+        if (result?.kind === 'oversized') return void this.lark.sendText(chatId, `「${value.path}」过大，diff 已省略。`)
+        return void this.lark.sendJson(chatId, 'post', renderDiffMessage(value.path, renderDiffBody(result)))
       }
       if (value.kind === 'resume') {
         const guard = guardDecision({ running: await this.isRunning(chatId) })
@@ -185,12 +253,11 @@ export class GatewayDriver {
     const binding = [...await this.allBindings()].find(b => b.activeSessionId === session.id)
     if (binding === undefined) return
     if (event.type !== 'turn/end') return
-    const agent = this.ctx.agents.get(session.id)
-    const text = agent?.session?.lastAssistantText?.() ?? ''
+    const text = lastAssistantText(session, event)
     if (text !== '') await formatAndSendText(this.lark, binding.chatId, text, { chunkLimit: this.config.messageChunkLimit })
     const summary = this.ctx.workspaceChanges.summary?.(session.id, event.seq)
     if (summary !== undefined && summary.files?.length > 0) {
-      await this.lark.sendJson(binding.chatId, 'interactive', renderChangesCard(summary, () => this.makeActionId()))
+      await this.lark.sendJson(binding.chatId, 'interactive', renderChangesCard(summary, () => this.makeActionId(), event.seq))
     }
   }
 
@@ -214,13 +281,12 @@ export class GatewayDriver {
 
   async openSession(chatId, binding) {
     // SPEC: 插件创建的会话用 source kind 'feishu' 标记 — carry the origin in
-    // create meta and mirror it on the session so answerer routing can read it.
+    // create meta (informative); answerer routing reads the router bindings.
     const { agent } = await this.ctx.agents.create({
       meta: { cwd: binding.workspacePath, source: { kind: FEISHU_SOURCE, chatId } },
     })
-    agent.session.feishuSource = { chatId }
     this.ctx.workspaceRegistry.attachSession?.(binding.workspaceId, agent.session.id)
-    await this.router.setActive(chatId, agent.session.id, agent.session.title?.())
+    await this.router.setActive(chatId, agent.session.id, this.ctx.sessionTitle?.get?.(agent.session)?.title)
     return agent
   }
 
@@ -234,10 +300,10 @@ export class GatewayDriver {
     if (agent === undefined) {
       agent = await this.openSession(message.chatId, binding)
     } else if (agent.status === 'running') {
-      agent.steer?.(message.text, source)
+      agent.steer?.(makeUserMessage(message.text, source))
       return
     }
-    agent.followup(message.text, source)
+    agent.followup(makeUserMessage(message.text, source))
   }
 
   async selectModel(chatId, sessionId, selection) {
@@ -248,13 +314,22 @@ export class GatewayDriver {
     const binding = await this.router.get(chatId)
     if (binding === undefined) return void this.lark.sendText(chatId, '尚未绑定工作区。/ws use <名称>')
     const agent = binding.activeSessionId !== undefined ? this.ctx.agents.get(binding.activeSessionId) : undefined
+    const session = agent?.session
+    // Real surfaces only: ctx.sessionTitle.get(session) for the title and the
+    // session's logged request header (Session.requestHeader()) for the model.
+    // No session.title()/currentModel()/pendingModel() exists on the host.
+    const titleSnapshot = typeof this.ctx.sessionTitle?.get === 'function' ? this.ctx.sessionTitle.get(session) : undefined
+    const header = typeof session?.requestHeader === 'function' ? session.requestHeader() : undefined
+    const model = header?.config?.provider !== undefined && header?.config?.model !== undefined
+      ? `${header.config.provider}/${header.config.model}`
+      : '默认'
     await this.lark.sendJson(chatId, 'interactive', buildStatusCard({
       workspaceTitle: binding.workspaceTitle,
       workspacePath: binding.workspacePath,
-      sessionTitle: agent?.session?.title?.() ?? binding.activeSessionTitle ?? '（无会话）',
+      sessionTitle: titleSnapshot?.title ?? binding.activeSessionTitle ?? '（无会话）',
       sessionId: binding.activeSessionId ?? '（无）',
-      model: agent?.session?.currentModel?.() ?? '默认',
-      modelPending: agent?.session?.pendingModel?.() === true,
+      model,
+      modelPending: false,
       running: agent?.status === 'running',
     }))
   }

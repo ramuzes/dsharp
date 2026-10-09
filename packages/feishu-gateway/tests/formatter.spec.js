@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   hasMarkdown, chunkText, buildPostContent, stripMarkdown, formatAndSendText,
-  buildStatusCard, buildQuestionCard, buildApprovalCard, renderChangesCard, renderDiffMessage,
+  buildStatusCard, buildQuestionCard, buildApprovalCard, renderChangesCard, renderDiffMessage, renderDiffBody,
 } from '../lib/formatter.js'
 
 test('hasMarkdown detects markdown hints', () => {
@@ -99,12 +99,27 @@ test('buildApprovalCard has four outcomes', () => {
   for (const label of ['允许一次', '本会话允许', '总是允许', '拒绝']) assert.match(flat, new RegExp(label))
 })
 
-test('renderChangesCard lists files with per-file diff buttons', () => {
-  const card = renderChangesCard({ turn: 3, total: 12, added: 40, deleted: 2, files: [{ path: 'a.js', added: 30, deleted: 1 }, { path: 'b.md', added: 10, deleted: 1 }] }, () => 'act_x')
+test('renderChangesCard lists files and threads seq + per-file index into diff buttons', () => {
+  const card = renderChangesCard({ turn: 3, total: 12, added: 40, deleted: 2, files: [{ path: 'a.js', added: 30, deleted: 1 }, { path: 'b.md', added: 10, deleted: 1 }] }, () => 'act_x', 42)
   const flat = JSON.stringify(card)
   assert.match(flat, /a\.js/)
   assert.match(flat, /b\.md/)
   assert.match(flat, /"kind":"diff"/)
+  const actions = card.elements.find(e => e.tag === 'action').actions
+  assert.deepEqual(actions.map(a => a.value), [
+    { actionId: 'act_x', kind: 'diff', path: 'a.js', seq: 42, index: 0 },
+    { actionId: 'act_x', kind: 'diff', path: 'b.md', seq: 42, index: 1 },
+  ])
+})
+
+test('renderDiffBody renders hunk headers and prefixed lines from a WorkspaceFileDiff', () => {
+  const body = renderDiffBody({
+    kind: 'text', path: 'a.js', display: 'a.js', before: true, after: true, coarse: false,
+    hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
+  })
+  assert.match(body, /@@ -1,1 \+1,1 @@/)
+  assert.match(body, /-old/)
+  assert.match(body, /\+new/)
 })
 
 test('renderDiffMessage wraps unified diff in a code block', () => {

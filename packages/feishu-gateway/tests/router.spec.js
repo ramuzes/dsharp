@@ -42,3 +42,13 @@ test('get on unknown chat is undefined', async () => {
   await router.load()
   assert.equal(await router.get('oc_x'), undefined)
 })
+
+test('chatForSession resolves the chat whose active session matches', async () => {
+  const router = new BindingRouter({ persist: memoryPersist() })
+  await router.load()
+  await router.bind('oc_1', { workspaceId: 'w1', workspaceTitle: 'demo', workspacePath: '/tmp/demo' })
+  await router.bind('oc_2', { workspaceId: 'w1', workspaceTitle: 'demo', workspacePath: '/tmp/demo' })
+  await router.setActive('oc_2', 's9', 'x')
+  assert.equal(router.chatForSession('s9'), 'oc_2')
+  assert.equal(router.chatForSession('sX'), undefined, 'unbound session id resolves to undefined')
+})

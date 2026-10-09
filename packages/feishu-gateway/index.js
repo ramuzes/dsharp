@@ -120,7 +120,12 @@ async function boot(scope, resolved) {
   const router = new BindingRouter({ persist: createDomainPersist(scope) })
   await router.load()
 
-  const answerer = new GatewayAnswerer({ lark, config: resolved, logger: scope.logger, makeActionId })
+  const answerer = new GatewayAnswerer({
+    lark, config: resolved, logger: scope.logger, makeActionId,
+    // Feishu routing is decided by OUR durable state: the router's bindings
+    // map activeSessionId → chatId (the host has no session source field).
+    resolveChat: sessionId => router.chatForSession(sessionId),
+  })
   // The late-answer channel: without the service, late card clicks after the
   // timed window closes cannot reach userQuestions.answer.
   if (scope.userQuestions !== undefined) answerer.setUserQuestionsService(scope.userQuestions)

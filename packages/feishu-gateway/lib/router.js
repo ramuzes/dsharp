@@ -65,4 +65,16 @@ export class BindingRouter {
 
   /** Session history for /session resume, most recent first. */
   async history(chatId) { return this.bindings.get(chatId)?.sessionHistory ?? [] }
+
+  /**
+   * The chat whose Active Session is sessionId, or undefined. The answerer's
+   * load-bearing feishu routing path: the host exposes no per-session source
+   * field, so our own durable bindings decide which questions round-trip.
+   */
+  chatForSession(sessionId) {
+    for (const binding of this.bindings.values()) {
+      if (binding.activeSessionId === sessionId) return binding.chatId
+    }
+    return undefined
+  }
 }

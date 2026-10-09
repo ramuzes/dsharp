@@ -114,18 +114,33 @@ export function buildApprovalCard(prompt, actionId) {
   ])
 }
 
-/** End-of-turn workspace changes summary with per-file diff buttons. */
-export function renderChangesCard(summary, makeActionId) {
+/**
+ * End-of-turn workspace changes summary with per-file diff buttons. `seq` is
+ * the workspace/changes event sequence the summary came from; each button
+ * carries it plus the file's index so the driver can call the real host
+ * `workspaceChanges.diff(sessionId, seq, index)`.
+ */
+export function renderChangesCard(summary, makeActionId, seq) {
   const fileLines = (summary.files ?? []).map(f =>
     `\`${f.path}\` +${f.added ?? 0} / -${f.deleted ?? 0}`)
   const elements = [
     mdElement([`第 ${summary.turn} 回合改动：${summary.files?.length ?? 0} 个文件，+${summary.added ?? 0} / -${summary.deleted ?? 0}`,
       ...fileLines].join('\n')),
-    { tag: 'action', actions: (summary.files ?? []).map(f =>
-      button(`diff ${f.path}`, { actionId: makeActionId(f.path), kind: 'diff', path: f.path })) },
+    { tag: 'action', actions: (summary.files ?? []).map((f, index) =>
+      button(`diff ${f.path}`, { actionId: makeActionId(f.path), kind: 'diff', path: f.path, seq, index })) },
     { tag: 'hr' },
   ]
   return card('改动摘要', elements)
+}
+
+/** Render a host WorkspaceFileDiff (text kind) as a unified-diff body string. */
+export function renderDiffBody(result) {
+  if (result?.kind === 'text') {
+    return (result.hunks ?? []).map(h =>
+      `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n${(h.lines ?? []).join('\n')}`).join('\n')
+  }
+  // Unknown/absent shape (older fakes, undefined result): stringify defensively.
+  return String(result?.diff ?? result)
 }
 
 /** One file's unified diff as a post message with a fenced code block. */

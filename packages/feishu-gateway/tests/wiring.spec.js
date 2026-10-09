@@ -61,6 +61,8 @@ test('apply wires ctx.userQuestions into the answerer (late-answer channel)', as
   const answerer = getLastAnswererForTests()
   assert.ok(answerer, 'answerer was constructed')
   assert.equal(answerer.userQuestions, userQuestions, 'setUserQuestionsService received scope.userQuestions')
+  assert.equal(typeof answerer.resolveChat, 'function', 'answerer routes through the router binding lookup')
+  assert.equal(answerer.resolveChat('no-such-session'), undefined, 'unbound session id does not resolve')
 })
 
 test('package.json declares the runtime SDK dependency and bundle patch', () => {

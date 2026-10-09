@@ -10,6 +10,12 @@ export function readConfigString(value) {
   return typeof raw === 'string' ? raw : ''
 }
 
+/** Outbound uuid counter + random suffix; ids stay far under Feishu's 50-char cap. */
+let autoUuidSeq = 0
+function nextUuid() {
+  return `fg-${(++autoUuidSeq).toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export class LarkClient {
   /** @param {{ sdkClient: any, logger?: any, sendGapMs?: number }} options */
   constructor({ sdkClient, logger, sendGapMs = 250 }) {
@@ -33,11 +39,12 @@ export class LarkClient {
   }
 
   async create(chatId, msgType, contentObj, uuid) {
+    const idempotencyKey = uuid ?? nextUuid()
     await this.enqueue(chatId, async () => {
       if (this.sendGapMs > 0) await new Promise(r => setTimeout(r, this.sendGapMs))
       await this.sdk.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
-        data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify(contentObj), ...(uuid ? { uuid } : {}) },
+        data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify(contentObj), uuid: idempotencyKey },
       })
     })
   }
@@ -50,11 +57,12 @@ export class LarkClient {
 
   /** Reply to one message id. */
   async reply(messageId, msgType, contentObj, uuid) {
+    const idempotencyKey = uuid ?? nextUuid()
     await this.enqueue(`reply:${messageId}`, async () => {
       if (this.sendGapMs > 0) await new Promise(r => setTimeout(r, this.sendGapMs))
       await this.sdk.im.v1.message.reply({
         path: { message_id: messageId },
-        data: { msg_type: msgType, content: JSON.stringify(contentObj), ...(uuid ? { uuid } : {}) },
+        data: { msg_type: msgType, content: JSON.stringify(contentObj), uuid: idempotencyKey },
       })
     })
   }

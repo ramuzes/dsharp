@@ -24,20 +24,31 @@ const OUTCOMES = new Set(Object.keys(CARD_TO_DSH))
 /** Default cap on the pending map; dead entries are evicted oldest-first. */
 const MAX_PENDING = 200
 
-/** True when the requesting agent's session belongs to this gateway. */
-function isFeishuSession(request) {
+/**
+ * The chat a request's session belongs to, or undefined when it is not ours.
+ *
+ * The load-bearing path is our own durable state: the BindingRouter maps
+ * activeSessionId → chatId (the host exposes no session.lastUserSource()).
+ * The lastUserSource read stays as a secondary signal for sessions that
+ * predate the binding lookup.
+ */
+function feishuChatOf(request, resolveChat) {
+  const chatId = resolveChat?.(request.agent?.session?.id)
+  if (typeof chatId === 'string') return chatId
   const source = request.agent?.session?.lastUserSource?.()
-  return source?.kind === 'feishu' && typeof source.chatId === 'string'
+  if (source?.kind === 'feishu' && typeof source.chatId === 'string') return source.chatId
+  return undefined
 }
 
 export class GatewayAnswerer {
-  /** @param {{ lark: any, config?: any, logger?: any, makeActionId: () => string, maxPending?: number }} options */
-  constructor({ lark, config = {}, logger, makeActionId, maxPending = MAX_PENDING }) {
+  /** @param {{ lark: any, config?: any, logger?: any, makeActionId: () => string, maxPending?: number, resolveChat?: (sessionId: string) => string | undefined }} options */
+  constructor({ lark, config = {}, logger, makeActionId, maxPending = MAX_PENDING, resolveChat }) {
     this.lark = lark
     this.config = config
     this.logger = logger
     this.makeActionId = makeActionId
     this.maxPending = maxPending
+    this.resolveChat = resolveChat
     /** @type {Map<string, { resolve: Function, kind: string, request: any }>} */
     this.pending = new Map()
     /** @type {any} */
@@ -56,8 +67,8 @@ export class GatewayAnswerer {
 
   /** user-questions waterfall: route feishu sessions to cards, else next(). */
   async handleUserQuestions(request, next) {
-    if (!isFeishuSession(request)) return next()
-    const chatId = request.agent.session.lastUserSource().chatId
+    const chatId = feishuChatOf(request, this.resolveChat)
+    if (chatId === undefined) return next()
     // v1 handles the first question only; later questions follow after answer.
     const question = request.questions?.[0]
     if (question === undefined) return next()
@@ -73,8 +84,8 @@ export class GatewayAnswerer {
 
   /** approval waterfall: route feishu sessions to an allow/deny card, else next(). */
   async handleApproval(request, next) {
-    if (!isFeishuSession(request)) return next()
-    const chatId = request.agent.session.lastUserSource().chatId
+    const chatId = feishuChatOf(request, this.resolveChat)
+    if (chatId === undefined) return next()
     const actionId = this.makeActionId()
     const outcome = await this.roundTrip(chatId, actionId, 'approval', request,
       buildApprovalCard(String(request.prompt ?? request.reason ?? '权限请求'), actionId))
