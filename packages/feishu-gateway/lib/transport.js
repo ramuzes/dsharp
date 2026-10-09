@@ -75,16 +75,20 @@ export class MessageDedup {
 
 /** Card-action dedup window against double clicks. */
 export class ActionDedup {
-  /** @param {{ windowMs?: number }} [options] */
-  constructor({ windowMs = 15 * 60_000 } = {}) {
+  /** @param {{ windowMs?: number, now?: () => number }} [options] */
+  constructor({ windowMs = 15 * 60_000, now = Date.now } = {}) {
     this.windowMs = windowMs
+    this.now = now
     /** @type {Map<string, number>} */
     this.at = new Map()
   }
 
   /** true when this actionId may proceed (first press inside the window). */
   take(actionId) {
-    const now = Date.now()
+    const now = this.now()
+    for (const [id, at] of this.at) {
+      if (now - at > this.windowMs) this.at.delete(id)
+    }
     const prev = this.at.get(actionId)
     if (prev !== undefined && now - prev < this.windowMs) return false
     this.at.set(actionId, now)
@@ -115,7 +119,9 @@ export async function startGatewayTransport({ config, handlers, logger, wsClient
     'card.action.trigger': async data => {
       const n = normalizeInboundEvent('card.action.trigger', data)
       if (n === null || !live) return
-      if (!actions.take(n.actionId)) return
+      // Key by message+action: the same actionId on two cards (or two
+      // operators) within the window must not collide.
+      if (!actions.take(`${n.messageId}:${n.actionId}`)) return
       try { await handlers.onCardAction(n) } catch (error) { logger?.warn?.(`feishu-gateway: card action handler failed: ${String(error)}`) }
     },
   }

@@ -1,7 +1,7 @@
 // tests/transport.spec.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeInboundEvent, MessageDedup, ActionDedup } from '../lib/transport.js'
+import { normalizeInboundEvent, MessageDedup, ActionDedup, startGatewayTransport } from '../lib/transport.js'
 
 const messageEvent = {
   event: {
@@ -44,4 +44,40 @@ test('ActionDedup: double click inside window is dropped', () => {
   const d = new ActionDedup({ windowMs: 60_000 })
   assert.equal(d.take('a1'), true)
   assert.equal(d.take('a1'), false)
+})
+
+test('ActionDedup prunes expired entries so the map does not grow unboundedly', () => {
+  let nowMs = 1_000
+  const clock = () => nowMs
+  const d = new ActionDedup({ windowMs: 5, now: clock })
+  assert.equal(d.take('a'), true)
+  assert.equal(d.at.size, 1)
+  nowMs = 6 // within window: still held, still blocks
+  assert.equal(d.take('a'), false)
+  assert.equal(d.at.size, 1)
+  nowMs = 1_006 // strictly past windowMs: entry is pruned on next take
+  assert.equal(d.take('b'), true)
+  assert.equal(d.at.has('a'), false)
+  assert.equal(d.at.size, 1)
+})
+
+test('card actions with same actionId but different messageIds are both dispatched', async () => {
+  let dispatcherHandlers
+  const stop = await startGatewayTransport({
+    config: { appId: 'a', appSecret: 's', domain: 'd' },
+    handlers: { onMessage: () => {}, onCardAction: n => { dispatched.push(n) } },
+    wsClientFactory: async (config, handlers) => { dispatcherHandlers = handlers; return () => {} },
+  })
+  const dispatched = []
+  const cardEvent = (messageId, operator) => ({
+    event: { operator: { open_id: operator }, action: { value: { actionId: 'q1' } }, context: { open_message_id: messageId, open_chat_id: 'oc_1' } },
+  })
+  await dispatcherHandlers['card.action.trigger'](cardEvent('om_1', 'ou_a'))
+  await dispatcherHandlers['card.action.trigger'](cardEvent('om_2', 'ou_b'))
+  assert.equal(dispatched.length, 2)
+  assert.deepEqual(dispatched.map(n => n.messageId), ['om_1', 'om_2'])
+  // Same messageId+actionId inside the window is still deduped.
+  await dispatcherHandlers['card.action.trigger'](cardEvent('om_1', 'ou_a'))
+  assert.equal(dispatched.length, 2)
+  await stop()
 })
