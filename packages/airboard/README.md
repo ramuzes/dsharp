@@ -45,17 +45,19 @@ The **Plugins** page shows the form directly on the AirBoard bundle's own page
 (the same placement as the shipped Web Search plugin): click the AirBoard card
 and edit the fields there; saves persist into the profile's `cordis.patch.yml`
 and apply live. The form is the shared staged-form pattern (`SettingsFormModel`
-from `ui-primitives`) — edits stage until you press Save, and the token is a
-write-only secret control whose literal never rides a response:
+from `ui-primitives`) — edits stage until you press Save.
 
 | Field | Default | Meaning |
 |---|---|---|
 | `baseUrl` | `http://ab.antaresy.cc` | AirBoard service origin |
-| `token` | (empty) | AirBoard access token (`abt_…`) — shown as a secret |
+| token (secret control) | — | AirBoard access token (`abt_…`); type once — stored in the dsh **credential store** under `AIRBOARD_TOKEN`, shown only as Configured / Not set |
 
-Environment fallbacks seed the row's defaults through the bundle patch layer:
-`AIRBOARD_BASE_URL`, `AIRBOARD_TOKEN` (e.g. in `~/.dsh/.env`). A value saved
-through the Plugins page wins, per the usual layer order.
+The token never lands in a patch layer or a form response: the secret control
+writes through `remote.credentials.set` (the Models-page API-key pattern), the
+Host resolves it per boot via `ctx.credentials`, and a credential update
+re-resolves live. `AIRBOARD_TOKEN` exported in the launch environment (e.g.
+`~/.dsh/.env`) works unchanged, and a legacy plaintext `token` saved in the
+profile patch is still honored as a read-only fallback.
 
 Tip: mint a **project-scoped, non-global** token on AirBoard's `/tokens` page
 for the viewer — least privilege (AirBoard tokens are not read-only; this plugin

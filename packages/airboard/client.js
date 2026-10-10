@@ -483,11 +483,14 @@ window.__ModuleLoader__.load({
 
     /**
      * The config card: shared form chrome, the baseUrl value field, and the
-     * token secret field. Everything flows through the model's injected face.
-     * @param {any} props - `view`, `t`, the face's `useConfig` hook and the staged-form actions.
+     * credentials-backed token control (writes through the credentials Remote
+     * under the reference named by `tokenEnv`; presence from
+     * CredentialInfo.configured — the literal never rides a form response or
+     * a patch layer).
+     * @param {any} props - `view`, `t`, the face's `useConfig` hook, the staged-form actions, and `storeToken`.
      */
     function AirboardConfigCard(props) {
-      const { view, t, useConfig, edit, resetField, save, discard } = props
+      const { view, t, useConfig, edit, resetField, save, discard, storeToken } = props
       const state = useConfig(snapshot => snapshot)
       if (view === 'summary') return t('config.summary')
       return h(SettingsForm, { labels: formLabels(t), state, onSave: save, onDiscard: discard },
@@ -508,46 +511,73 @@ window.__ModuleLoader__.load({
           label: t('config.token'),
           hint: t('config.tokenHint'),
           disabled: !state.writable,
-          text: state.token.text,
+          text: '',
           configured: state.tokenConfigured,
           stateLabel: state.tokenConfigured ? t('config.tokenSet') : t('config.tokenUnset'),
-          onEdit: (text) => { edit('token', text) },
+          onEdit: (text) => { storeToken?.(text) },
         }))
     }
 
     /**
-     * Build the model, its store, and the describe-derived token presence.
-     * @param {any} ctx - client context carrying configForms.
-     * @returns {{store: object, face: () => object, dispose: () => void}} the registration inputs.
+     * Build the staged model plus the credentials-backed token presence
+     * store. The token reference comes from the row's `tokenEnv` config
+     * (default AIRBOARD_TOKEN); writes go through `remote.credentials.set`
+     * and presence through `remote.credentials.describe` — the Models-page
+     * API-key pattern.
+     * @param {any} ctx - client context carrying configForms + remote.credentials.
+     * @returns {{face: () => object, dispose: () => void}} the registration inputs.
      */
     function buildConfigCard(ctx) {
       const configForm = ctx.configForms.get('airboard')
-      const describe = ctx.configForms.describe?.()
       const model = new SettingsFormModel(
         configForm,
         [settingsTextField('baseUrl')],
-        [{ field: 'token', write: (text) => configForm.set('token', text) }],
       )
-      const tokenConfigured = () => {
+      const formStore = model.bind(() => ({}))
+
+      /** The credential reference the Host resolves; `tokenEnv` names it. */
+      const refOf = () => {
+        const value = configForm.getSnapshot().value?.tokenEnv
+        return typeof value === 'string' && value !== '' ? value : 'AIRBOARD_TOKEN'
+      }
+
+      let tokenConfigured = false
+      const listeners = new Set()
+      const notify = () => { for (const listener of listeners) listener() }
+      const refresh = async () => {
         try {
-          const namespaces = describe?.getSnapshot?.()?.view?.namespaces ?? []
-          const served = namespaces.find((entry) => entry.ns === 'airboard')
-          return served?.secrets?.some((secret) => secret.path?.[0] === 'token' && secret.set) ?? false
+          const response = await ctx.remote.credentials.describe([refOf()])
+          tokenConfigured = response.ok ? (response.value?.[refOf()]?.configured ?? false) : false
         } catch {
-          return false
+          tokenConfigured = false
         }
+        notify()
       }
-      const store = model.bind(() => ({
-        ...model.shell(),
-        baseUrl: model.field('baseUrl'),
-        token: model.field('token'),
-        tokenConfigured: tokenConfigured(),
-      }))
-      return {
-        store,
-        face: () => ({ hooks: { config: store }, ...model.actions() }),
-        dispose: () => { model.dispose() },
+      const storeToken = async (text) => {
+        await ctx.remote.credentials.set(refOf(), text)
+        await refresh()
       }
+
+      const face = () => ({
+        hooks: {
+          config: {
+            getSnapshot: () => ({
+              ...model.shell(),
+              baseUrl: model.field('baseUrl'),
+              tokenConfigured,
+            }),
+            subscribe: (listener) => {
+              listeners.add(listener)
+              const offForm = formStore.subscribe(listener)
+              refresh()
+              return () => { listeners.delete(listener); offForm() }
+            },
+          },
+        },
+        ...model.actions(),
+        storeToken,
+      })
+      return { face, dispose: () => { model.dispose(); listeners.clear() } }
     }
 
     /**
@@ -731,7 +761,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight'],
+      inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight', 'remote.credentials'],
       apply(ctx) {
         const t = ctx.locale.bind(NS)
         const card = buildConfigCard(ctx)

@@ -237,3 +237,11 @@ test('Config declares the documented defaults', () => {
   // The schema document carries the secret role on the token field.
   assert.match(json, /secret/)
 })
+
+test('resolveAirboardToken prefers the credential store over the legacy config value', async () => {
+  const { resolveAirboardToken } = await import('../index.js')
+  const credentials = { resolve: async (ref) => (ref === 'AIRBOARD_TOKEN' ? { value: 'abt_stored' } : undefined) }
+  assert.equal(await resolveAirboardToken(credentials, 'AIRBOARD_TOKEN', 'abt_legacy'), 'abt_stored')
+  assert.equal(await resolveAirboardToken(undefined, 'AIRBOARD_TOKEN', 'abt_legacy'), 'abt_legacy')
+  assert.equal(await resolveAirboardToken({ resolve: async () => undefined }, 'AIRBOARD_TOKEN', ''), '')
+})

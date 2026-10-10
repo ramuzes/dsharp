@@ -86,9 +86,10 @@ export const Config = RowConfig
 /**
  * Mount the gateway. Requires the host services the driver consumes; stays
  * inert with one log line when credentials are not configured. The secret is
- * a credential-ref (env-var name) resolved through `ctx.credentials` — the
- * same seam the built-in model routes use — so it is read from the launch
- * environment or the credential store, never the patch layer.
+ * the credential reference named by `appSecretEnv` (default
+ * FEISHU_APP_SECRET), resolved through `ctx.credentials` — written by the
+ * Plugins-page secret control into the credential store, or supplied by the
+ * launch environment. It never lands in a patch layer.
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {{ appId?: unknown, appSecretEnv?: unknown, domain?: unknown, commandPrefix?: unknown, messageChunkLimit?: unknown }} config
  */
@@ -108,7 +109,7 @@ export function apply(ctx, config) {
     if (appId === '' || appSecret === '') {
       scope.logger.info?.(
         `feishu-gateway: appId not set or credential "${appSecretEnv}" unresolved — gateway inactive. `
-        + 'Set appId on the Plugins page form and store the secret through the credentials service (or export it).',
+        + 'Set appId and the App Secret on the Plugins page form.',
       )
       return
     }

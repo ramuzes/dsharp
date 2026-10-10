@@ -171,26 +171,61 @@ export function makeProxyHandler(config, options = {}) {
   }
 }
 
-/** Row configuration: the service address and the (secret) access token. */
+/** Row configuration: the service address. The access token is a credential
+ *  (AIRBOARD_TOKEN by default) resolved through `ctx.credentials` — written by
+ *  the Plugins-page secret control into the credential store, or supplied by
+ *  the launch environment; the legacy `token` field remains as a read-only
+ *  fallback for profiles that predate the credential store. */
 export const Config = Schema.object({
   baseUrl: Schema.string().default('http://ab.antaresy.cc').volatile(),
   token: Schema.string().role('secret').default('').volatile(),
+  tokenEnv: Schema.string().role('credential-ref').default('AIRBOARD_TOKEN').volatile(),
 })
 
 /**
+ * Resolve the AirBoard token: credential store first, legacy config value
+ * second. Exposed for tests.
+ * @param {{ resolve(ref: string): Promise<{ value: string } | undefined> }} credentials - the credentials service.
+ * @param {string} ref - credential reference name.
+ * @param {unknown} legacyToken - the deprecated config `token` field.
+ * @returns {Promise<string>} the token, or '' when nothing supplies one.
+ */
+export async function resolveAirboardToken(credentials, ref, legacyToken) {
+  const stored = await credentials?.resolve?.(ref)
+  if (stored?.value !== undefined && stored.value !== '') return stored.value
+  return readString(legacyToken)
+}
+
+/**
  * Mount the proxy on the Web server when one runs. `webServer` is optional so
- * the bundle stays inert in headless profiles.
+ * the bundle stays inert in headless profiles; `credentials` is resolved when
+ * present so the token follows the credential store (and the legacy config
+ * value still works where the store is absent).
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
- * @param {{ baseUrl?: unknown, token?: unknown }} config - validated row config.
+ * @param {{ baseUrl?: unknown, token?: unknown, tokenEnv?: unknown }} config - validated row config.
  */
 export function apply(ctx, config) {
-  ctx.inject(['webServer'], (webCtx) => {
+  ctx.inject(['webServer', 'credentials'], async (webCtx) => {
+    const tokenEnv = readString(config.tokenEnv) || 'AIRBOARD_TOKEN'
+    const makeResolvedHandler = async () => makeProxyHandler({
+      baseUrl: config.baseUrl,
+      token: await resolveAirboardToken(webCtx.credentials, tokenEnv, config.token),
+    })
+    let handler = await makeResolvedHandler()
+    // A credential write (the Plugins-page secret control) re-resolves the
+    // token without waiting for a profile reload.
+    const offTokenUpdates = webCtx.on('credentials/reference-updated', async (ref) => {
+      if (ref === tokenEnv) handler = await makeResolvedHandler()
+    })
     webCtx.effect(
-      () => webCtx.webServer.register({
-        kind: 'prefix',
-        path: PROXY_PREFIX,
-        handler: makeProxyHandler(config),
-      }),
+      () => {
+        const off = webCtx.webServer.register({
+          kind: 'prefix',
+          path: PROXY_PREFIX,
+          handler: (req, res) => handler(req, res),
+        })
+        return () => { off(); offTokenUpdates() }
+      },
       'dsh-airboard: read-only AirBoard proxy',
     )
   })

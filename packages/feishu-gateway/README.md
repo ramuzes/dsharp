@@ -25,13 +25,13 @@ dsh plugin --profile <name> add /path/to/dsharp/packages/feishu-gateway
 | 字段 | 说明 |
 |---|---|
 | `appId` | 飞书自建应用 App ID（`cli_` 开头） |
-| `appSecretEnv` | 凭证引用（credential-ref）：secret 存放的环境变量名，默认 `FEISHU_APP_SECRET` |
+| App Secret（secret 控件） | 填入一次即存入 dsh **凭证存储**（`FEISHU_APP_SECRET` 引用），只显示 已配置/未配置，不再回显 |
 | `domain` | `https://open.feishu.cn`（海外用 `https://open.larksuite.com`） |
 
-**secret 本身不进配置层**：`appSecretEnv` 指向的凭证经 dsh 的
-credentials 服务解析（与内置模型路由同 seam）——启动环境里 export
-`FEISHU_APP_SECRET=xxx`，或存入凭证存储。未解析到时插件静默 inactive
-（日志提示一次并指明缺哪个引用）。
+**secret 永不进 patch 层**：secret 控件经 `remote.credentials.set` 写入
+凭证存储（与 Models 页 API key 同模式），host 启动时经 `ctx.credentials`
+解析。启动环境 export `FEISHU_APP_SECRET=xxx` 同样有效（headless 场景）。
+未解析到时插件静默 inactive（日志提示一次并指明缺哪个引用）。
 
 ## 飞书开发者后台 checklist
 

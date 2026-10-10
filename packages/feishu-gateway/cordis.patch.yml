@@ -1,12 +1,11 @@
 # dsh-feishu-gateway bundle layer: one row mounting the Feishu gateway.
 # Configuration is the Plugins-page form generated from the Config schema:
-# appId / domain are plain fields; appSecretEnv is a credential-ref resolved
-# through the credentials service (launch environment or credential store),
-# so the secret never lands in a patch layer.
+# appId / domain are plain fields; appSecret is a write-through secret control
+# (typed once, stored through the shared ConfigForm, never echoed back). The
+# launch environment (FEISHU_APP_SECRET) remains a headless fallback.
 - insert:
     - id: feishu-gateway
       name: dsh-feishu-gateway
       config:
         appId: ''
-        appSecretEnv: FEISHU_APP_SECRET
         domain: https://open.feishu.cn

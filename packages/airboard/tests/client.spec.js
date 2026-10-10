@@ -202,7 +202,7 @@ function bootPlugin() {
 }
 
 /** A cordis ctx double recording every registration the plugin makes. */
-function makeCtx({ configForm, describe } = {}) {
+function makeCtx({ configForm, credentials } = {}) {
   const recorded = { tabs: [], injects: [], registers: [], namespaces: [] }
   const ctx = {
     effect(fn) { return fn() ?? undefined },
@@ -218,8 +218,11 @@ function makeCtx({ configForm, describe } = {}) {
         mutate: () => Promise.resolve(true),
         set: () => Promise.resolve(true),
       },
-      describe: () => describe ?? { getSnapshot: () => ({ view: { namespaces: [] } }) },
     },
+    remote: { credentials: credentials ?? {
+      describe: async (refs) => ({ ok: true, value: { [refs[0]]: { configured: false } } }),
+      set: async () => ({ ok: true }),
+    } },
     slots: {
       inject: (name, begin) => { recorded.injects.push(name); return begin() },
       register: (declaration, Component) => { recorded.registers.push({ declaration, Component }); return () => {} },
@@ -310,7 +313,7 @@ test('client.js registers one module named dsh-airboard in the factory format', 
 
 test('the factory returns a plugin injecting the documented services only', () => {
   const { plugin } = bootPlugin()
-  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight', 'remote.credentials'])
   assert.equal(typeof plugin.apply, 'function')
 })
 
@@ -355,9 +358,9 @@ test('apply registers the tab type, the keyed body seat, dictionaries, and scope
 })
 
 /** The config card's seat and face, captured from a fresh apply. */
-function bootConfigCard({ configForm, describe } = {}) {
+function bootConfigCard({ configForm, credentials } = {}) {
   const { harness, plugin } = bootPlugin()
-  const [ctx, recorded] = makeCtx({ configForm, describe })
+  const [ctx, recorded] = makeCtx({ configForm, credentials })
   withDocument(
     { createElement: () => ({ dataset: {}, textContent: '', remove() {} }), head: { append() {} } },
     () => plugin.apply(ctx),
@@ -368,27 +371,34 @@ function bootConfigCard({ configForm, describe } = {}) {
   return { harness, face: seat.declaration.inject(), Component: seat.Component, ctx }
 }
 
-test('apply registers the bundle config card over the shared staged-form model', () => {
-  const setCalls = []
+test('apply registers the bundle config card over the shared staged-form model', async () => {
+  const credentialCalls = []
   const configForm = {
     getSnapshot: () => ({ status: 'ready', writable: true, revision: 3, value: { baseUrl: 'http://ab.antaresy.cc' }, user: {} }),
     subscribe: () => () => {},
     mutate: () => Promise.resolve(true),
-    set: (field, value) => { setCalls.push({ field, value }); return Promise.resolve(true) },
+    set: () => Promise.resolve(true),
   }
-  const describe = { getSnapshot: () => ({ view: { namespaces: [{ ns: 'airboard', secrets: [{ path: ['token'], set: true }] }] } }) }
-  const { face } = bootConfigCard({ configForm, describe })
+  const credentials = {
+    describe: async (refs) => { credentialCalls.push(['describe', ...refs]); return { ok: true, value: { [refs[0]]: { configured: true } } } },
+    set: async (ref, value) => { credentialCalls.push(['set', ref, value]); return { ok: true } },
+  }
+  const { face } = bootConfigCard({ configForm, credentials })
   const bound = face
-  // The face binds the model's store as a selector hook plus staged-form actions.
+  // The face binds the store as a selector hook plus staged-form actions and the token writer.
   assert.equal(typeof bound.hooks.config.getSnapshot, 'function')
-  for (const action of ['edit', 'resetField', 'save', 'discard']) {
+  for (const action of ['edit', 'resetField', 'save', 'discard', 'storeToken']) {
     assert.equal(typeof bound[action], 'function', action)
   }
-  // The projection derives the token's configured state from the describe sidecar.
+  // Presence refreshes through remote.credentials.describe on subscribe.
+  const off = bound.hooks.config.subscribe(() => {})
+  await new Promise(resolve => setImmediate(resolve))
   const state = bound.hooks.config.getSnapshot()
   assert.equal(state.tokenConfigured, true)
   assert.equal(state.available, true)
   assert.equal(state.baseUrl.text, 'http://ab.antaresy.cc')
+  assert.ok(credentialCalls.some(c => c[0] === 'describe' && c[1] === 'AIRBOARD_TOKEN'))
+  off()
 })
 
 test('the config card renders the shared chrome with both fields wired to the face', () => {
@@ -403,7 +413,7 @@ test('the config card renders the shared chrome with both fields wired to the fa
       ? (field, text) => { edits.push({ field, text }); value(field, text) }
       : value])),
   }
-  const vdom = harness.render(Component, props)
+  const vdom = harness.render(Component, { ...props, storeToken: bound.storeToken })
   // Shared form chrome carries the localized labels and the save/discard wiring.
   const form = find(vdom, (node) => node.type === SettingsForm)
   assert.deepEqual(Object.keys(form.props.labels).sort(), ['readOnly', 'save', 'saveFailed', 'saving', 'unavailable'])
@@ -417,13 +427,16 @@ test('the config card renders the shared chrome with both fields wired to the fa
   const secretField = find(vdom, (node) => node.type === SettingsSecretField)
   assert.equal(secretField.props.id, 'airboard-config-token')
   assert.equal(secretField.props.stateLabel, bound.hooks.config.getSnapshot().tokenConfigured ? 't:config.tokenSet' : 't:config.tokenUnset')
-  // Edits route through the injected staged-form action.
+  // baseUrl edits route through the staged-form action; the token edit goes
+  // to the credentials writer (remote.credentials.set), never the form model.
   valueField.props.onEdit('http://other:3010')
-  secretField.props.onEdit('abt_secret')
-  assert.deepEqual(edits, [
-    { field: 'baseUrl', text: 'http://other:3010' },
-    { field: 'token', text: 'abt_secret' },
-  ])
+  const tokenWrites = []
+  const boundStore = { ...bound, storeToken: async (text) => { tokenWrites.push(text) } }
+  const vdom2 = harness.render(Component, { ...props, storeToken: boundStore.storeToken })
+  const secret2 = find(vdom2, (node) => node.type === SettingsSecretField)
+  secret2.props.onEdit('abt_secret')
+  assert.deepEqual(edits, [{ field: 'baseUrl', text: 'http://other:3010' }])
+  assert.deepEqual(tokenWrites, ['abt_secret'])
 })
 
 test('the config card renders the summary one-liner when asked', () => {

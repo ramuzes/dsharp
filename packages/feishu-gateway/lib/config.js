@@ -1,11 +1,11 @@
 import Schema from '@deepseek-ai/schemastery'
 
 /**
- * Row configuration for the feishu-gateway Loader entry. Edited as a form on
- * the Plugins page; `appSecretEnv` is a credential reference (an
- * environment-variable name) resolved per boot through `ctx.credentials`,
- * the same seam the built-in model routes use — the secret itself never
- * lives in the patch layer.
+ * Row configuration for the feishu-gateway Loader entry. The secret never
+ * lives here: `appSecretEnv` names the credential reference the Plugins-page
+ * secret control writes into (and the launch environment may supply), and
+ * the Host resolves it through `ctx.credentials` per boot. The form card
+ * does not render this field — users only see the App Secret control.
  */
 export const Config = Schema.object({
   appId: Schema.string().default('').volatile(),
