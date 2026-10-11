@@ -1,0 +1,16 @@
+{
+  "_doc": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/events/card.action.trigger — 卡片回调 card.action.trigger（长连接）。The flattened handler form carries operator/action/context at the top level; action.value is whatever the card's button declared (our cards put actionId/kind there).",
+  "schema": "2.0",
+  "event_type": "card.action.trigger",
+  "operator": { "tenant_key": "1b9564fad001975f", "open_id": "ou_sender" },
+  "token": "v6Mba1ZT37",
+  "action": {
+    "value": { "actionId": "fg_lx1", "kind": "resume", "sessionId": "session-1", "title": "修复登录" },
+    "tag": "button"
+  },
+  "context": {
+    "open_message_id": "om_cardmsg00000000000000000000",
+    "open_chat_id": "oc_44942de1ab4761f9787d9a7ac5654038",
+    "operator_id": { "union_id": "on_x", "user_id": "uid_x", "open_id": "ou_sender" }
+  }
+}

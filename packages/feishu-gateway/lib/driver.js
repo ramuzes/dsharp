@@ -153,10 +153,18 @@ export class GatewayDriver {
       await this.openSession(chatId, binding)
       return void this.sendStatus(chatId)
     }
+    if (cmd.sub === 'list') return void this.sessionList(chatId, binding, Number(cmd.args[0]) || 1)
     if (cmd.sub === 'resume') {
+      // Direct form /session resume <id|id前缀|最新优先序号>: resume without
+      // the picker card. Bare /session resume still shows the picker.
+      if (cmd.args.length > 0) {
+        const target = await this.resolveSessionArg(cmd.args[0], binding)
+        if (target === undefined) return void this.lark.sendText(chatId, '没有匹配的会话：可传完整/前缀 sessionId，或 /session list 里的序号。')
+        return void this.resumeSession(chatId, target)
+      }
       const history = await this.router.history(chatId)
-      if (history.length === 0) return void this.lark.sendText(chatId, '没有可恢复的历史会话。')
-      const actions = history.slice(0, 10).map((e, i) => ({
+      if (history.length === 0) return void this.lark.sendText(chatId, '没有可恢复的历史会话；/session list 看工作区全部会话。')
+      const actions = history.slice(0, 10).map(e => ({
         tag: 'button', text: { tag: 'plain_text', content: e.title ?? e.sessionId }, type: 'default',
         value: { actionId: this.makeActionId(), kind: 'resume', sessionId: e.sessionId, title: e.title },
       }))
@@ -166,7 +174,125 @@ export class GatewayDriver {
         elements: [{ tag: 'action', actions }],
       })
     }
-    return void this.lark.sendText(chatId, '用法：/session new | resume')
+    return void this.lark.sendText(chatId, '用法：/session new | list [页码] | resume [sessionId|序号]')
+  }
+
+  /** Sessions of the bound workspace, most recently ACTIVE first. The
+   * workspace registry's sessionIds is the authoritative owner list
+   * (canonical-cwd filtered); sessionController.list() supplies each
+   * session's updatedAt — log activity combined with lastPromptAt, the same
+   * "recent" ordering the GUI sidebar uses (createdAt ordering felt wrong:
+   * an old session you just used stayed buried). */
+  async workspaceSessions(binding) {
+    const workspace = this.ctx.workspaceRegistry.list().find(w => w.id === binding.workspaceId)
+    const ids = new Set(workspace?.sessionIds ?? [])
+    let summaries = []
+    try {
+      // Real API returns SessionListValue { items: SessionSummary[] } — a
+      // bare-array assumption made summaries.map throw and (through the
+      // loader's error path) killed the whole host.
+      const value = await this.ctx.sessionController.list({})
+      summaries = Array.isArray(value) ? value : (value?.items ?? [])
+    } catch { /* degrade to query headers below */ }
+    const byId = new Map(summaries.map(s => [s.sessionId, s]))
+    const records = summaries.length > 0 ? [] : await this.ctx.sessionQuery.listSessions().catch(() => [])
+    const recordById = new Map(records.map(r => [r.header.id, r]))
+    return [...ids].map(id => ({
+      header: { id, createdAt: byId.get(id)?.updatedAt ?? recordById.get(id)?.header.createdAt },
+      updatedAt: byId.get(id)?.updatedAt,
+      live: byId.get(id)?.agentAvailable === true || recordById.get(id)?.live === true,
+    })).sort((a, b) => (b.updatedAt ?? b.header.createdAt ?? 0) - (a.updatedAt ?? a.header.createdAt ?? 0))
+  }
+
+  /** One-line relative time for list rows (北京时间, 手机上可扫读). */
+  static relativeTime(ts) {
+    if (typeof ts !== 'number' || !Number.isFinite(ts)) return ''
+    const diff = Date.now() - ts
+    if (diff < 60_000) return '刚刚'
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+    if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+    return new Date(ts).toLocaleDateString('zh-CN')
+  }
+
+  /** lark_md-safe single-line text (no markdown metachars, no newlines). */
+  static listSafe(text, max = 40) {
+    return String(text ?? '').replace(/[\`*_~\[\]()#@!>\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
+  }
+
+  /** Render one page (10/page) of the workspace's sessions as a list card:
+   * div rows carry title + relative time, short number buttons select (ids
+   * stay hidden), prev/next buttons page without typing. */
+  async sessionList(chatId, binding, page) {
+    const sessions = await this.workspaceSessions(binding)
+    if (sessions.length === 0) return void this.lark.sendText(chatId, '该工作区还没有会话；发消息或 /session new 开一个。')
+    const PAGE = 10
+    const pages = Math.ceil(sessions.length / PAGE)
+    page = Math.min(Math.max(1, page), pages)
+    const slice = sessions.slice((page - 1) * PAGE, page * PAGE)
+    // Batch title read covers NON-live sessions too (the title folds from
+    // each session's own log: sessionQuery.readTitleSnapshots observes live
+    // or persisted sessions alike — that is where the GUI sidebar's archived
+    // titles come from). The live snapshot stays as a fresher fallback.
+    const titles = new Map()
+    try {
+      const observations = await this.ctx.sessionQuery.readTitleSnapshots?.(slice.map(r => r.header.id))
+      for (const o of observations ?? []) {
+        if (o?.status === 'fulfilled' && o.value?.title?.title !== undefined) titles.set(o.value.session.id, o.value.title.title)
+      }
+    } catch { /* titles are an enhancement, never a blocker */ }
+    const rows = slice.map((r, i) => {
+      const agentSession = this.ctx.agents.get(r.header.id)?.session
+      const title = GatewayDriver.listSafe(titles.get(r.header.id) ?? this.sessionTitleSnapshot(agentSession)?.title) || '（无标题会话）'
+      const when = GatewayDriver.relativeTime(r.updatedAt ?? r.header.createdAt)
+      const marks = `${r.header.id === binding.activeSessionId ? ' **[当前]**' : ''}${r.live ? ' ⏺' : ''}`
+      return { tag: 'div', text: { tag: 'lark_md', content: `**${String((page - 1) * PAGE + i + 1)}.** ${title}${when === '' ? '' : ` · ${when}`}${marks}` } }
+    })
+    const pick = slice.map((r, i) => ({
+      tag: 'button', text: { tag: 'plain_text', content: String(i + 1) }, type: 'default',
+      value: { actionId: this.makeActionId(), kind: 'resume', sessionId: r.header.id, title: '' },
+    }))
+    const nav = []
+    if (page > 1) nav.push({ tag: 'button', text: { tag: 'plain_text', content: '上一页' }, type: 'default', value: { actionId: this.makeActionId(), kind: 'session-page', page: page - 1 } })
+    if (page < pages) nav.push({ tag: 'button', text: { tag: 'plain_text', content: '下一页' }, type: 'default', value: { actionId: this.makeActionId(), kind: 'session-page', page: page + 1 } })
+    return void this.lark.sendJson(chatId, 'interactive', {
+      config: { update_multi: true },
+      header: { title: { tag: 'plain_text', content: `${binding.workspaceTitle} · 会话 ${String(page)}/${String(pages)}（共 ${String(sessions.length)}）` }, template: 'blue' },
+      elements: [
+        ...rows,
+        { tag: 'hr' },
+        { tag: 'action', actions: pick.slice(0, 5) },
+        ...(pick.length > 5 ? [{ tag: 'action', actions: pick.slice(5) }] : []),
+        ...(nav.length > 0 ? [{ tag: 'action', actions: nav }] : []),
+        { tag: 'note', elements: [{ tag: 'plain_text', content: '⏺ 进行中 · 按编号恢复 · 也可 /session resume <序号|sessionId前缀>' }] },
+      ],
+    })
+  }
+
+  /** Resolve a /session resume argument: exact id, id prefix, or 1-based newest-first index. */
+  async resolveSessionArg(arg, binding) {
+    const sessions = await this.workspaceSessions(binding)
+    const exact = sessions.find(r => r.header.id === arg)
+    if (exact !== undefined) return exact
+    const index = Number(arg)
+    if (Number.isInteger(index) && index >= 1 && index <= sessions.length) return sessions[index - 1]
+    const prefixed = sessions.filter(r => String(r.header.id).startsWith(arg))
+    return prefixed.length === 1 ? prefixed[0] : undefined
+  }
+
+  /** Guarded resume + pointer switch + status card, then the last turn's
+   * assistant output so the user recalls what this session was about. */
+  async resumeSession(chatId, target, title) {
+    const guard = guardDecision({ running: await this.isRunning(chatId) })
+    if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
+    const { agent } = await this.ctx.agents.resume({ resumeSessionId: target.header.id })
+    await this.router.setActive(chatId, target.header.id, title ?? this.sessionTitleSnapshot(agent?.session)?.title)
+    await this.sendStatus(chatId)
+    const last = lastAssistantText(agent?.session)
+    if (last !== '') {
+      const recall = `📎 上一轮输出：\n${last.slice(0, 600)}${last.length > 600 ? '…' : ''}`
+      await formatAndSendText(this.lark, chatId, recall, { chunkLimit: this.config.messageChunkLimit })
+    }
   }
 
   async runModel(cmd, message) {
@@ -176,7 +302,14 @@ export class GatewayDriver {
     if (cmd.args.length === 0) {
       const guard = guardDecision({ running: await this.isRunning(chatId) })
       if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
-      const providers = await this.ctx.llm.listModels()
+      // Real API: listProviders() then listModels(provider) per route — a
+      // bare listModels() called registration(undefined) and threw
+      // 'no adapter registered for provider "undefined"'.
+      const providers = []
+      for (const p of this.ctx.llm.listProviders()) {
+        const models = await this.ctx.llm.listModels(p.id)
+        providers.push({ provider: p.id, models: models.map(m => ({ id: m.id })) })
+      }
       const actions = []
       for (const p of providers) {
         for (const m of p.models.slice(0, 20)) {
@@ -224,11 +357,14 @@ export class GatewayDriver {
         return void this.lark.sendJson(chatId, 'post', renderDiffMessage(value.path, renderDiffBody(result)))
       }
       if (value.kind === 'resume') {
-        const guard = guardDecision({ running: await this.isRunning(chatId) })
-        if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
-        await this.ctx.agents.resume({ resumeSessionId: value.sessionId })
-        await this.router.setActive(chatId, value.sessionId, value.title)
-        return void this.sendStatus(chatId)
+        // Same guarded path as /session resume <arg>, by id from the card.
+        const target = { header: { id: value.sessionId } }
+        return void this.resumeSession(chatId, target, value.title)
+      }
+      if (value.kind === 'session-page') {
+        const binding = await this.router.get(chatId)
+        if (binding === undefined) return void this.lark.sendText(chatId, '先 /ws use 绑定一个工作区。')
+        return void this.sessionList(chatId, binding, Number(value.page) || 1)
       }
       if (value.kind === 'model') {
         // Re-guard at press time: the card may be pressed long after it was
@@ -280,13 +416,25 @@ export class GatewayDriver {
   }
 
   async openSession(chatId, binding) {
-    // SPEC: 插件创建的会话用 source kind 'feishu' 标记 — carry the origin in
-    // create meta (informative); answerer routing reads the router bindings.
+    // Real API (webhook template pattern): the caller GENERATES the session
+    // id and passes sessionId — agents.create builds the Agent's id from it,
+    // and omitting it produced "agent id \"undefined\" does not match session
+    // id \"session-N\"" (the session store auto-assigns its own counter id).
+    // meta carries only schema-valid fields; the feishu origin rides the
+    // UserMessage source instead (see makeUserMessage / FEISHU_SOURCE).
+    const sessionId = `feishu-${randomUUID()}`
+    // Webhook pattern: pass the default model in agentOptions — the
+    // {{model}}/{{provider}} prompt variables read agent.options.model, and
+    // agents without one fail every turn with 'prompt variable "{{model}}"
+    // has no value'.
+    const selected = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
     const { agent } = await this.ctx.agents.create({
-      meta: { cwd: binding.workspacePath, source: { kind: FEISHU_SOURCE, chatId } },
+      sessionId,
+      meta: { cwd: binding.workspacePath },
+      ...(selected === undefined ? {} : { agentOptions: { provider: selected.provider, model: selected.model } }),
     })
     this.ctx.workspaceRegistry.attachSession?.(binding.workspaceId, agent.session.id)
-    await this.router.setActive(chatId, agent.session.id, this.ctx.sessionTitle?.get?.(agent.session)?.title)
+    await this.router.setActive(chatId, agent.session.id, this.sessionTitleSnapshot(agent.session)?.title)
     return agent
   }
 
@@ -306,8 +454,26 @@ export class GatewayDriver {
     agent.followup(makeUserMessage(message.text, source))
   }
 
+  /**
+   * Latest folded title snapshot, or undefined. Optional service by name
+   * (property access throws without inject), and the service itself throws
+   * on a session without a live log — never let a status read crash the host.
+   */
+  sessionTitleSnapshot(session) {
+    if (session === undefined || session === null) return undefined
+    try {
+      const service = this.ctx.get?.('sessionTitle')
+      return typeof service?.get === 'function' ? service.get(session) : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   async selectModel(chatId, sessionId, selection) {
-    await this.ctx.apiSessions.selectModel({ sessionId, selection })
+    // Real API: ctx.sessionController.selectModel takes the ModelSelection
+    // fields flat on the request (packages/api/session-controller), not a
+    // nested `selection` object.
+    await this.ctx.sessionController.selectModel({ sessionId, ...selection })
   }
 
   async sendStatus(chatId) {
@@ -318,7 +484,7 @@ export class GatewayDriver {
     // Real surfaces only: ctx.sessionTitle.get(session) for the title and the
     // session's logged request header (Session.requestHeader()) for the model.
     // No session.title()/currentModel()/pendingModel() exists on the host.
-    const titleSnapshot = typeof this.ctx.sessionTitle?.get === 'function' ? this.ctx.sessionTitle.get(session) : undefined
+    const titleSnapshot = this.sessionTitleSnapshot(session)
     const header = typeof session?.requestHeader === 'function' ? session.requestHeader() : undefined
     const model = header?.config?.provider !== undefined && header?.config?.model !== undefined
       ? `${header.config.provider}/${header.config.model}`

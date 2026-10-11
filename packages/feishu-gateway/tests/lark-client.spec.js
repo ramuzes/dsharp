@@ -72,3 +72,14 @@ test('sends to the same chat are serialized', async () => {
   await Promise.all([client.sendText('oc_1', 'a', 'a'), client.sendText('oc_1', 'b', 'b')])
   assert.deepEqual(order, ['a', 'b'])
 })
+
+test('send failures log instead of rejecting (host must not crash)', async () => {
+  const errors = []
+  let calls = 0
+  const sdk = { im: { v1: { message: { create: async () => { calls += 1; if (calls === 1) throw new Error('boom'); return { code: 0 } } } } } }
+  const client = new LarkClient({ sdkClient: sdk, logger: { error: e => errors.push(e) }, sendGapMs: 0 })
+  await client.sendText('oc_1', 'first')  // throws inside — must resolve anyway
+  await client.sendText('oc_1', 'second') // queue keeps draining
+  assert.match(String(errors[0]), /send create → oc_1 failed: Error: boom/)
+  assert.equal(calls, 2)
+})

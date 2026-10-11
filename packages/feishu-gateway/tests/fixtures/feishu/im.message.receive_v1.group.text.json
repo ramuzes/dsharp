@@ -1,0 +1,14 @@
+{
+  "_doc": "Same event as the p2p fixture, chat_type=group: v1 must filter it (p2p only). Flattened handler shape; the driver-level fields mirror the doc wire form.",
+  "schema": "2.0",
+  "event_type": "im.message.receive_v1",
+  "message": {
+    "message_id": "om_group0000000000000000000000000",
+    "chat_id": "oc_group_chat",
+    "chat_type": "group",
+    "message_type": "text",
+    "content": "{\"text\":\"/help\"}",
+    "create_time": "1791627983000"
+  },
+  "sender": { "sender_id": { "open_id": "ou_member" }, "sender_type": "user" }
+}

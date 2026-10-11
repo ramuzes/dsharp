@@ -15,13 +15,22 @@ import { BindingRouter } from '../lib/router.js'
 function makeCtx() {
   const agents = new Map()
   const workspaces = [
-    { id: 'w1', title: 'demo', path: '/tmp/demo' },
-    { id: 'w2', title: 'site', path: '/tmp/site' },
+    { id: 'w1', title: 'demo', path: '/tmp/demo', sessionIds: ['session-old', 'session-mid', 'session-new'] },
+    { id: 'w2', title: 'site', path: '/tmp/site', sessionIds: [] },
   ]
   let seq = 0
   const diffCalls = []
+  // createdAt deliberately INVERTED vs the summaries' updatedAt: the list
+  // must sort by activity (updatedAt), not creation.
+  const queryRecords = [
+    { header: { id: 'session-old', cwd: '/tmp/demo', createdAt: Date.UTC(2026, 9, 11, 8, 0, 0) }, live: false },
+    { header: { id: 'session-mid', cwd: '/tmp/demo', createdAt: Date.UTC(2026, 9, 10, 8, 0, 0) }, live: true },
+    { header: { id: 'session-new', cwd: '/tmp/demo', createdAt: Date.UTC(2026, 9, 9, 8, 0, 0) }, live: true },
+    { header: { id: 'session-other', cwd: '/elsewhere', createdAt: Date.UTC(2026, 9, 9, 9, 0, 0) }, live: true },
+  ]
   const ctx = {
     diffCalls,
+    get: name => ctx[name],
     agents: {
       get: id => agents.get(id),
       create: async opts => {
@@ -55,8 +64,33 @@ function makeCtx() {
         }
       },
     },
-    apiSessions: { selectModel: async () => {} },
-    llm: { listModels: async () => [{ provider: 'deepseek', models: [{ id: 'deepseek-chat' }] }] },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'zai-coding-cn', model: 'glm-5.3' }) },
+    sessionController: {
+      selectModel: async () => {},
+      // Real surface: SessionSummary[] ordered by activity (updatedAt =
+      // max(log update, lastPromptAt) — the GUI sidebar's "recent").
+      list: async () => ({ items: [
+        { sessionId: 'session-other', updatedAt: 9, agentAvailable: true },
+        { sessionId: 'session-new', updatedAt: 8, agentAvailable: true },
+        { sessionId: 'session-mid', updatedAt: 7, agentAvailable: false },
+        { sessionId: 'session-old', updatedAt: 6, agentAvailable: false },
+      ] }),
+    },
+    sessionQuery: {
+      listSessions: async () => queryRecords.map(r => ({ ...r })),
+      readTitleSnapshots: async ids => ids.map(id => ({
+        status: 'fulfilled',
+        value: { session: { id }, title: queryRecords.some(r => r.header.id === id) ? { title: `标题·${String(id)}` } : undefined },
+      })),
+    },
+    llm: {
+      listProviders: () => [{ id: 'deepseek' }, { id: 'zai-coding-cn' }],
+      listModels: async provider => (provider === 'deepseek'
+        ? [{ id: 'deepseek-chat' }]
+        : provider === 'zai-coding-cn'
+          ? [{ id: 'glm-5.3' }, { id: 'glm-5.3-flash' }]
+          : []),
+    },
   }
   function makeAgent(opts) {
     const id = opts.sessionId ?? `s${++seq}`
@@ -117,9 +151,10 @@ test('message after /ws use flows into a new session then resume+followup', asyn
   const card = sent.find(s => s.type === 'interactive')
   assert.ok(card, 'status card sent')
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
-  // the first task message created a session in /tmp/demo
+  // the first task message created a session in /tmp/demo with a
+  // caller-generated feishu-* id (webhook pattern)
   const binding = await driver.router.get('oc_1')
-  assert.equal(binding.activeSessionId.startsWith('s'), true)
+  assert.equal(binding.activeSessionId.startsWith('feishu-'), true)
   assert.equal(binding.workspacePath, '/tmp/demo')
 })
 
@@ -214,14 +249,28 @@ test('switch guard blocks /session new while running', async () => {
   assert.match(JSON.stringify(sent), /\/stop/)
 })
 
-test('openSession carries the feishu source in create meta only', async () => {
+test('openSession carries the default model in agentOptions ({{model}} variable)', async () => {
+  const ctx = makeCtx()
+  const { driver } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  const binding = await driver.router.get('oc_1')
+  const agent = ctx.agents.get(binding.activeSessionId)
+  assert.deepEqual(agent.createdWith.agentOptions, { provider: 'zai-coding-cn', model: 'glm-5.3' })
+})
+
+test('openSession passes a generated sessionId and schema-valid meta only', async () => {
   const ctx = makeCtx()
   const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
   const binding = await driver.router.get('oc_1')
   const agent = ctx.agents.get(binding.activeSessionId)
-  assert.deepEqual(agent.createdWith.meta.source, { kind: 'feishu', chatId: 'oc_1' })
+  // Real API: caller-generated sessionId (webhook pattern); meta only carries
+  // schema-valid fields — the feishu origin rides the UserMessage source.
+  assert.match(agent.createdWith.sessionId, /^feishu-[0-9a-f-]{36}$/)
+  assert.equal(agent.createdWith.meta.cwd, '/tmp/demo')
+  assert.equal(agent.createdWith.meta.source, undefined)
   assert.equal('feishuSource' in agent.session, false, 'no dead mirror on the host session object')
 })
 
@@ -251,6 +300,68 @@ test('status card falls back to the binding title and a neutral model label', as
   assert.match(card, /默认/)
 })
 
+test('/session list renders newest-first page of workspace sessions with resume buttons', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session list' })
+  const card = sent.filter(m => m.type === 'interactive').at(-1).content
+  assert.match(card.header.title.content, /共 3）/, 'registry-owned sessions only (other workspace excluded)')
+  const rows = card.elements.filter(e => e.tag === 'div').map(e => e.text.content)
+  assert.match(rows[0], /\*\*1\.\*\*/, 'rows are numbered newest-first')
+  assert.match(rows[0], /标题·session-new/, 'non-live titles come from the batch readTitleSnapshots')
+  // Activity ordering: the fixture's createdAt is deliberately inverted vs
+  // the summaries' updatedAt (see makeCtx), so this order proves the sort
+  // keys on updatedAt, not creation time.
+  const picks = card.elements.filter(e => e.tag === 'action').flatMap(e => e.actions).filter(a => a.value?.kind === 'resume')
+  assert.deepEqual(picks.map(a => a.value.sessionId), ['session-new', 'session-mid', 'session-old'], 'number buttons carry the ids, newest first')
+  assert.deepEqual(picks.map(a => a.text.content), ['1', '2', '3'], 'short numeric labels, no ids visible')
+  assert.equal(card.elements.some(e => e.tag === 'action' && e.actions.some(a => a.text.content === '下一页')), false, 'single page has no pager')
+})
+
+test('/session resume <序号|前缀> resumes that session and switches the pointer', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session resume 2' })
+  const binding = await driver.router.get('oc_1')
+  assert.equal(binding.activeSessionId, 'session-mid', '1-based index into the newest-first list')
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/session resume session-new' })
+  assert.equal((await driver.router.get('oc_1')).activeSessionId, 'session-new', 'exact id also resolves')
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: '/session resume session-o' })
+  assert.equal((await driver.router.get('oc_1')).activeSessionId, 'session-old', 'unique id prefix resolves')
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_5', senderOpenId: 'ou_a', text: '/session resume session' })
+  assert.ok(sent.some(m => JSON.stringify(m).includes('没有匹配的会话')), 'ambiguous prefix is refused with guidance')
+  // The resume echo: the last turn's assistant output follows the switch
+  // (queued behind the per-chat send gap, so order-insensitive match).
+  assert.ok(sent.some(m => JSON.stringify(m).includes('📎 上一轮输出')), 'recall of the last assistant output after switching')
+})
+
+test('sendStatus with a missing session never throws (host crash regression)', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  // /ws use on a fresh binding has no active session: the old code called
+  // sessionTitle.get(undefined) and crashed the host ("fatal load failure").
+  const card = sent.filter(m => m.type === 'interactive').at(-1).content
+  assert.ok(card, 'status card rendered')
+  assert.equal(typeof card.header.title.content, 'string')
+})
+
+test('bare /model lists providers through listProviders + listModels(provider)', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  const calls = []
+  ctx.llm.listModels = async provider => { calls.push(provider); return provider === 'deepseek' ? [{ id: 'deepseek-chat' }] : [] }
+  ctx.llm.listProviders = () => [{ id: 'deepseek' }, { id: 'zai-coding-cn' }]
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/model' })
+  assert.deepEqual(calls, ['deepseek', 'zai-coding-cn'], 'one listModels call per provider route, never undefined')
+  const card = sent.filter(m => m.type === 'interactive').map(m => m.content).find(c => JSON.stringify(c).includes('选择模型'))
+  assert.ok(card, 'model picker card rendered')
+})
+
 test('model card action while running is rejected with the /stop hint', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
@@ -259,7 +370,7 @@ test('model card action while running is rejected with the /stop hint', async ()
   const binding = await driver.router.get('oc_1')
   ctx.agents.get(binding.activeSessionId).status = 'running'
   let selectModelCalls = 0
-  ctx.apiSessions.selectModel = async () => { selectModelCalls++ }
+  ctx.sessionController.selectModel = async () => { selectModelCalls++ }
   await driver.handleCardAction({
     kind: 'card-action', actionId: 'a',
     value: { actionId: 'a', kind: 'model', provider: 'deepseek', model: 'deepseek-chat' },
@@ -267,6 +378,19 @@ test('model card action while running is rejected with the /stop hint', async ()
   })
   assert.match(JSON.stringify(sent), /\/stop/)
   assert.equal(selectModelCalls, 0)
+})
+
+test('/model selects through sessionController with a flat ModelSelection request', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  const binding = await driver.router.get('oc_1')
+  const requests = []
+  ctx.sessionController.selectModel = async (request) => { requests.push(request) }
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/model zai-coding-cn/glm-5.3' })
+  assert.equal(requests.length, 1)
+  // Flat ModelSelection fields on the request — no nested `selection` object.
+  assert.deepEqual(requests[0], { sessionId: binding.activeSessionId, provider: 'zai-coding-cn', model: 'glm-5.3' })
 })
 
 test('diff card action threads seq and file index into workspaceChanges.diff', async () => {

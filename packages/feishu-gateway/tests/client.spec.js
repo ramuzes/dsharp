@@ -19,15 +19,20 @@ function SettingsSecretField(props) { return { type: 'settings-secret-field', pr
 
 /** A fake SettingsFormModel over a stub scope. */
 class FakeFormModel {
-  constructor(scope, specs) {
+  static instances = []
+  constructor(scope, specs, secrets = []) {
     this.scope = scope
     this.specs = new Set(specs.map(spec => spec.field))
+    this.secretSpecs = new Map(secrets.map(spec => [spec.field, spec]))
     this.staged = new Map()
     this.disposed = false
   }
   bind(project) {
     this.project = project
-    return { getSnapshot: () => project(), subscribe: () => () => {} }
+    const listeners = new Set()
+    this.emit = () => { for (const listener of listeners) listener() }
+    FakeFormModel.instances.push(this)
+    return { getSnapshot: () => project(), subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener) } }
   }
   shell() {
     const snapshot = this.scope.getSnapshot()
@@ -41,11 +46,28 @@ class FakeFormModel {
     }
   }
   field(name) {
+    if (this.secretSpecs.has(name)) {
+      const staged = this.staged.get(name)
+      return { text: staged === undefined ? '' : staged, overridden: false, invalid: null }
+    }
     const snapshot = this.scope.getSnapshot()
     if (!this.specs.has(name)) throw new Error(`unregistered field: ${name}`)
     return { text: snapshot.value?.[name] ?? '', overridden: false, invalid: null }
   }
-  actions() { return { edit: (n, v) => this.staged.set(n, v), resetField: () => {}, save: async () => {}, discard: () => {} } }
+  actions() {
+    return {
+      edit: (n, v) => this.staged.set(n, v),
+      resetField: () => {},
+      save: async () => {
+        for (const [name, spec] of this.secretSpecs) {
+          const text = this.staged.get(name)
+          if (text !== undefined && text !== '') await spec.write(text)
+        }
+        this.staged.clear()
+      },
+      discard: () => { this.staged.clear() },
+    }
+  }
   dispose() { this.disposed = true }
 }
 
@@ -63,7 +85,7 @@ test('the plugin registers a bundle config card into plugins.bundle.config', () 
     }
     throw new Error(`unexpected require: ${name}`)
   })
-  assert.deepEqual(plugin.inject, ['slots', 'locale', 'configForms', 'remote.credentials'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'configForms', 'remote', 'remote.credentials'])
 
   const registrations = []
   const ctx = {
@@ -77,6 +99,64 @@ test('the plugin registers a bundle config card into plugins.bundle.config', () 
   }
   plugin.apply(ctx)
   assert.deepEqual(registrations, ['plugins.bundle.config'])
+})
+
+test('the config snapshot identity is stable between notifications (React #185 regression)', async () => {
+  const model = new FakeFormModel(
+    { getSnapshot: () => ({ status: 'ready', writable: true, value: { appId: 'cli_1', domain: 'https://open.feishu.cn' } }) },
+    [{ field: 'appId' }, { field: 'domain' }],
+  )
+  let configured = false
+  const plugin = loaded[0].factory(name => {
+    if (name === 'react') return { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) }
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') {
+      return {
+        SettingsForm, SettingsValueField, SettingsSecretField,
+        SettingsFormModel: FakeFormModel, settingsTextField: (field) => ({ field }),
+      }
+    }
+    throw new Error(`unexpected require: ${name}`)
+  })
+  let card = null
+  const ctx = {
+    locale: { register: () => () => {}, bind: (ns) => (key) => `${ns}:${key}` },
+    configForms: { get: () => model.scope },
+    remote: { credentials: {
+      describe: async (refs) => ({ ok: true, value: { [refs[0]]: { configured } } }),
+      set: async () => {},
+    } },
+    slots: {
+      inject: (_slot, register) => { card = register(); return () => {} },
+      register: (declaration, component) => ({ declaration, component }),
+    },
+    effect: (fn) => { fn(); return () => {} },
+  }
+  plugin.apply(ctx)
+  const face = card.declaration.inject()
+
+  // Between notifications, getSnapshot must return the SAME object: React's
+  // useSyncExternalStore loops (Minified React error #185) when every call
+  // yields a fresh identity. React subscribes before reading; so does this.
+  let notified = 0
+  const off = face.hooks.config.subscribe(() => { notified += 1 })
+  const first = face.hooks.config.getSnapshot()
+  assert.strictEqual(face.hooks.config.getSnapshot(), first, 'repeated getSnapshot keeps identity')
+  assert.strictEqual(face.hooks.config.getSnapshot(), first, 'repeated getSnapshot keeps identity (again)')
+
+  // A form-model notification invalidates the cache: next read recomputes
+  // (new identity) with current field projections.
+  FakeFormModel.instances.at(-1).emit()
+  assert.notStrictEqual(face.hooks.config.getSnapshot(), first, 'notification recomputes the snapshot')
+
+  // A credential write refreshes presence and notifies subscribers; the
+  // snapshot then reports the new presence.
+  const before = notified
+  configured = true
+  face.edit('appSecret', 'sk_new')
+  await face.save()
+  assert.ok(notified > before, 'subscribers heard the presence refresh')
+  assert.equal(face.hooks.config.getSnapshot().secretConfigured, true)
+  off()
 })
 
 test('the config card renders two staged fields plus a credentials-backed secret control', async () => {
@@ -115,18 +195,21 @@ test('the config card renders two staged fields plus a credentials-backed secret
   }
   plugin.apply(ctx)
   assert.equal(typeof card.component, 'function', 'slot register returns the card component')
-  assert.deepEqual(plugin.inject, ['slots', 'locale', 'configForms', 'remote.credentials'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'configForms', 'remote', 'remote.credentials'])
 
   const hooks = { useConfig: (sel) => sel({
     writable: true, available: true, dirty: false, invalid: false, saving: false, failed: false,
     appId: { text: 'cli_1', overridden: false, invalid: null },
     domain: { text: 'https://open.feishu.cn', overridden: false, invalid: null },
+    appSecret: { text: '', overridden: false, invalid: null },
     secretConfigured: false,
   }) }
-  const actions = model.actions()
-  const storeSecret = card.declaration.inject().storeSecret
-  assert.equal(typeof storeSecret, 'function', 'face exposes storeSecret')
-  const element = card.component({ view: 'page', t: (key) => key, ...hooks, ...actions, storeSecret })
+  const face = card.declaration.inject()
+  // Stage through the face's actions: the plugin builds its own model over
+  // the shared scope, so the test's local model is not the staging surface.
+  const actions = { edit: face.edit, resetField: face.resetField, save: face.save, discard: face.discard }
+  assert.equal(face.storeSecret, undefined, 'the face exposes only staged-form actions')
+  const element = card.component({ view: 'page', t: (key) => key, ...hooks, ...actions })
   assert.equal(element.type, SettingsForm)
   const staged = element.children.filter(child => typeof child.type === 'function' && child.type !== SettingsSecretField)
   assert.equal(staged.length, 2)
@@ -139,9 +222,12 @@ test('the config card renders two staged fields plus a credentials-backed secret
   assert.ok(secret, 'secret control rendered')
   assert.equal(secret.props.id, 'feishu-gateway-config-app-secret')
   assert.equal(secret.props.configured, false, 'presence projected from the presence store')
-  // The write path goes through remote.credentials (then a presence refresh), never the form model.
-  await secret.props.onEdit('sk_secret')
+  // The write path: typing only stages; the save writes through
+  // remote.credentials.set (then a presence refresh), never the form value.
+  secret.props.onEdit('sk_secret')
+  assert.ok(!credentialCalls.some(c => c[0] === 'set'), 'typing alone writes nothing')
+  await face.save()
   assert.ok(credentialCalls.some(c => c[0] === 'set' && c[1] === 'FEISHU_APP_SECRET' && c[2] === 'sk_secret'),
-    'secret written through remote.credentials.set')
+    'secret written through remote.credentials.set on save')
   assert.equal(typeof card.component({ view: 'summary', t: (key) => key, ...hooks }), 'string')
 })

@@ -32,16 +32,20 @@ function SettingsSecretField(props) { return { type: 'settings-secret-field', pr
  * the card tests.
  */
 class FakeFormModel {
+  static instances = []
   constructor(scope, specs, secrets = []) {
     this.scope = scope
     this.specs = new Map(specs.map((spec) => [spec.field, spec]))
-    this.secrets = new Map(secrets.map((spec) => [spec.field, spec]))
+    this.secretSpecs = new Map(secrets.map((spec) => [spec.field, spec]))
     this.staged = new Map()
     this.disposed = false
   }
   bind(project) {
     this.project = project
-    return { getSnapshot: () => project(), subscribe: () => () => {} }
+    const listeners = new Set()
+    this.emit = () => { for (const listener of listeners) listener() }
+    FakeFormModel.instances.push(this)
+    return { getSnapshot: () => project(), subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener) } }
   }
   shell() {
     const snapshot = this.scope.getSnapshot()
@@ -55,6 +59,10 @@ class FakeFormModel {
     }
   }
   field(name) {
+    if (this.secretSpecs.has(name)) {
+      const staged = this.staged.get(name)
+      return { text: staged === undefined ? '' : staged, overridden: false, invalid: false }
+    }
     const snapshot = this.scope.getSnapshot()
     const accepted = this.specs.get(name) !== undefined
       ? (this.specs.get(name).format(snapshot.value?.[name])) : ''
@@ -69,7 +77,13 @@ class FakeFormModel {
     return {
       edit: (field, text) => { this.staged.set(field, text) },
       resetField: (field) => { this.staged.delete(field) },
-      save: () => {},
+      save: async () => {
+        for (const [name, spec] of this.secretSpecs) {
+          const text = this.staged.get(name)
+          if (text !== undefined && text !== '') await spec.write(text)
+        }
+        this.staged.clear()
+      },
       discard: () => { this.staged.clear() },
     }
   }
@@ -313,7 +327,7 @@ test('client.js registers one module named dsh-airboard in the factory format', 
 
 test('the factory returns a plugin injecting the documented services only', () => {
   const { plugin } = bootPlugin()
-  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight', 'remote.credentials'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight', 'remote', 'remote.credentials'])
   assert.equal(typeof plugin.apply, 'function')
 })
 
@@ -387,7 +401,8 @@ test('apply registers the bundle config card over the shared staged-form model',
   const bound = face
   // The face binds the store as a selector hook plus staged-form actions and the token writer.
   assert.equal(typeof bound.hooks.config.getSnapshot, 'function')
-  for (const action of ['edit', 'resetField', 'save', 'discard', 'storeToken']) {
+  for (const action of ['edit', 'resetField', 'save', 'discard']) {
+    // (the token is the form model's write-only control; there is no storeToken)
     assert.equal(typeof bound[action], 'function', action)
   }
   // Presence refreshes through remote.credentials.describe on subscribe.
@@ -398,6 +413,36 @@ test('apply registers the bundle config card over the shared staged-form model',
   assert.equal(state.available, true)
   assert.equal(state.baseUrl.text, 'http://ab.antaresy.cc')
   assert.ok(credentialCalls.some(c => c[0] === 'describe' && c[1] === 'AIRBOARD_TOKEN'))
+  off()
+})
+
+test('the config snapshot identity is stable between notifications (React #185 regression)', async () => {
+  const credentials = {
+    describe: async (refs) => ({ ok: true, value: { [refs[0]]: { configured: false } } }),
+    set: async () => ({ ok: true }),
+  }
+  const { face } = bootConfigCard({ credentials })
+  // React subscribes before reading; so does this. getSnapshot must return
+  // the SAME object between notifications or useSyncExternalStore loops
+  // (Minified React error #185).
+  let notified = 0
+  const off = face.hooks.config.subscribe(() => { notified += 1 })
+  const first = face.hooks.config.getSnapshot()
+  assert.strictEqual(face.hooks.config.getSnapshot(), first, 'repeated getSnapshot keeps identity')
+  assert.strictEqual(face.hooks.config.getSnapshot(), first, 'repeated getSnapshot keeps identity (again)')
+  // A form-model notification invalidates the cache; the next read recomputes.
+  FakeFormModel.instances.at(-1).emit()
+  assert.notStrictEqual(face.hooks.config.getSnapshot(), first, 'notification recomputes the snapshot')
+  // A token write refreshes presence, notifies, and re-projects presence.
+  const before = notified
+  const tokenWrites = []
+  credentials.describe = async (refs) => ({ ok: true, value: { [refs[0]]: { configured: true } } })
+  credentials.set = async (ref, value) => { tokenWrites.push([ref, value]); return { ok: true } }
+  face.edit('token', 'abt_new')
+  await face.save()
+  assert.deepEqual(tokenWrites, [['AIRBOARD_TOKEN', 'abt_new']], 'save writes the staged token through credentials.set')
+  assert.ok(notified > before, 'subscribers heard the presence refresh')
+  assert.equal(face.hooks.config.getSnapshot().tokenConfigured, true)
   off()
 })
 
@@ -413,7 +458,7 @@ test('the config card renders the shared chrome with both fields wired to the fa
       ? (field, text) => { edits.push({ field, text }); value(field, text) }
       : value])),
   }
-  const vdom = harness.render(Component, { ...props, storeToken: bound.storeToken })
+  const vdom = harness.render(Component, { ...props })
   // Shared form chrome carries the localized labels and the save/discard wiring.
   const form = find(vdom, (node) => node.type === SettingsForm)
   assert.deepEqual(Object.keys(form.props.labels).sort(), ['readOnly', 'save', 'saveFailed', 'saving', 'unavailable'])
@@ -430,13 +475,12 @@ test('the config card renders the shared chrome with both fields wired to the fa
   // baseUrl edits route through the staged-form action; the token edit goes
   // to the credentials writer (remote.credentials.set), never the form model.
   valueField.props.onEdit('http://other:3010')
-  const tokenWrites = []
-  const boundStore = { ...bound, storeToken: async (text) => { tokenWrites.push(text) } }
-  const vdom2 = harness.render(Component, { ...props, storeToken: boundStore.storeToken })
+  const vdom2 = harness.render(Component, { ...props })
   const secret2 = find(vdom2, (node) => node.type === SettingsSecretField)
   secret2.props.onEdit('abt_secret')
-  assert.deepEqual(edits, [{ field: 'baseUrl', text: 'http://other:3010' }])
-  assert.deepEqual(tokenWrites, ['abt_secret'])
+  // Both controls stage through edit; the token literal never leaves staging
+  // until a save writes it through the credentials domain.
+  assert.deepEqual(edits, [{ field: 'baseUrl', text: 'http://other:3010' }, { field: 'token', text: 'abt_secret' }])
 })
 
 test('the config card renders the summary one-liner when asked', () => {

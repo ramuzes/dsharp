@@ -483,14 +483,15 @@ window.__ModuleLoader__.load({
 
     /**
      * The config card: shared form chrome, the baseUrl value field, and the
-     * credentials-backed token control (writes through the credentials Remote
-     * under the reference named by `tokenEnv`; presence from
-     * CredentialInfo.configured — the literal never rides a form response or
-     * a patch layer).
-     * @param {any} props - `view`, `t`, the face's `useConfig` hook, the staged-form actions, and `storeToken`.
+     * credentials-backed token control. The token is staged with the rest of
+     * the form (`edit('token', …)`) and written only on save, through the
+     * SettingsFormModel secret spec under the reference named by `tokenEnv`
+     * — the web-search-card pattern. Presence from CredentialInfo.configured;
+     * the literal never rides a form response or a patch layer.
+     * @param {any} props - `view`, `t`, the face's `useConfig` hook, and the staged-form actions.
      */
     function AirboardConfigCard(props) {
-      const { view, t, useConfig, edit, resetField, save, discard, storeToken } = props
+      const { view, t, useConfig, edit, resetField, save, discard } = props
       const state = useConfig(snapshot => snapshot)
       if (view === 'summary') return t('config.summary')
       return h(SettingsForm, { labels: formLabels(t), state, onSave: save, onDiscard: discard },
@@ -511,29 +512,25 @@ window.__ModuleLoader__.load({
           label: t('config.token'),
           hint: t('config.tokenHint'),
           disabled: !state.writable,
-          text: '',
+          text: state.token.text,
           configured: state.tokenConfigured,
           stateLabel: state.tokenConfigured ? t('config.tokenSet') : t('config.tokenUnset'),
-          onEdit: (text) => { storeToken?.(text) },
+          onEdit: (text) => { edit('token', text) },
         }))
     }
 
     /**
      * Build the staged model plus the credentials-backed token presence
      * store. The token reference comes from the row's `tokenEnv` config
-     * (default AIRBOARD_TOKEN); writes go through `remote.credentials.set`
-     * and presence through `remote.credentials.describe` — the Models-page
-     * API-key pattern.
+     * (default AIRBOARD_TOKEN); the token is the model's write-only control
+     * (third constructor arg): staged with the form, written on save through
+     * `remote.credentials.set`, and a blank draft writes nothing. Presence
+     * refreshes through `remote.credentials.describe`.
      * @param {any} ctx - client context carrying configForms + remote.credentials.
      * @returns {{face: () => object, dispose: () => void}} the registration inputs.
      */
     function buildConfigCard(ctx) {
       const configForm = ctx.configForms.get('airboard')
-      const model = new SettingsFormModel(
-        configForm,
-        [settingsTextField('baseUrl')],
-      )
-      const formStore = model.bind(() => ({}))
 
       /** The credential reference the Host resolves; `tokenEnv` names it. */
       const refOf = () => {
@@ -541,43 +538,72 @@ window.__ModuleLoader__.load({
         return typeof value === 'string' && value !== '' ? value : 'AIRBOARD_TOKEN'
       }
 
+      // Token presence, refreshed on subscribe and after each write, fanned
+      // out to the card's listeners. The config snapshot is MEMOIZED:
+      // getSnapshot must return the same object between notifications or
+      // React's useSyncExternalStore loops (Minified React error #185).
+      // Every notification invalidates the cache; the next read recomputes.
       let tokenConfigured = false
+      let snapshotCache = null
       const listeners = new Set()
-      const notify = () => { for (const listener of listeners) listener() }
+      const notify = () => {
+        snapshotCache = null
+        for (const listener of listeners) listener()
+      }
       const refresh = async () => {
+        let next = false
         try {
           const response = await ctx.remote.credentials.describe([refOf()])
-          tokenConfigured = response.ok ? (response.value?.[refOf()]?.configured ?? false) : false
+          next = response.ok ? (response.value?.[refOf()]?.configured ?? false) : false
         } catch {
-          tokenConfigured = false
+          next = false
         }
+        if (next === tokenConfigured && snapshotCache !== null) return
+        tokenConfigured = next
         notify()
       }
-      const storeToken = async (text) => {
+      /** The token spec's save-time write: store, then re-read presence. */
+      const writeToken = async (text) => {
         await ctx.remote.credentials.set(refOf(), text)
         await refresh()
+        return tokenConfigured
       }
+
+      const model = new SettingsFormModel(
+        configForm,
+        [settingsTextField('baseUrl')],
+        [{ field: 'token', write: writeToken }],
+      )
+      const formStore = model.bind(() => ({}))
+      const computeSnapshot = () => ({
+        ...model.shell(),
+        baseUrl: model.field('baseUrl'),
+        token: model.field('token'),
+        tokenConfigured,
+      })
 
       const face = () => ({
         hooks: {
           config: {
-            getSnapshot: () => ({
-              ...model.shell(),
-              baseUrl: model.field('baseUrl'),
-              tokenConfigured,
-            }),
+            getSnapshot: () => {
+              if (snapshotCache === null) snapshotCache = computeSnapshot()
+              return snapshotCache
+            },
             subscribe: (listener) => {
               listeners.add(listener)
-              const offForm = formStore.subscribe(listener)
-              refresh()
+              const wake = () => {
+                snapshotCache = null
+                listener()
+              }
+              const offForm = formStore.subscribe(wake)
+              void refresh()
               return () => { listeners.delete(listener); offForm() }
             },
           },
         },
         ...model.actions(),
-        storeToken,
       })
-      return { face, dispose: () => { model.dispose(); listeners.clear() } }
+      return { face, dispose: () => { model.dispose(); listeners.clear(); snapshotCache = null } }
     }
 
     /**
@@ -761,7 +787,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight', 'remote.credentials'],
+      inject: ['slots', 'locale', 'sidebarRightTabs', 'configForms', 'sidebarRight', 'remote', 'remote.credentials'],
       apply(ctx) {
         const t = ctx.locale.bind(NS)
         const card = buildConfigCard(ctx)

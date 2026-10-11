@@ -42,11 +42,27 @@ export class LarkClient {
     const idempotencyKey = uuid ?? nextUuid()
     await this.enqueue(chatId, async () => {
       if (this.sendGapMs > 0) await new Promise(r => setTimeout(r, this.sendGapMs))
-      await this.sdk.im.v1.message.create({
+      await this.guarded(`create → ${String(chatId)}`, () => this.sdk.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
         data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify(contentObj), uuid: idempotencyKey },
-      })
+      }))
     })
+  }
+
+  /**
+   * HARDENING: a failed outbound REST call logs (console + status) instead
+   * of rejecting — the gateway must keep serving later messages, and no
+   * send error may propagate into host-owned call stacks.
+   */
+  async guarded(label, run) {
+    try {
+      const response = await run()
+      if (response?.code !== undefined && response.code !== 0) {
+        this.logger?.error?.(`feishu-gateway: send ${label} refused: code ${String(response.code)} ${String(response.msg ?? '')}`)
+      }
+    } catch (error) {
+      this.logger?.error?.(`feishu-gateway: send ${label} failed: ${String(error)}`)
+    }
   }
 
   /** Send a plain text message. */
@@ -60,10 +76,10 @@ export class LarkClient {
     const idempotencyKey = uuid ?? nextUuid()
     await this.enqueue(`reply:${messageId}`, async () => {
       if (this.sendGapMs > 0) await new Promise(r => setTimeout(r, this.sendGapMs))
-      await this.sdk.im.v1.message.reply({
+      await this.guarded(`reply → ${String(messageId)}`, () => this.sdk.im.v1.message.reply({
         path: { message_id: messageId },
         data: { msg_type: msgType, content: JSON.stringify(contentObj), uuid: idempotencyKey },
-      })
+      }))
     })
   }
 }

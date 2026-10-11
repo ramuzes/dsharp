@@ -35,13 +35,14 @@ export class BindingRouter {
   /** Create or replace the workspace binding of one chat. */
   async bind(chatId, { workspaceId, workspaceTitle, workspacePath }) {
     const existing = this.bindings.get(chatId)
+    // Omit absent optional keys instead of writing undefined: the JSON store
+    // drops undefined anyway, and an explicit undefined would resurface as a
+    // missing required key if the schema ever regressed.
     this.bindings.set(chatId, {
       chatId,
       workspaceId,
       workspaceTitle,
       workspacePath,
-      activeSessionId: undefined,
-      activeSessionTitle: undefined,
       sessionHistory: existing?.sessionHistory ?? [],
       updatedAt: Date.now(),
     })

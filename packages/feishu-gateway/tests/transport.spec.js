@@ -34,6 +34,28 @@ test('card.action.trigger normalizes with actionId and value', () => {
   assert.deepEqual(n, { kind: 'card-action', actionId: 'q1', value: { qid: 'q1', choice: 0 }, messageId: 'om_c', chatId: 'oc_1', operatorOpenId: 'ou_a' })
 })
 
+test('normalizes the SDK-flattened shape the WS dispatcher actually delivers', () => {
+  // EventDispatcher.parse() spreads `event` into the top level (schema 2.0):
+  // { event_type, header fields…, message, sender }. This is the shape the
+  // running SDK really hands handlers — the nested data.event path never
+  // occurs over the long connection.
+  const flattened = {
+    schema: '2.0',
+    event_type: 'im.message.receive_v1',
+    token: 't', app_id: 'cli_x', tenant_key: 'k',
+    message: { message_id: 'om_9', chat_id: 'oc_9', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text: '/help' }) },
+    sender: { sender_id: { open_id: 'ou_flattened' } },
+  }
+  const n = normalizeInboundEvent('im.message.receive_v1', flattened)
+  assert.deepEqual(n, { kind: 'message', chatId: 'oc_9', messageId: 'om_9', senderOpenId: 'ou_flattened', text: '/help' })
+  const flatCard = {
+    schema: '2.0', event_type: 'card.action.trigger',
+    operator: { open_id: 'ou_o' }, action: { value: { actionId: 'a1' } }, context: { open_message_id: 'om_c2', open_chat_id: 'oc_c2' },
+  }
+  const c = normalizeInboundEvent('card.action.trigger', flatCard)
+  assert.deepEqual(c, { kind: 'card-action', actionId: 'a1', value: { actionId: 'a1' }, messageId: 'om_c2', chatId: 'oc_c2', operatorOpenId: 'ou_o' })
+})
+
 test('MessageDedup: same message_id seen twice reports duplicate', () => {
   const d = new MessageDedup({ ttlMs: 60_000 })
   assert.equal(d.seen('om_1'), false)

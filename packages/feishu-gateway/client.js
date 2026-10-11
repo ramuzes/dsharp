@@ -9,10 +9,11 @@
  *
  * The plugin contributes exactly one thing: the bundle's own configuration
  * card on the Plugins page (the `plugins.bundle.config` slot, keyed by the
- * package name). The card edits appId / appSecret / domain through a
+ * package name). The card edits appId / domain / App Secret through a
  * SettingsFormModel over the shared ConfigForm of the `feishu-gateway` row.
- * The secret is a write-through control: typed once, stored through
- * configForm.set, never echoed back — the card shows only 已配置/未配置.
+ * The secret is the model's write-only control (web-search-card pattern):
+ * staged with the form, written on save through the credentials Remote,
+ * never echoed back — the card shows only 已配置/未配置.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-feishu-gateway',
@@ -109,13 +110,14 @@ window.__ModuleLoader__.load({
 
     /**
      * The config card: shared form chrome, the two staged value fields, and
-     * the credentials-backed secret control (writes through the face's
-     * `storeSecret`; presence from the presence store). The Plugins page
-     * supplies `view` ('page' | 'summary'), `t`, the face's `useConfig`
-     * hook, the staged-form actions, and `storeSecret`.
+     * the credentials-backed secret control. The secret is staged with the
+     * rest of the form (`edit('appSecret', …)`) and written only on save,
+     * through the SettingsFormModel secret spec — the web-search-card
+     * pattern. The Plugins page supplies `view` ('page' | 'summary'), `t`,
+     * the face's `useConfig` hook, and the staged-form actions.
      */
     function FeishuGatewayConfigCard(props) {
-      const { view, t, useConfig, edit, resetField, save, discard, storeSecret } = props
+      const { view, t, useConfig, edit, resetField, save, discard } = props
       const state = useConfig(snapshot => snapshot)
       if (view === 'summary') return t('config.summary')
       const fieldProps = { state, edit, resetField }
@@ -126,31 +128,26 @@ window.__ModuleLoader__.load({
           label: t('config.appSecret'),
           hint: t('config.appSecretHint'),
           disabled: !state.writable,
-          text: '',
+          text: state.appSecret.text,
           configured: state.secretConfigured,
           stateLabel: state.secretConfigured ? t('config.secretSet') : t('config.secretUnset'),
-          onEdit: (text) => { storeSecret?.(text) },
+          onEdit: (text) => { edit('appSecret', text) },
         }),
         h(DomainField, { t, ...fieldProps }))
     }
 
     /**
      * Build the staged model over the row's shared ConfigForm. The secret
-     * does NOT ride the form: the control writes through the credentials
-     * Remote (`set`/`describe`, the Models-page API-key pattern) under the
-     * reference named by `appSecretEnv`, so the literal never touches a
-     * patch layer or a form response. Presence comes from
-     * CredentialInfo.configured and refreshes after each write.
+     * is one of the model's write-only controls (third constructor arg): its
+     * draft stages with the form, a save writes it through the credentials
+     * Remote under the reference named by `appSecretEnv`, and a blank draft
+     * writes nothing. The literal never rides a form response or a patch
+     * layer; presence comes from CredentialInfo.configured.
      * @param {any} ctx - client context carrying configForms + remote.credentials.
      * @returns {{face: () => object, dispose: () => void}} the slot registration inputs.
      */
     function buildConfigCard(ctx) {
       const configForm = ctx.configForms.get(ROW)
-      const model = new SettingsFormModel(
-        configForm,
-        [settingsTextField('appId'), settingsTextField('domain')],
-      )
-      const formStore = model.bind(() => ({}))
 
       /** The credential reference the Host resolves; `appSecretEnv` names it. */
       const refOf = () => {
@@ -158,50 +155,77 @@ window.__ModuleLoader__.load({
         return typeof value === 'string' && value !== '' ? value : 'FEISHU_APP_SECRET'
       }
 
-      // Secret presence store: written through remote.credentials, refreshed
-      // on subscribe and after each write, fanned out to the card's listeners.
+      // Secret presence, refreshed on subscribe and after each write, fanned
+      // out to the card's listeners. The config snapshot is MEMOIZED:
+      // getSnapshot must return the same object between notifications or
+      // React's useSyncExternalStore loops (Minified React error #185).
+      // Every notification invalidates the cache; the next read recomputes.
       let secretConfigured = false
+      let snapshotCache = null
       const listeners = new Set()
-      const notify = () => { for (const listener of listeners) listener() }
+      const notify = () => {
+        snapshotCache = null
+        for (const listener of listeners) listener()
+      }
       const refresh = async () => {
+        let next = false
         try {
           const response = await ctx.remote.credentials.describe([refOf()])
-          secretConfigured = response.ok ? (response.value?.[refOf()]?.configured ?? false) : false
+          next = response.ok ? (response.value?.[refOf()]?.configured ?? false) : false
         } catch {
-          secretConfigured = false
+          next = false
         }
+        if (next === secretConfigured && snapshotCache !== null) return
+        secretConfigured = next
         notify()
       }
-      const storeSecret = async (text) => {
+      /** The secret spec's save-time write: store, then re-read presence. */
+      const writeSecret = async (text) => {
         await ctx.remote.credentials.set(refOf(), text)
         await refresh()
+        return secretConfigured
       }
+
+      const model = new SettingsFormModel(
+        configForm,
+        [settingsTextField('appId'), settingsTextField('domain')],
+        [{ field: 'appSecret', write: writeSecret }],
+      )
+      const formStore = model.bind(() => ({}))
+      const computeSnapshot = () => ({
+        ...model.shell(),
+        appId: model.field('appId'),
+        domain: model.field('domain'),
+        appSecret: model.field('appSecret'),
+        secretConfigured,
+      })
 
       const face = () => ({
         hooks: {
           config: {
-            getSnapshot: () => ({
-              ...model.shell(),
-              appId: model.field('appId'),
-              domain: model.field('domain'),
-              secretConfigured,
-            }),
+            getSnapshot: () => {
+              if (snapshotCache === null) snapshotCache = computeSnapshot()
+              return snapshotCache
+            },
             subscribe: (listener) => {
               listeners.add(listener)
-              const offForm = formStore.subscribe(listener)
-              refresh()
+              const wake = () => {
+                snapshotCache = null
+                listener()
+              }
+              const offForm = formStore.subscribe(wake)
+              void refresh()
               return () => { listeners.delete(listener); offForm() }
             },
           },
         },
         ...model.actions(),
-        storeSecret,
       })
-      return { face, dispose: () => { model.dispose(); listeners.clear() } }
+      return { face, dispose: () => { model.dispose(); listeners.clear(); snapshotCache = null } }
     }
 
     return {
-      inject: ['slots', 'locale', 'configForms', 'remote.credentials'],
+      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.credentials'],
       apply(ctx) {
         const card = buildConfigCard(ctx)
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-feishu-gateway: dictionaries')

@@ -1,0 +1,34 @@
+{
+  "_doc": "https://open.feishu.cn/document/im-v1/message/events/receive — 接收消息 im.message.receive_v1 (schema 2.0), p2p text. This is the FLATTENED shape the SDK's EventDispatcher.parse() hands handlers (header/event spread to top level); the wire form nests the same fields under header/event. Verified against the live platform delivery of 2026-10-10.",
+  "schema": "2.0",
+  "header": {
+    "event_id": "e0f6c8f2c0d94f4ba1e6f8a2a3b4c5d6",
+    "event_type": "im.message.receive_v1",
+    "create_time": "1791627983603",
+    "token": "v6Mba1ZT37",
+    "app_id": "cli_aa437bb827741cea",
+    "tenant_key": "1b9564fad001975f"
+  },
+  "event": {
+    "sender": {
+      "sender_id": { "union_id": "on_x", "user_id": "uid_x", "open_id": "ou_sender" },
+      "sender_type": "user",
+      "tenant_key": "1b9564fad001975f"
+    },
+    "message": {
+      "message_id": "om_e2c39bb8c940d1a8c7b4e6f7a8b9c0d1",
+      "root_id": "",
+      "parent_id": "",
+      "thread_id": "",
+      "chat_id": "oc_44942de1ab4761f9787d9a7ac5654038",
+      "chat_type": "p2p",
+      "message_type": "text",
+      "content": "{\"text\":\"/help\"}",
+      "create_time": "1791627983000",
+      "update_time": "1791627983000",
+      "deleted": false,
+      "updated": false,
+      "mention": null
+    }
+  }
+}

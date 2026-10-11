@@ -177,6 +177,10 @@ export function makeProxyHandler(config, options = {}) {
  *  the launch environment; the legacy `token` field remains as a read-only
  *  fallback for profiles that predate the credential store. */
 export const Config = Schema.object({
+  // All volatile: volatile marks fields the Plugins-page form edits LIVE
+  // (settings.mutate persists accepted edits into the profile patch — it is
+  // not a persistence switch). An entry with no volatile field is dropped
+  // from the settings document and its form shows "configuration unavailable".
   baseUrl: Schema.string().default('http://ab.antaresy.cc').volatile(),
   token: Schema.string().role('secret').default('').volatile(),
   tokenEnv: Schema.string().role('credential-ref').default('AIRBOARD_TOKEN').volatile(),

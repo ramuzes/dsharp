@@ -6,6 +6,12 @@ import Schema from '@deepseek-ai/schemastery'
  * secret control writes into (and the launch environment may supply), and
  * the Host resolves it through `ctx.credentials` per boot. The form card
  * does not render this field — users only see the App Secret control.
+ *
+ * Every field is volatile: in DSH settings, volatile marks a field the
+ * Plugins-page form can edit LIVE (settings.mutate writes the accepted value
+ * into the profile patch — volatile does NOT mean "do not persist"). An
+ * entry whose schema has no volatile field is dropped from the settings
+ * document entirely and its form shows "configuration unavailable".
  */
 export const Config = Schema.object({
   appId: Schema.string().default('').volatile(),
