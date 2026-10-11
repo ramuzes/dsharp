@@ -35,9 +35,12 @@ export function guardDecision({ running }) {
 
 /** Map DSH single-writer errors to a friendly chat message. */
 export function translateGuardError(error) {
-  const text = `${error?.rpcError?.code ?? ''} ${error?.message ?? String(error)}`
+  const text = `${error?.rpcError?.code ?? ''} ${error?.constructor?.name ?? ''} ${error?.message ?? String(error)}`
   if (text.includes('writer-held') || text.includes('agent-busy')) {
     return '会话正被占用（可能在运行中）：请先 /stop 或稍后重试。'
+  }
+  if (text.includes('AlreadyOwned') || text.includes('already owned')) {
+    return '该会话正被另一个窗口/进程占用（例如在 dsh UI 里打开着）。请在那边关闭它，或 /session list 换一个会话。'
   }
   return error?.message ?? String(error)
 }

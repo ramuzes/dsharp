@@ -626,10 +626,22 @@ export class GatewayDriver {
   }
 
   async selectModel(chatId, sessionId, selection) {
+    // selectModel resolves (and when not live, RESUMES) the session — that
+    // takes its write lease and throws SessionAlreadyOwnedError when another
+    // window owns it. Probe first and answer with guidance; the probe race
+    // falls through to translateGuardError's mapping below.
+    if (sessionId !== undefined && this.ctx.agents.get(sessionId) === undefined
+      && await this.sessionLockHeld(sessionId)) {
+      return void this.lark.sendText(chatId, '该会话正被另一个窗口/进程占用，模型暂不能切换。请在那边关闭它，或 /session list 换一个会话。')
+    }
     // Real API: ctx.sessionController.selectModel takes the ModelSelection
     // fields flat on the request (packages/api/session-controller), not a
     // nested `selection` object.
-    await this.ctx.sessionController.selectModel({ sessionId, ...selection })
+    try {
+      await this.ctx.sessionController.selectModel({ sessionId, ...selection })
+    } catch (error) {
+      return void this.lark.sendText(chatId, translateGuardError(error))
+    }
   }
 
   async sendStatus(chatId) {

@@ -512,6 +512,17 @@ test('bare /model lists providers through listProviders + listModels(provider)',
   assert.ok(card, 'model picker card rendered')
 })
 
+test('model switch on a session owned by another window replies with guidance', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  driver.probeLock = async () => true
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/model zai-coding-cn/glm-5.3' })
+  assert.ok(sent.some(m => /模型暂不能切换/.test(m.text ?? '')), 'ownership collision answered with guidance, not a raw stack string')
+})
+
 test('model card action while running is rejected with the /stop hint', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
