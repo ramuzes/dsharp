@@ -512,6 +512,8 @@ export class GatewayDriver {
     // early-returned accepted). NOTE: the feishu origin does not ride the
     // durable message (source is the generic user-rpc identity, same as a
     // browser send) — acceptable: this gateway IS another browser.
+    // The Remote signature is (request, signal) and the FIRST line does
+    // signal.throwIfAborted() — an in-process caller must still pass one.
     const running = await this.isRunning(message.chatId)
     try {
       await this.ctx.sessionController.prompt({
@@ -519,7 +521,7 @@ export class GatewayDriver {
         sessionId: binding.activeSessionId,
         mode: running ? 'steer' : 'queue',
         content: [{ type: 'text', text: message.text }],
-      })
+      }, new AbortController().signal)
     } catch (error) {
       this.logger?.warn?.(`feishu-gateway: prompt rejected: ${String(error?.message ?? error)}`)
       return void this.lark.sendText(message.chatId, translateGuardError(error))

@@ -68,7 +68,11 @@ function makeCtx() {
         agents.set(request.sessionId, agent)
         return { sessionId: request.sessionId, agentPreset: 'standard' }
       },
-      prompt: async request => {
+      prompt: async (request, signal) => {
+        // Real Remote signature is (request, signal) and the first line is a
+        // BARE signal.throwIfAborted() — an in-process caller that passes no
+        // signal throws TypeError on every send. Mirror that strictly.
+        signal.throwIfAborted()
         prompts.push(request)
         const agent = agents.get(request.sessionId)
         if (agent !== undefined && request.mode === 'queue') agent.status = 'running'
