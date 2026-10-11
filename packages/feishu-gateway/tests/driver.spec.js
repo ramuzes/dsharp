@@ -117,6 +117,7 @@ function makeCtx() {
       interrupt() { this.interrupted = true; this.status = 'idle' },
     }
   }
+  ctx.forgetLiveAgent = id => agents.delete(id)
   return ctx
 }
 
@@ -140,28 +141,44 @@ function makeDriver(ctx) {
 test('plain message with no binding asks the user to bind a workspace', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: 'do something' })
   assert.match(JSON.stringify(sent), /\/ws/)
 })
 
-test('message after /ws use flows into a new session then resume+followup', async () => {
+test('task message without an active session asks for one (no auto-create)', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
-  const card = sent.find(s => s.type === 'interactive')
-  assert.ok(card, 'status card sent')
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
-  // the first task message created a session in /tmp/demo with a
-  // caller-generated feishu-* id (webhook pattern)
+  assert.ok(sent.some(m => /还没有活动会话/.test(m.text ?? '')), 'guidance instead of a silent new conversation')
+  assert.equal((await driver.router.get('oc_1')).activeSessionId, undefined, 'no session was created')
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/session new' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: 'fix the bug' })
   const binding = await driver.router.get('oc_1')
   assert.equal(binding.activeSessionId.startsWith('feishu-'), true)
   assert.equal(binding.workspacePath, '/tmp/demo')
+})
+
+test('task message resumes a non-live bound session instead of creating one', async () => {
+  const ctx = makeCtx()
+  const { driver } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  const binding = await driver.router.get('oc_1')
+  const first = binding.activeSessionId
+  ctx.forgetLiveAgent(first) // simulate a host restart: bound, not live
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'continue here' })
+  assert.equal((await driver.router.get('oc_1')).activeSessionId, first, 'resumed in place, pointer unchanged')
 })
 
 test('followup receives one UserMessage object shaped like the webhook template', async () => {
   const ctx = makeCtx()
   const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
   const binding = await driver.router.get('oc_1')
   const agent = ctx.agents.get(binding.activeSessionId)
@@ -178,6 +195,8 @@ test('steer receives the same UserMessage shape while running', async () => {
   const ctx = makeCtx()
   const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   const agent = ctx.agents.get(binding.activeSessionId)
@@ -192,6 +211,8 @@ test('/stop cancels the active agent with a user cause (falls back to interrupt)
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   const agent = ctx.agents.get(binding.activeSessionId)
@@ -211,6 +232,8 @@ test('turn end sends the trailing assistant text from deriveMessages, then the c
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   const agent = ctx.agents.get(binding.activeSessionId)
@@ -242,6 +265,8 @@ test('switch guard blocks /session new while running', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   ctx.agents.get(binding.activeSessionId).status = 'running'
@@ -263,6 +288,8 @@ test('openSession passes a generated sessionId and schema-valid meta only', asyn
   const ctx = makeCtx()
   const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
   const binding = await driver.router.get('oc_1')
   const agent = ctx.agents.get(binding.activeSessionId)
@@ -279,6 +306,8 @@ test('status card reads title from ctx.sessionTitle and model from requestHeader
   const { driver, sent } = makeDriver(ctx)
   ctx.sessionTitle = { get: () => ({ title: 'renamed by user' }) }
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/status' })
   const card = JSON.stringify(sent.filter(s => s.type === 'interactive').at(-1))
@@ -291,6 +320,8 @@ test('status card falls back to the binding title and a neutral model label', as
   const { driver, sent } = makeDriver(ctx)
   // strip the header: requestHeader absent → neutral label
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   ctx.agents.get(binding.activeSessionId).session.requestHeader = undefined
@@ -366,6 +397,8 @@ test('model card action while running is rejected with the /stop hint', async ()
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   ctx.agents.get(binding.activeSessionId).status = 'running'
@@ -397,6 +430,8 @@ test('diff card action threads seq and file index into workspaceChanges.diff', a
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   await driver.handleCardAction({
@@ -416,6 +451,8 @@ test('diff of a binary or oversized file sends a friendly text instead of a fenc
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   ctx.workspaceChanges.diff = async () => ({ kind: 'binary', path: 'a.png', display: 'a.png' })
   await driver.handleCardAction({

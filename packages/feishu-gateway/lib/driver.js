@@ -433,7 +433,12 @@ export class GatewayDriver {
       meta: { cwd: binding.workspacePath },
       ...(selected === undefined ? {} : { agentOptions: { provider: selected.provider, model: selected.model } }),
     })
-    this.ctx.workspaceRegistry.attachSession?.(binding.workspaceId, agent.session.id)
+    // Workspace attachment is a method on the registry ENTITY (webhook
+    // pattern: workspace.attachSession(id)) — the registry service itself
+    // has none, so the old optional call was a silent no-op and feishu
+    // sessions showed up Ungrouped/Untitled in the UI.
+    const workspace = this.ctx.workspaceRegistry.list().find(w => w.id === binding.workspaceId)
+    await workspace?.attachSession?.(agent.session.id)
     await this.router.setActive(chatId, agent.session.id, this.sessionTitleSnapshot(agent.session)?.title)
     return agent
   }
@@ -444,10 +449,20 @@ export class GatewayDriver {
       return void this.lark.sendText(message.chatId, '先绑定工作区：/ws list 查看，/ws use <名称> 切换。')
     }
     const source = { kind: FEISHU_SOURCE, chatId: message.chatId, senderOpenId: message.senderOpenId, messageId: message.messageId }
-    let agent = binding.activeSessionId !== undefined ? this.ctx.agents.get(binding.activeSessionId) : undefined
+    // No auto-creation here: a chat without an active session must be told
+    // to pick one (/ws use + /session new|resume|list), never silently
+    // dropped into a fresh unattached conversation.
+    if (binding.activeSessionId === undefined) {
+      return void this.lark.sendText(message.chatId, '还没有活动会话：/session new 新开，或 /session list 从历史中恢复。')
+    }
+    let agent = this.ctx.agents.get(binding.activeSessionId)
     if (agent === undefined) {
-      agent = await this.openSession(message.chatId, binding)
-    } else if (agent.status === 'running') {
+      // The bound session is not live (host restarted): resume it in place —
+      // do NOT wander off into a new session.
+      const { agent: resumed } = await this.ctx.agents.resume({ resumeSessionId: binding.activeSessionId })
+      agent = resumed
+    }
+    if (agent.status === 'running') {
       agent.steer?.(makeUserMessage(message.text, source))
       return
     }
