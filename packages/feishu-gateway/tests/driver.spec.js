@@ -14,8 +14,9 @@ import { BindingRouter } from '../lib/router.js'
  */
 function makeCtx() {
   const agents = new Map()
-  const mountedPresets = []
-  const resumedWith = []
+  const createdWith = []
+  const prompts = []
+  const cancels = []
   const workspaces = [
     { id: 'w1', title: 'demo', path: '/tmp/demo', sessionIds: ['session-old', 'session-mid', 'session-new'] },
     { id: 'w2', title: 'site', path: '/tmp/site', sessionIds: [] },
@@ -35,18 +36,6 @@ function makeCtx() {
     get: name => ctx[name],
     agents: {
       get: id => agents.get(id),
-      create: async opts => {
-        const agent = makeAgent(opts)
-        agents.set(agent.session.id, agent)
-        return { agent }
-      },
-      resume: async (opts) => {
-        resumedWith.push(opts)
-        const resumeSessionId = opts.resumeSessionId
-        const agent = agents.get(resumeSessionId) ?? makeAgent({ sessionId: resumeSessionId, meta: { cwd: '/tmp/demo' } })
-        agents.set(agent.session.id, agent)
-        return { agent }
-      },
     },
     workspaceRegistry: {
       list: () => workspaces,
@@ -69,11 +58,28 @@ function makeCtx() {
       },
     },
     agentDefaultModel: { currentSelection: () => ({ provider: 'zai-coding-cn', model: 'glm-5.3' }) },
-    agentPresets: {
-      resolve: async id => ({ id: id ?? 'standard' }),
-      mount: async (agentCtx, id) => { mountedPresets.push(id) },
-    },
     sessionController: {
+      // Fake of the Remote surface the driver speaks (gateway-as-browser):
+      // create/prompt/cancel record their requests and keep the fake agent
+      // registry in step so read-only status checks see live agents.
+      create: async request => {
+        createdWith.push(request)
+        const agent = makeAgent({ sessionId: request.sessionId })
+        agents.set(request.sessionId, agent)
+        return { sessionId: request.sessionId, agentPreset: 'standard' }
+      },
+      prompt: async request => {
+        prompts.push(request)
+        const agent = agents.get(request.sessionId)
+        if (agent !== undefined && request.mode === 'queue') agent.status = 'running'
+        return { accepted: true }
+      },
+      cancel: async request => {
+        cancels.push(request)
+        const agent = agents.get(request.sessionId)
+        if (agent !== undefined) agent.status = 'idle'
+        return { accepted: true }
+      },
       selectModel: async () => {},
       // Real surface: SessionSummary[] ordered by activity (updatedAt =
       // max(log update, lastPromptAt) — the GUI sidebar's "recent").
@@ -86,7 +92,10 @@ function makeCtx() {
     },
     sessionQuery: {
       listSessions: async () => queryRecords.map(r => ({ ...r })),
-      readSurface: async id => ({ session: { id, agentPreset: id.startsWith('session-') ? 'standard' : undefined } }),
+      readSurface: async id => ({
+        session: { id, agentPreset: id.startsWith('session-') ? 'standard' : undefined },
+        events: [{ type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: `done: ${String(id)}` }] } } }],
+      }),
       readTitleSnapshots: async ids => ids.map(id => ({
         status: 'fulfilled',
         value: { session: { id }, title: queryRecords.some(r => r.header.id === id) ? { title: `标题·${String(id)}` } : undefined },
@@ -104,7 +113,6 @@ function makeCtx() {
   function makeAgent(opts) {
     const id = opts.sessionId ?? `s${++seq}`
     return {
-      createdWith: opts,
       status: 'idle',
       session: {
         id,
@@ -119,16 +127,12 @@ function makeCtx() {
         // Real Session method (used by agent-loop src/agent.ts prepareRequest).
         requestHeader: () => ({ config: { provider: 'deepseek', model: 'deepseek-chat' } }),
       },
-      followuped: [],
-      followup(input) { this.followuped.push(input); this.status = 'running' },
-      steer(input) { this.steered = input },
-      cancel(cause) { this.cancelledWith = cause; this.status = 'idle' },
-      interrupt() { this.interrupted = true; this.status = 'idle' },
     }
   }
   ctx.forgetLiveAgent = id => agents.delete(id)
-  ctx.resumedWith = resumedWith
-  ctx.mountedPresets = mountedPresets
+  ctx.createdWith = createdWith
+  ctx.prompts = prompts
+  ctx.cancels = cancels
   return ctx
 }
 
@@ -184,59 +188,50 @@ test('task message resumes a non-live bound session instead of creating one', as
   assert.equal((await driver.router.get('oc_1')).activeSessionId, first, 'resumed in place, pointer unchanged')
 })
 
-test('followup receives one UserMessage object shaped like the webhook template', async () => {
+test('task delivery goes through sessionController.prompt with a fresh requestId', async () => {
   const ctx = makeCtx()
   const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
+  const binding = await driver.router.get('oc_1')
 
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
-  const binding = await driver.router.get('oc_1')
-  const agent = ctx.agents.get(binding.activeSessionId)
-  assert.equal(agent.followuped.length, 1)
-  const msg = agent.followuped[0]
-  // Shape mirrors webhook src/session.ts: createUserMessage({content:[{type:'text',text}], source:{kind:'webhook',...}})
-  assert.equal(msg.role, 'user')
-  assert.deepEqual(msg.content, [{ type: 'text', text: 'fix the bug' }])
-  assert.deepEqual(msg.source, { kind: 'feishu', chatId: 'oc_1', senderOpenId: 'ou_a', messageId: 'om_2' })
-  assert.ok(typeof msg.id === 'string' && msg.id.length > 0, 'message carries a stable identity')
+  assert.equal(ctx.prompts.length, 1)
+  const request = ctx.prompts[0]
+  // Real SessionPromptRequest (api/session-controller types.ts): requestId
+  // (client-minted, idempotency key), sessionId, mode, content parts.
+  assert.equal(typeof request.requestId, 'string')
+  assert.ok(request.requestId.length > 0)
+  assert.equal(request.sessionId, binding.activeSessionId)
+  assert.equal(request.mode, 'queue', 'idle session queues for the next turn')
+  assert.deepEqual(request.content, [{ type: 'text', text: 'fix the bug' }])
 })
 
-test('steer receives the same UserMessage shape while running', async () => {
+test('a running session steers via prompt mode steer', async () => {
   const ctx = makeCtx()
   const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
-
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
-  const agent = ctx.agents.get(binding.activeSessionId)
-  agent.status = 'running'
+  ctx.agents.get(binding.activeSessionId).status = 'running'
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_b', text: 'actually use the other file' })
-  assert.equal(agent.steered.role, 'user')
-  assert.deepEqual(agent.steered.content, [{ type: 'text', text: 'actually use the other file' }])
-  assert.deepEqual(agent.steered.source, { kind: 'feishu', chatId: 'oc_1', senderOpenId: 'ou_b', messageId: 'om_3' })
+  assert.equal(ctx.prompts.at(-1).mode, 'steer', 'running turn receives the message as steering')
+  assert.deepEqual(ctx.prompts.at(-1).content, [{ type: 'text', text: 'actually use the other file' }])
+  assert.equal(ctx.prompts.length, 1, 'the running-turn message still goes through prompt()')
 })
 
-test('/stop cancels the active agent with a user cause (falls back to interrupt)', async () => {
+test('/stop cancels through sessionController.cancel', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
-
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
-  const agent = ctx.agents.get(binding.activeSessionId)
-  agent.status = 'running'
+  ctx.agents.get(binding.activeSessionId).status = 'running'
+
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/stop' })
-  assert.deepEqual(agent.cancelledWith, { kind: 'user' })
-  assert.equal(agent.interrupted, undefined, 'cancel() was available, so interrupt() is not used')
+  assert.deepEqual(ctx.cancels, [{ sessionId: binding.activeSessionId }])
   assert.match(JSON.stringify(sent), /当前状态/)
-  // fallback: an agent without cancel() still gets interrupt()
-  const legacyAgent = { status: 'running', session: { id: binding.activeSessionId }, interrupt() { this.interrupted = true } }
-  ctx.agents.get = () => legacyAgent
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: '/stop' })
-  assert.equal(legacyAgent.interrupted, true)
 })
 
 test('turn end sends the trailing assistant text from deriveMessages, then the changes card', async () => {
@@ -285,31 +280,20 @@ test('switch guard blocks /session new while running', async () => {
   assert.match(JSON.stringify(sent), /\/stop/)
 })
 
-test('openSession carries the default model in agentOptions ({{model}} variable)', async () => {
+test('openSession goes through sessionController.create with workspaceId', async () => {
   const ctx = makeCtx()
   const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  // Real SessionCreateRequest: caller-minted sessionId (feishu- prefix for
+  // sidebar recognizability) + the bound workspace. The host composes the
+  // preset, default model, and workspace attachment itself.
+  assert.equal(ctx.createdWith.length, 1)
+  assert.match(ctx.createdWith[0].sessionId, /^feishu-[0-9a-f-]{36}$/)
+  assert.equal(ctx.createdWith[0].workspaceId, 'w1')
+  assert.deepEqual(Object.keys(ctx.createdWith[0]).sort(), ['sessionId', 'workspaceId'])
   const binding = await driver.router.get('oc_1')
-  const agent = ctx.agents.get(binding.activeSessionId)
-  assert.deepEqual(agent.createdWith.agentOptions, { provider: 'zai-coding-cn', model: 'glm-5.3' })
-})
-
-test('openSession passes a generated sessionId and schema-valid meta only', async () => {
-  const ctx = makeCtx()
-  const { driver } = makeDriver(ctx)
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
-
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix the bug' })
-  const binding = await driver.router.get('oc_1')
-  const agent = ctx.agents.get(binding.activeSessionId)
-  // Real API: caller-generated sessionId (webhook pattern); meta only carries
-  // schema-valid fields — the feishu origin rides the UserMessage source.
-  assert.match(agent.createdWith.sessionId, /^feishu-[0-9a-f-]{36}$/)
-  assert.equal(agent.createdWith.meta.cwd, '/tmp/demo')
-  assert.equal(agent.createdWith.meta.source, undefined)
-  assert.equal('feishuSource' in agent.session, false, 'no dead mirror on the host session object')
+  assert.equal(binding.activeSessionId, ctx.createdWith[0].sessionId)
 })
 
 test('status card reads title from ctx.sessionTitle and model from requestHeader', async () => {
@@ -379,54 +363,35 @@ test('/session resume <序号|前缀> resumes that session and switches the poin
   assert.ok(sent.some(m => JSON.stringify(m).includes('📎 上一轮输出')), 'recall of the last assistant output after switching')
 })
 
-test('a session owned by another window replies with guidance instead of crashing', async () => {
+test('a writer-held prompt reply surfaces as guidance instead of crashing', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
-  driver.probeLock = async () => true // kernel write lease held elsewhere
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
-  const before = sent.length
-  // Direct resume form:
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/session resume 1' })
-  assert.ok(sent.slice(before).some(m => /正被另一个窗口\/进程占用/.test(m.text ?? '')), 'collision translated for the user')
-  // Task delivery to the same owned session:
-  ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: 'continue' })
-  assert.ok(sent.some(m => /正被另一个窗口\/进程占用/.test(m.text ?? '')), 'task delivery also degrades to guidance')
-})
-
-test('resumed agents carry the default model too ({{model}} on resume path)', async () => {
-  const ctx = makeCtx()
-  const { driver } = makeDriver(ctx)
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session resume 1' })
-  assert.deepEqual(ctx.resumedWith[0].agentOptions, { provider: 'zai-coding-cn', model: 'glm-5.3' })
-  // Task delivery to a non-live bound session resumes the same way.
-  ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'continue' })
-  assert.ok(ctx.resumedWith.length >= 2 && ctx.resumedWith.at(-1).agentOptions?.model === 'glm-5.3')
-})
-
-test('agents are composed with their preset — create records it, resume reuses the session own', async () => {
-  const ctx = makeCtx()
-  const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
   const binding = await driver.router.get('oc_1')
-  const agent = ctx.agents.get(binding.activeSessionId)
-  // Create: default preset resolved, mounted in setup, recorded in durable meta.
-  assert.equal(agent.createdWith.meta.agentPreset, 'standard')
-  assert.equal(typeof agent.createdWith.setup, 'function')
-  await agent.createdWith.setup({ tag: 'agentCtx' })
-  assert.deepEqual(ctx.mountedPresets, ['standard'])
-  // Resume (the session- prefix fixture carries agentPreset 'standard'): the
-  // session's OWN preset is used — never a blind default that would strip
-  // its tool history (the 36-tool-removal regression).
-  ctx.forgetLiveAgent(binding.activeSessionId)
+  ctx.forgetLiveAgent(binding.activeSessionId) // cold: the host would resume it
+  // Cross-process collision now surfaces as the typed RemoteError from
+  // prompt()/selectModel() — no local flock probe on the write path anymore.
+  const held = Object.assign(new Error('session is owned by another host process'), { code: 'session/writer-held' })
+  ctx.sessionController.prompt = async () => { throw held }
+  ctx.sessionController.selectModel = async () => { throw held }
+  const before = sent.length
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'continue' })
-  assert.equal(ctx.resumedWith.at(-1).setup !== undefined, true, 'resume carries a setup')
-  await ctx.resumedWith.at(-1).setup({ tag: 'agentCtx2' })
-  assert.deepEqual(ctx.mountedPresets, ['standard', 'standard'], 'session preset re-mounted on resume')
+  assert.ok(sent.slice(before).some(m => /正被另一个窗口\/进程占用/.test(m.text ?? '')), 'prompt collision translated for the user')
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: '/model zai-coding-cn/glm-5.3' })
+  assert.ok(sent.slice(before).some(m => /正被另一个窗口\/进程占用/.test(m.text ?? '') && m.text.includes('关闭它')), 'model switch collision also degrades to guidance')
+})
+
+test('a not-found prompt reply points back to /session list', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  ctx.sessionController.prompt = async () => {
+    throw Object.assign(new Error('no such session'), { code: 'session/not-found' })
+  }
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'continue' })
+  assert.ok(sent.some(m => /会话不存在/.test(m.text ?? '')), 'gone session explained with a next action')
 })
 
 test('task delivery replies 工作中 and turn errors reach the chat', async () => {
@@ -512,15 +477,18 @@ test('bare /model lists providers through listProviders + listModels(provider)',
   assert.ok(card, 'model picker card rendered')
 })
 
-test('model switch on a session owned by another window replies with guidance', async () => {
+test('/model selects through sessionController with a flat ModelSelection request', async () => {
   const ctx = makeCtx()
-  const { driver, sent } = makeDriver(ctx)
-  driver.probeLock = async () => true
+  const { driver } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
-  ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
+  const binding = await driver.router.get('oc_1')
+  const requests = []
+  ctx.sessionController.selectModel = async (request) => { requests.push(request) }
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/model zai-coding-cn/glm-5.3' })
-  assert.ok(sent.some(m => /模型暂不能切换/.test(m.text ?? '')), 'ownership collision answered with guidance, not a raw stack string')
+  assert.equal(requests.length, 1)
+  // Flat ModelSelection fields on the request — no nested `selection` object.
+  assert.deepEqual(requests[0], { sessionId: binding.activeSessionId, provider: 'zai-coding-cn', model: 'glm-5.3' })
 })
 
 test('model card action while running is rejected with the /stop hint', async () => {
@@ -541,19 +509,6 @@ test('model card action while running is rejected with the /stop hint', async ()
   })
   assert.match(JSON.stringify(sent), /\/stop/)
   assert.equal(selectModelCalls, 0)
-})
-
-test('/model selects through sessionController with a flat ModelSelection request', async () => {
-  const ctx = makeCtx()
-  const { driver, sent } = makeDriver(ctx)
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
-  const binding = await driver.router.get('oc_1')
-  const requests = []
-  ctx.sessionController.selectModel = async (request) => { requests.push(request) }
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/model zai-coding-cn/glm-5.3' })
-  assert.equal(requests.length, 1)
-  // Flat ModelSelection fields on the request — no nested `selection` object.
-  assert.deepEqual(requests[0], { sessionId: binding.activeSessionId, provider: 'zai-coding-cn', model: 'glm-5.3' })
 })
 
 test('diff card action threads seq and file index into workspaceChanges.diff', async () => {

@@ -29,9 +29,14 @@ test('guardDecision blocks running sessions with guidance', () => {
   assert.deepEqual(guardDecision({ running: false }), { allowed: true })
 })
 
-test('translateGuardError maps writer-held and agent-busy', () => {
-  assert.match(translateGuardError(new Error('rpc session/writer-held')), /运行中/)
+test('translateGuardError maps the typed RemoteError codes', () => {
+  // RemoteError carries the namespaced code on `.code` (typert protocol).
+  const held = Object.assign(new Error('owned by another host process'), { code: 'session/writer-held' })
+  assert.match(translateGuardError(held), /正被另一个窗口\/进程占用/)
+  assert.match(translateGuardError({ code: 'session/agent-busy' }), /运行中/)
   assert.match(translateGuardError({ rpcError: { code: 'session/agent-busy' } }), /运行中/)
+  assert.match(translateGuardError({ code: 'session/not-found' }), /会话不存在/)
+  assert.match(translateGuardError({ code: 'session/model-unavailable', message: 'glm-9 gone' }), /glm-9 gone/)
   assert.match(translateGuardError(new Error('boom')), /boom/)
 })
 

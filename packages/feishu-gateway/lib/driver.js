@@ -4,13 +4,25 @@
  * output and previews out. Owns no transport — the caller wires normalized
  * events to handleInbound/handleCardAction/onSessionEvent.
  *
- * Host API surface this module relies on (verified against the dsh checkout):
- * - Agent.followup(input: UserMessage) / Agent.steer(input: UserMessage)
- *   (packages/core/agent-loop/src/agent.ts)
- * - Agent.cancel(cause: AgentCancelCause) with cause { kind: 'user' }
- *   (packages/core/agent-loop/src/agent.ts)
+ * ARCHITECTURE (ADR: gateway-as-browser): this driver never composes Agents
+ * itself. It is a client of the SAME host Remote surface the Web GUI speaks
+ * (packages/api/session-controller), consumed in-process — one writer (the
+ * host), many clients. What that replaces, and why it is correct:
+ * - prompt()/create()/selectModel() resume sessions with the session's own
+ *   preset and model handling internally (commands.ts resolveAgent) — the
+ *   {{model}}-variable and hollow-agent (tool-removal) failure classes this
+ *   plugin hit when calling agents.create/resume directly cannot recur.
+ * - Cross-process ownership surfaces as the typed RemoteError
+ *   `session/writer-held`; in one host process the UI and this gateway share
+ *   the same live Agent instance, so no lock contention exists at all.
+ * - prompt carries a client-minted requestId and is idempotent; queueing
+ *   (mode 'queue') and steering (mode 'steer') are host features.
+ *
+ * Other host surfaces relied on (verified against the dsh checkout):
  * - Session.deriveMessages(): Message[] and Session.requestHeader()
  *   (packages/core/session/src/index.ts)
+ * - ctx.sessionQuery.readSurface(sessionId) → { session, events }
+ *   (packages/session-query): cold reads of header + surface events.
  * - ctx.sessionTitle.get(session) → { title } snapshot
  *   (packages/session/session-title/src/index.ts)
  * - ctx.workspaceChanges.summary(sessionId, seq) /
@@ -23,31 +35,6 @@ import { open as openFile, readdir } from 'node:fs/promises'
 import { parseCommand, guardDecision, translateGuardError, HELP_TEXT } from './commands.js'
 import { formatAndSendText, buildStatusCard, renderChangesCard, renderDiffMessage, renderDiffBody, buildPostContent } from './formatter.js'
 import { readStatus, readEvents } from './status.js'
-
-const FEISHU_SOURCE = 'feishu'
-
-/**
- * The real createUserMessage from '@deepseek-ai/dsh-llm' when the host peer
- * package resolves (it does inside dsh; webhook src/session.ts uses it). The
- * local fallback replicates its exact output shape: a frozen message with a
- * fresh uuid identity, role 'user', content blocks, and the source object.
- */
-let hostCreateUserMessage = undefined
-import('@deepseek-ai/dsh-llm')
-  .then(m => { if (typeof m?.createUserMessage === 'function') hostCreateUserMessage = m.createUserMessage })
-  .catch(() => { /* standalone/test context: the local fallback below is used */ })
-
-/** Build the UserMessage object followup/steer expect (webhook template shape). */
-function makeUserMessage(text, source) {
-  const content = [{ type: 'text', text }]
-  if (hostCreateUserMessage !== undefined) return hostCreateUserMessage({ content, source })
-  return Object.freeze({
-    id: randomUUID(),
-    role: 'user',
-    content: Object.freeze([{ ...content[0] }]),
-    source,
-  })
-}
 
 /**
  * The final assistant text of a turn, read from the REAL session surface:
@@ -105,12 +92,15 @@ export class GatewayDriver {
         case 'status': return void this.sendStatus(chatId)
         case 'doctor': return this.runDoctor(chatId)
         case 'stop': {
-          const agent = await this.activeAgent(chatId)
-          // Real cancellation API (agent-loop src/agent.ts): cancel(cause, options).
-          // interrupt() stays only as a fallback guard for agents without it.
-          if (agent === undefined) return void this.sendStatus(chatId)
-          if (typeof agent.cancel === 'function') agent.cancel({ kind: 'user' })
-          else agent?.interrupt?.()
+          const binding = await this.router.get(chatId)
+          if (binding?.activeSessionId === undefined) return void this.sendStatus(chatId)
+          // Host Remote: cancel() interrupts the active turn without dropping
+          // the pending inbox — replacing direct agent.cancel access.
+          try {
+            await this.ctx.sessionController.cancel({ sessionId: binding.activeSessionId })
+          } catch (error) {
+            return void this.lark.sendText(chatId, translateGuardError(error))
+          }
           return void this.sendStatus(chatId)
         }
         case 'ws': return this.runWs(cmd, message)
@@ -287,17 +277,16 @@ export class GatewayDriver {
     return prefixed.length === 1 ? prefixed[0] : undefined
   }
 
-  /** Guarded resume + pointer switch + status card, then the last turn's
-   * assistant output so the user recalls what this session was about. */
+  /** Pointer switch + status card, then the last turn's assistant output
+   * (cold-read through sessionQuery) so the user recalls what this session
+   * was about. No Agent is resumed here: the host resumes lazily on the next
+   * prompt, so a mere pointer switch can never fight for the write lease. */
   async resumeSession(chatId, target, title) {
     const guard = guardDecision({ running: await this.isRunning(chatId) })
     if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
-    const resumed = await this.resumeAgent(target.header.id)
-    if (resumed.error !== undefined) return void this.lark.sendText(chatId, resumed.error)
-    const { agent } = resumed
-    await this.router.setActive(chatId, target.header.id, title ?? this.sessionTitleSnapshot(agent?.session)?.title)
+    await this.router.setActive(chatId, target.header.id, title)
     await this.sendStatus(chatId)
-    const last = lastAssistantText(agent?.session)
+    const last = await this.lastAssistantTextFromQuery(target.header.id)
     if (last !== '') {
       const recall = `📎 上一轮输出：\n${last.slice(0, 600)}${last.length > 600 ? '…' : ''}`
       await formatAndSendText(this.lark, chatId, recall, { chunkLimit: this.config.messageChunkLimit })
@@ -435,77 +424,26 @@ export class GatewayDriver {
     return agent?.status === 'running'
   }
 
-  /**
-   * Compose the agent's scoped world the way session-controller does it
-   * (api/session-controller/src/agent.ts composeAgent): resolve the preset
-   * and mount it inside the setup callback — the preset carries the tools,
-   * prompt, and plugin composition. Without it the resumed agent is a hollow
-   * shell: every historical tool gets a durable tool-removal event written
-   * into the session log (the 36-tool loss). Public services only:
-   * ctx.agentPresets.resolve/mount and the session header's durable
-   * agentPreset field.
-   * @param {string | undefined} presetId - the session's own preset on
-   *   resume; undefined resolves the deployment default (new sessions).
-   */
-  async composeSetup(presetId) {
-    const presets = this.ctx.get?.('agentPresets')
-    if (presets === undefined) return { agentPreset: undefined, setup: undefined }
-    const resolved = await presets.resolve(presetId)
-    return {
-      agentPreset: resolved.id,
-      setup: async (agentCtx) => { await presets.mount(agentCtx, resolved.id) },
-    }
-  }
-
-  /** The session's durable preset, read through the public query surface. */
-  async sessionPreset(sessionId) {
-    try {
-      const surface = await this.ctx.sessionQuery.readSurface(sessionId)
-      return surface?.session?.agentPreset
-    } catch {
-      return undefined
-    }
-  }
-
   async openSession(chatId, binding) {
-    // Real API (webhook template pattern): the caller GENERATES the session
-    // id and passes sessionId — agents.create builds the Agent's id from it,
-    // and omitting it produced "agent id \"undefined\" does not match session
-    // id \"session-N\"" (the session store auto-assigns its own counter id).
-    // meta carries only schema-valid fields; the feishu origin rides the
-    // UserMessage source instead (see makeUserMessage / FEISHU_SOURCE).
+    // Host Remote create(): idempotent adopt-or-create with the session's
+    // preset composed and the workspace attached by the host itself
+    // (commands.ts create → agents.ensureSession + workspace.attachSession).
+    // The caller still GENERATES the session id so feishu sessions are
+    // recognizable in the UI sidebar.
     const sessionId = `feishu-${randomUUID()}`
-    // Webhook pattern: pass the default model in agentOptions — the
-    // {{model}}/{{provider}} prompt variables read agent.options.model, and
-    // agents without one fail every turn with 'prompt variable "{{model}}"
-    // has no value'.
-    const selected = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
-    const { agentPreset, setup } = await this.composeSetup()
-    const { agent } = await this.ctx.agents.create({
-      sessionId,
-      // The durable agentPreset is what a later resume reads back — record it
-      // exactly like session-controller's create does.
-      meta: { cwd: binding.workspacePath, ...(agentPreset === undefined ? {} : { agentPreset }) },
-      ...(selected === undefined ? {} : { agentOptions: { provider: selected.provider, model: selected.model } }),
-      ...(setup === undefined ? {} : { setup }),
-    })
-    // Workspace attachment is a method on the registry ENTITY (webhook
-    // pattern: workspace.attachSession(id)) — the registry service itself
-    // has none, so the old optional call was a silent no-op and feishu
-    // sessions showed up Ungrouped/Untitled in the UI.
-    const workspace = this.ctx.workspaceRegistry.list().find(w => w.id === binding.workspaceId)
-    await workspace?.attachSession?.(agent.session.id)
-    await this.router.setActive(chatId, agent.session.id, this.sessionTitleSnapshot(agent.session)?.title)
-    return agent
+    const value = await this.ctx.sessionController.create({ sessionId, workspaceId: binding.workspaceId })
+    const session = this.ctx.agents.get(value.sessionId)?.session
+    await this.router.setActive(chatId, value.sessionId, this.sessionTitleSnapshot(session)?.title)
+    return value.sessionId
   }
 
   /**
    * Whether another process holds the session's kernel write lease
    * (session.lock flock — the same primitive the persistence layer uses).
-   * A cross-host ownership probe: a session open in another dsh window/host
-   * cannot be resumed here, and letting agents.resume discover that throws
-   * SessionAlreadyOwnedError deep inside the host (whose rejection path
-   * kills the process). Probing first turns the collision into a reply.
+   * DIAGNOSTIC ONLY since the Remote-prompt refactor (/doctor): the write
+   * path itself no longer probes — cross-process collisions surface as the
+   * typed `session/writer-held` RemoteError from prompt/selectModel and are
+   * translated at the edge.
    */
   async sessionLockHeld(sessionId) {
     if (this.probeLock !== undefined) return this.probeLock(sessionId)
@@ -533,32 +471,26 @@ export class GatewayDriver {
     }
   }
 
-  /** Guarded resume: lock probe first, friendly translation on collision. */
-  async resumeAgent(sessionId) {
-    if (await this.sessionLockHeld(sessionId)) {
-      return { error: '该会话正被另一个窗口/进程占用（例如在 dsh UI 里打开着）。请在那边关闭它，或 /session list 换一个会话。' }
-    }
+  /** Last assistant text of a session, cold-read through the public query
+   * surface (sessionQuery.readSurface) — no Agent resume needed. Empty when
+   * the session or its surface is unavailable, or it holds no assistant
+   * message. */
+  async lastAssistantTextFromQuery(sessionId) {
     try {
-      // Same rule as openSession: resumed agents need agentOptions.model too
-      // ({{model}} reads agent.options.model); without it every turn dies
-      // with 'prompt variable "{{model}}" has no value'.
-      const selected = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
-      // Resume with the session's OWN preset (session-controller's
-      // assertPresetUnchanged rule): a different composition would replay
-      // history the model can no longer act on.
-      const { setup } = await this.composeSetup(await this.sessionPreset(sessionId))
-      const { agent } = await this.ctx.agents.resume({
-        resumeSessionId: sessionId,
-        ...(selected === undefined ? {} : { agentOptions: { provider: selected.provider, model: selected.model } }),
-        ...(setup === undefined ? {} : { setup }),
-      })
-      return { agent }
-    } catch (error) {
-      const text = `${error?.constructor?.name ?? ''} ${String(error?.message ?? error)}`
-      if (text.includes('AlreadyOwned') || text.includes('already owned')) {
-        return { error: '该会话正被另一个窗口/进程占用。请在那边关闭它，或 /session list 换一个会话。' }
+      const surface = await this.ctx.sessionQuery.readSurface(sessionId)
+      const events = surface?.events ?? []
+      for (let i = events.length - 1; i >= 0; i--) {
+        const record = events[i]
+        if ((record?.type ?? record?.event?.type) !== 'assistant/message') continue
+        const message = record?.data?.message ?? record?.event?.data?.message
+        return (message?.content ?? [])
+          .filter(block => block?.type === 'text')
+          .map(block => block.text)
+          .join('')
       }
-      throw error
+      return ''
+    } catch {
+      return ''
     }
   }
 
@@ -567,28 +499,32 @@ export class GatewayDriver {
     if (binding === undefined) {
       return void this.lark.sendText(message.chatId, '先绑定工作区：/ws list 查看，/ws use <名称> 切换。')
     }
-    const source = { kind: FEISHU_SOURCE, chatId: message.chatId, senderOpenId: message.senderOpenId, messageId: message.messageId }
     // No auto-creation here: a chat without an active session must be told
     // to pick one (/ws use + /session new|resume|list), never silently
     // dropped into a fresh unattached conversation.
     if (binding.activeSessionId === undefined) {
       return void this.lark.sendText(message.chatId, '还没有活动会话：/session new 新开，或 /session list 从历史中恢复。')
     }
-    let agent = this.ctx.agents.get(binding.activeSessionId)
-    if (agent === undefined) {
-      // The bound session is not live (host restarted): resume it in place —
-      // do NOT wander off into a new session.
-      const resumed = await this.resumeAgent(binding.activeSessionId)
-      if (resumed.error !== undefined) return void this.lark.sendText(message.chatId, resumed.error)
-      agent = resumed.agent
+    // Host Remote prompt(): resumes a cold session with its own preset,
+    // validates attachments, admits the message. mode 'steer' inserts into
+    // the running turn, 'queue' holds it for the next one — the host owns
+    // both behaviors. requestId makes retries idempotent (a repeated id is
+    // early-returned accepted). NOTE: the feishu origin does not ride the
+    // durable message (source is the generic user-rpc identity, same as a
+    // browser send) — acceptable: this gateway IS another browser.
+    const running = await this.isRunning(message.chatId)
+    try {
+      await this.ctx.sessionController.prompt({
+        requestId: randomUUID(),
+        sessionId: binding.activeSessionId,
+        mode: running ? 'steer' : 'queue',
+        content: [{ type: 'text', text: message.text }],
+      })
+    } catch (error) {
+      this.logger?.warn?.(`feishu-gateway: prompt rejected: ${String(error?.message ?? error)}`)
+      return void this.lark.sendText(message.chatId, translateGuardError(error))
     }
-    if (agent.status === 'running') {
-      agent.steer?.(makeUserMessage(message.text, source))
-      await this.lark.sendText(message.chatId, '⚡ 已插入当前回合，工作中…')
-      return
-    }
-    agent.followup(makeUserMessage(message.text, source))
-    await this.lark.sendText(message.chatId, '⚡ 工作中…（/stop 可打断）')
+    await this.lark.sendText(message.chatId, running ? '⚡ 已插入当前回合' : '⚡ 工作中…（/stop 可打断）')
   }
 
   /** Arm the once-per-turn "still running" watchdog (config 0 disables). */
@@ -626,17 +562,9 @@ export class GatewayDriver {
   }
 
   async selectModel(chatId, sessionId, selection) {
-    // selectModel resolves (and when not live, RESUMES) the session — that
-    // takes its write lease and throws SessionAlreadyOwnedError when another
-    // window owns it. Probe first and answer with guidance; the probe race
-    // falls through to translateGuardError's mapping below.
-    if (sessionId !== undefined && this.ctx.agents.get(sessionId) === undefined
-      && await this.sessionLockHeld(sessionId)) {
-      return void this.lark.sendText(chatId, '该会话正被另一个窗口/进程占用，模型暂不能切换。请在那边关闭它，或 /session list 换一个会话。')
-    }
-    // Real API: ctx.sessionController.selectModel takes the ModelSelection
-    // fields flat on the request (packages/api/session-controller), not a
-    // nested `selection` object.
+    // Host Remote selectModel resumes the session when cold; a cross-process
+    // owner surfaces as session/writer-held, translated at the edge.
+    if (sessionId === undefined) return
     try {
       await this.ctx.sessionController.selectModel({ sessionId, ...selection })
     } catch (error) {

@@ -35,12 +35,21 @@ export function guardDecision({ running }) {
 
 /** Map DSH single-writer errors to a friendly chat message. */
 export function translateGuardError(error) {
-  const text = `${error?.rpcError?.code ?? ''} ${error?.constructor?.name ?? ''} ${error?.message ?? String(error)}`
-  if (text.includes('writer-held') || text.includes('agent-busy')) {
+  // RemoteError carries the namespaced code on `.code` (typert protocol,
+  // e.g. 'session/writer-held'); `rpcError.code` covers other host wrappers.
+  const code = String(error?.code ?? error?.rpcError?.code ?? '')
+  const text = `${code} ${error?.constructor?.name ?? ''} ${error?.message ?? String(error)}`
+  if (code === 'session/writer-held' || text.includes('AlreadyOwned') || text.includes('already owned')) {
+    return '该会话正被另一个窗口/进程占用（例如在 dsh UI 里打开着）。请在那边关闭它，或 /session list 换一个会话。'
+  }
+  if (code === 'session/agent-busy' || text.includes('agent-busy')) {
     return '会话正被占用（可能在运行中）：请先 /stop 或稍后重试。'
   }
-  if (text.includes('AlreadyOwned') || text.includes('already owned')) {
-    return '该会话正被另一个窗口/进程占用（例如在 dsh UI 里打开着）。请在那边关闭它，或 /session list 换一个会话。'
+  if (code === 'session/not-found') {
+    return '会话不存在（可能已被删除或归档）：/session list 换一个会话。'
+  }
+  if (code === 'session/model-unavailable') {
+    return `模型不可用：${String(error?.message ?? '')}`
   }
   return error?.message ?? String(error)
 }
