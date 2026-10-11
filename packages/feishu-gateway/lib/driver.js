@@ -17,6 +17,9 @@
  *   .diff(sessionId, seq, index) (packages/deliverables/workspace-changes/src/types.ts)
  */
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { open as openFile, readdir } from 'node:fs/promises'
 import { parseCommand, guardDecision, translateGuardError, HELP_TEXT } from './commands.js'
 import { formatAndSendText, buildStatusCard, renderChangesCard, renderDiffMessage, renderDiffBody, buildPostContent } from './formatter.js'
 
@@ -153,14 +156,14 @@ export class GatewayDriver {
       await this.openSession(chatId, binding)
       return void this.sendStatus(chatId)
     }
-    if (cmd.sub === 'list') return void this.sessionList(chatId, binding, Number(cmd.args[0]) || 1)
+    if (cmd.sub === 'list') return this.sessionList(chatId, binding, Number(cmd.args[0]) || 1)
     if (cmd.sub === 'resume') {
       // Direct form /session resume <id|id前缀|最新优先序号>: resume without
       // the picker card. Bare /session resume still shows the picker.
       if (cmd.args.length > 0) {
         const target = await this.resolveSessionArg(cmd.args[0], binding)
         if (target === undefined) return void this.lark.sendText(chatId, '没有匹配的会话：可传完整/前缀 sessionId，或 /session list 里的序号。')
-        return void this.resumeSession(chatId, target)
+        return this.resumeSession(chatId, target)
       }
       const history = await this.router.history(chatId)
       if (history.length === 0) return void this.lark.sendText(chatId, '没有可恢复的历史会话；/session list 看工作区全部会话。')
@@ -285,7 +288,9 @@ export class GatewayDriver {
   async resumeSession(chatId, target, title) {
     const guard = guardDecision({ running: await this.isRunning(chatId) })
     if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
-    const { agent } = await this.ctx.agents.resume({ resumeSessionId: target.header.id })
+    const resumed = await this.resumeAgent(target.header.id)
+    if (resumed.error !== undefined) return void this.lark.sendText(chatId, resumed.error)
+    const { agent } = resumed
     await this.router.setActive(chatId, target.header.id, title ?? this.sessionTitleSnapshot(agent?.session)?.title)
     await this.sendStatus(chatId)
     const last = lastAssistantText(agent?.session)
@@ -443,6 +448,57 @@ export class GatewayDriver {
     return agent
   }
 
+  /**
+   * Whether another process holds the session's kernel write lease
+   * (session.lock flock — the same primitive the persistence layer uses).
+   * A cross-host ownership probe: a session open in another dsh window/host
+   * cannot be resumed here, and letting agents.resume discover that throws
+   * SessionAlreadyOwnedError deep inside the host (whose rejection path
+   * kills the process). Probing first turns the collision into a reply.
+   */
+  async sessionLockHeld(sessionId) {
+    if (this.probeLock !== undefined) return this.probeLock(sessionId)
+    let flock
+    try { flock = await import('@deepseek-ai/node-addon-system/flock') } catch { return false }
+    try {
+      const roots = await readdir(join(homedir(), '.dsh', 'sessions'), { withFileTypes: true })
+      for (const root of roots) {
+        if (root.isDirectory() !== true) continue
+        const handle = await openFile(join(homedir(), '.dsh', 'sessions', root.name, sessionId, 'session.lock'), 'r')
+          .catch(() => undefined)
+        if (handle === undefined) continue
+        try {
+          await flock.tryLockExclusive(handle.fd)
+          return false // free: probe lock released when the handle closes
+        } catch {
+          return true // EAGAIN: someone else owns the write lease
+        } finally {
+          await handle.close().catch(() => {})
+        }
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  /** Guarded resume: lock probe first, friendly translation on collision. */
+  async resumeAgent(sessionId) {
+    if (await this.sessionLockHeld(sessionId)) {
+      return { error: '该会话正被另一个窗口/进程占用（例如在 dsh UI 里打开着）。请在那边关闭它，或 /session list 换一个会话。' }
+    }
+    try {
+      const { agent } = await this.ctx.agents.resume({ resumeSessionId: sessionId })
+      return { agent }
+    } catch (error) {
+      const text = `${error?.constructor?.name ?? ''} ${String(error?.message ?? error)}`
+      if (text.includes('AlreadyOwned') || text.includes('already owned')) {
+        return { error: '该会话正被另一个窗口/进程占用。请在那边关闭它，或 /session list 换一个会话。' }
+      }
+      throw error
+    }
+  }
+
   async deliverTask(message) {
     const binding = await this.router.get(message.chatId)
     if (binding === undefined) {
@@ -459,8 +515,9 @@ export class GatewayDriver {
     if (agent === undefined) {
       // The bound session is not live (host restarted): resume it in place —
       // do NOT wander off into a new session.
-      const { agent: resumed } = await this.ctx.agents.resume({ resumeSessionId: binding.activeSessionId })
-      agent = resumed
+      const resumed = await this.resumeAgent(binding.activeSessionId)
+      if (resumed.error !== undefined) return void this.lark.sendText(message.chatId, resumed.error)
+      agent = resumed.agent
     }
     if (agent.status === 'running') {
       agent.steer?.(makeUserMessage(message.text, source))

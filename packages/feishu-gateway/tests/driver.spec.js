@@ -368,6 +368,22 @@ test('/session resume <序号|前缀> resumes that session and switches the poin
   assert.ok(sent.some(m => JSON.stringify(m).includes('📎 上一轮输出')), 'recall of the last assistant output after switching')
 })
 
+test('a session owned by another window replies with guidance instead of crashing', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  driver.probeLock = async () => true // kernel write lease held elsewhere
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  const before = sent.length
+  // Direct resume form:
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/session resume 1' })
+  assert.ok(sent.slice(before).some(m => /正被另一个窗口\/进程占用/.test(m.text ?? '')), 'collision translated for the user')
+  // Task delivery to the same owned session:
+  ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: 'continue' })
+  assert.ok(sent.some(m => /正被另一个窗口\/进程占用/.test(m.text ?? '')), 'task delivery also degrades to guidance')
+})
+
 test('sendStatus with a missing session never throws (host crash regression)', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
