@@ -9,7 +9,7 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 
 /** Resolve the status file at call time: env-overridable so tests (which set
  * the env after module load, thanks to ESM import hoisting) never touch the
@@ -60,4 +60,14 @@ export function createEventLog(limit = 20, file = eventLogFile()) {
       } catch { /* best effort */ }
     },
   }
+}
+
+/** Best-effort read of the last status write. */
+export function readStatus(file = statusFile()) {
+  try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return undefined }
+}
+
+/** Best-effort read of the inbound-event log. */
+export function readEvents(file = eventLogFile()) {
+  try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return [] }
 }

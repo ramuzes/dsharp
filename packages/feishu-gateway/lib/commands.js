@@ -4,7 +4,7 @@
  * Pure logic: execution lives in the driver.
  */
 
-const COMMANDS = new Set(['ws', 'session', 'model', 'status', 'stop', 'help'])
+const COMMANDS = new Set(['ws', 'session', 'model', 'status', 'stop', 'doctor', 'help'])
 
 /** Commands that take a named subcommand (/ws, /session); the rest treat tokens as args. */
 const SUBCOMMANDS = new Set(['ws', 'session'])
@@ -53,5 +53,6 @@ export const HELP_TEXT = [
   '/stop — 打断当前回合',
   '/model — 查看或选择模型',
   '/status — 显示当前状态卡',
+  '/doctor — 网关自检（凭证/连接/事件/绑定）',
   '/help — 本帮助',
 ].join('\n')

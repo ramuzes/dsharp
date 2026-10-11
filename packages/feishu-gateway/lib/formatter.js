@@ -84,6 +84,7 @@ export function buildStatusCard(state) {
     `**会话**：${state.sessionTitle}（\`${state.sessionId}\`）`,
     `**模型**：${state.model}${state.modelPending ? '（下一回合生效）' : ''}`,
     `**状态**：${state.running ? '运行中 🟢' : '空闲 ⚪'}`,
+    ...(state.policy === undefined ? [] : [`**策略**：${state.policy}`]),
   ]
   return card('dsh 当前状态', [mdElement(lines.join('\n'))])
 }

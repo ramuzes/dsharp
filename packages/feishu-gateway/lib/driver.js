@@ -22,6 +22,7 @@ import { join } from 'node:path'
 import { open as openFile, readdir } from 'node:fs/promises'
 import { parseCommand, guardDecision, translateGuardError, HELP_TEXT } from './commands.js'
 import { formatAndSendText, buildStatusCard, renderChangesCard, renderDiffMessage, renderDiffBody, buildPostContent } from './formatter.js'
+import { readStatus, readEvents } from './status.js'
 
 const FEISHU_SOURCE = 'feishu'
 
@@ -81,6 +82,8 @@ export class GatewayDriver {
     this.makeActionId = makeActionId
     this.answererCallback = answererCallback ?? (() => {})
     this.listBindings = listBindings
+    /** chatId → running-turn watchdog timer (cleared on turn/end). */
+    this.watchdogs = new Map()
   }
 
   // --- inbound ---
@@ -100,6 +103,7 @@ export class GatewayDriver {
       switch (cmd.name) {
         case 'help': return void this.lark.sendText(chatId, HELP_TEXT)
         case 'status': return void this.sendStatus(chatId)
+        case 'doctor': return this.runDoctor(chatId)
         case 'stop': {
           const agent = await this.activeAgent(chatId)
           // Real cancellation API (agent-loop src/agent.ts): cancel(cause, options).
@@ -393,7 +397,18 @@ export class GatewayDriver {
   async onSessionEvent(session, event) {
     const binding = [...await this.allBindings()].find(b => b.activeSessionId === session.id)
     if (binding === undefined) return
+    if (event.type === 'turn/start') {
+      this.armWatchdog(binding.chatId)
+      return
+    }
     if (event.type !== 'turn/end') return
+    this.clearWatchdog(binding.chatId)
+    // Round failures must reach the user (the {{model}} silent-failure lesson):
+    // tool activity and reasoning stay in the web UI, errors do not.
+    const reason = event.data?.reason ?? event.reason
+    if (reason?.kind === 'error') {
+      await this.lark.sendText(binding.chatId, `⚠️ 本轮失败：${String(reason.error?.message ?? JSON.stringify(reason)).slice(0, 400)}`)
+    }
     const text = lastAssistantText(session, event)
     if (text !== '') await formatAndSendText(this.lark, binding.chatId, text, { chunkLimit: this.config.messageChunkLimit })
     const summary = this.ctx.workspaceChanges.summary?.(session.id, event.seq)
@@ -569,9 +584,30 @@ export class GatewayDriver {
     }
     if (agent.status === 'running') {
       agent.steer?.(makeUserMessage(message.text, source))
+      await this.lark.sendText(message.chatId, '⚡ 已插入当前回合，工作中…')
       return
     }
     agent.followup(makeUserMessage(message.text, source))
+    await this.lark.sendText(message.chatId, '⚡ 工作中…（/stop 可打断）')
+  }
+
+  /** Arm the once-per-turn "still running" watchdog (config 0 disables). */
+  armWatchdog(chatId) {
+    const ms = Number(this.config.watchdogMs)
+    if (!Number.isFinite(ms) || ms <= 0) return
+    this.clearWatchdog(chatId)
+    const startedAt = Date.now()
+    this.watchdogs.set(chatId, setTimeout(() => {
+      this.watchdogs.delete(chatId)
+      const minutes = Math.round((Date.now() - startedAt) / 60_000)
+      this.lark.sendText(chatId, `⏱ 本轮已运行约 ${String(minutes)} 分钟仍未结束（可能在等审批，或请求挂起）。可 /stop 打断后重发。`)
+        .catch?.(() => {})
+    }, ms))
+  }
+
+  clearWatchdog(chatId) {
+    const timer = this.watchdogs.get(chatId)
+    if (timer !== undefined) { clearTimeout(timer); this.watchdogs.delete(chatId) }
   }
 
   /**
@@ -606,9 +642,12 @@ export class GatewayDriver {
     // No session.title()/currentModel()/pendingModel() exists on the host.
     const titleSnapshot = this.sessionTitleSnapshot(session)
     const header = typeof session?.requestHeader === 'function' ? session.requestHeader() : undefined
+    // The session's OWN model first (its logged request header — a resumed
+    // session keeps using what it was using), the deployment default second.
+    const defaultModel = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
     const model = header?.config?.provider !== undefined && header?.config?.model !== undefined
       ? `${header.config.provider}/${header.config.model}`
-      : '默认'
+      : defaultModel !== undefined ? `${defaultModel.provider}/${defaultModel.model}（默认）` : '默认'
     await this.lark.sendJson(chatId, 'interactive', buildStatusCard({
       workspaceTitle: binding.workspaceTitle,
       workspacePath: binding.workspacePath,
@@ -617,6 +656,56 @@ export class GatewayDriver {
       model,
       modelPending: false,
       running: agent?.status === 'running',
+      policy: await this.sessionPolicy(binding.activeSessionId),
     }))
+  }
+
+  /**
+   * The session's sandbox + approval policy, read from its durable log's
+   * setup events (public surface: sessionQuery.listEvents). Undefined when
+   * the session or the events are unavailable — the card just omits the line.
+   */
+  async sessionPolicy(sessionId) {
+    if (sessionId === undefined) return undefined
+    try {
+      const events = await this.ctx.sessionQuery.listEvents(sessionId)
+      let sandbox
+      let approval
+      for (const record of events) {
+        const type = record?.type ?? record?.event?.type
+        const data = record?.data ?? record?.event?.data ?? {}
+        if (type === 'sandbox/mode') sandbox = data.mode
+        if (type === 'approval/policy') approval = data.policy
+      }
+      if (sandbox === undefined && approval === undefined) return undefined
+      return `沙箱 ${String(sandbox ?? '?')} · 审批 ${String(approval ?? '?')}`
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * /doctor — in-chat self-check over the plugin's own observable state:
+   * boot stage (status file), last inbound events, binding, the active
+   * session's write lease, and the default model.
+   */
+  async runDoctor(chatId) {
+    const status = readStatus()
+    const events = readEvents()
+    const binding = await this.router.get(chatId)
+    const lines = [`**网关**：${String(status?.stage ?? '未知')}${status?.at ? `（${String(Math.round((Date.now() - Date.parse(status.at)) / 1000))}s 前）` : ''}`]
+    const last = events.at(-1)
+    lines.push(`**最近事件**：${last === undefined ? '无' : `${String(last.type)} → ${String(last.outcome)}`}`)
+    if (binding === undefined) {
+      lines.push('**绑定**：未绑定（/ws use <名称>）')
+    } else {
+      lines.push(`**绑定**：${binding.workspaceTitle} · 会话 ${String(binding.activeSessionId ?? '（无）')}`)
+      if (binding.activeSessionId !== undefined) {
+        lines.push(`**会话写锁**：${await this.sessionLockHeld(binding.activeSessionId) ? '被其他窗口占用 ⚠️' : '可用'}`)
+      }
+    }
+    const dm = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
+    if (dm !== undefined) lines.push(`**默认模型**：${String(dm.provider)}/${String(dm.model)}`)
+    await this.lark.sendText(chatId, lines.join('\n'))
   }
 }

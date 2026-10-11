@@ -429,6 +429,64 @@ test('agents are composed with their preset — create records it, resume reuses
   assert.deepEqual(ctx.mountedPresets, ['standard', 'standard'], 'session preset re-mounted on resume')
 })
 
+test('task delivery replies 工作中 and turn errors reach the chat', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'do it' })
+  assert.ok(sent.some(m => /工作中/.test(m.text ?? '')), 'receipt after triggering the agent loop')
+  // turn/end with an error reason pushes the failure into the chat.
+  const binding = await driver.router.get('oc_1')
+  const agent = ctx.agents.get(binding.activeSessionId)
+  await driver.onSessionEvent(agent.session, { type: 'turn/end', seq: 5, data: { reason: { kind: 'error', error: { message: 'prompt variable {{model}} missing' } } } })
+  assert.ok(sent.some(m => /本轮失败.*\{\{model\}\}/.test(m.text ?? '')), 'turn error surfaced')
+})
+
+test('the watchdog reminds once about a long-running turn and clears on turn/end', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  driver.config.watchdogMs = 40
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  const binding = await driver.router.get('oc_1')
+  const agent = ctx.agents.get(binding.activeSessionId)
+  await driver.onSessionEvent(agent.session, { type: 'turn/start', seq: 4 })
+  await driver.onSessionEvent(agent.session, { type: 'turn/end', seq: 5, data: { reason: { kind: 'completed' } } })
+  await new Promise(r => setTimeout(r, 80))
+  assert.equal(sent.some(m => /已运行.*分钟/.test(m.text ?? '')), false, 'cleared watchdog stays silent')
+  await driver.onSessionEvent(agent.session, { type: 'turn/start', seq: 6 })
+  await new Promise(r => setTimeout(r, 90))
+  assert.ok(sent.some(m => /已运行约 \d+ 分钟仍未结束/.test(m.text ?? '')), 'long-run reminder fires once')
+})
+
+test('/doctor reports gateway state in chat', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  driver.probeLock = async () => false
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/doctor' })
+  const report = sent.find(m => /网关/.test(m.text ?? ''))
+  assert.ok(report, 'doctor report sent')
+  assert.match(report.text, /默认模型\*\*：zai-coding-cn.glm-5.3/)
+  assert.match(report.text, /会话写锁\*\*：可用/)
+})
+
+test('status card shows the policy line from the session log', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  ctx.sessionQuery.listEvents = async () => [
+    { type: 'sandbox/mode', data: { mode: 'workspace-write' } },
+    { type: 'approval/policy', data: { policy: 'ask' } },
+  ]
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/status' })
+  const card = sent.filter(m => m.type === 'interactive').at(-1).content
+  assert.match(JSON.stringify(card), /沙箱 workspace-write · 审批 ask/)
+})
+
 test('sendStatus with a missing session never throws (host crash regression)', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
