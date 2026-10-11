@@ -488,7 +488,14 @@ export class GatewayDriver {
       return { error: '该会话正被另一个窗口/进程占用（例如在 dsh UI 里打开着）。请在那边关闭它，或 /session list 换一个会话。' }
     }
     try {
-      const { agent } = await this.ctx.agents.resume({ resumeSessionId: sessionId })
+      // Same rule as openSession: resumed agents need agentOptions.model too
+      // ({{model}} reads agent.options.model); without it every turn dies
+      // with 'prompt variable "{{model}}" has no value'.
+      const selected = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
+      const { agent } = await this.ctx.agents.resume({
+        resumeSessionId: sessionId,
+        ...(selected === undefined ? {} : { agentOptions: { provider: selected.provider, model: selected.model } }),
+      })
       return { agent }
     } catch (error) {
       const text = `${error?.constructor?.name ?? ''} ${String(error?.message ?? error)}`

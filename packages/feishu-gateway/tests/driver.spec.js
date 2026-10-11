@@ -14,6 +14,7 @@ import { BindingRouter } from '../lib/router.js'
  */
 function makeCtx() {
   const agents = new Map()
+  const resumedWith = []
   const workspaces = [
     { id: 'w1', title: 'demo', path: '/tmp/demo', sessionIds: ['session-old', 'session-mid', 'session-new'] },
     { id: 'w2', title: 'site', path: '/tmp/site', sessionIds: [] },
@@ -38,7 +39,9 @@ function makeCtx() {
         agents.set(agent.session.id, agent)
         return { agent }
       },
-      resume: async ({ resumeSessionId }) => {
+      resume: async (opts) => {
+        resumedWith.push(opts)
+        const resumeSessionId = opts.resumeSessionId
         const agent = agents.get(resumeSessionId) ?? makeAgent({ sessionId: resumeSessionId, meta: { cwd: '/tmp/demo' } })
         agents.set(agent.session.id, agent)
         return { agent }
@@ -118,6 +121,7 @@ function makeCtx() {
     }
   }
   ctx.forgetLiveAgent = id => agents.delete(id)
+  ctx.resumedWith = resumedWith
   return ctx
 }
 
@@ -382,6 +386,18 @@ test('a session owned by another window replies with guidance instead of crashin
   ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: 'continue' })
   assert.ok(sent.some(m => /正被另一个窗口\/进程占用/.test(m.text ?? '')), 'task delivery also degrades to guidance')
+})
+
+test('resumed agents carry the default model too ({{model}} on resume path)', async () => {
+  const ctx = makeCtx()
+  const { driver } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session resume 1' })
+  assert.deepEqual(ctx.resumedWith[0].agentOptions, { provider: 'zai-coding-cn', model: 'glm-5.3' })
+  // Task delivery to a non-live bound session resumes the same way.
+  ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'continue' })
+  assert.ok(ctx.resumedWith.length >= 2 && ctx.resumedWith.at(-1).agentOptions?.model === 'glm-5.3')
 })
 
 test('sendStatus with a missing session never throws (host crash regression)', async () => {
