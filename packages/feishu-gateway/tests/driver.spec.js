@@ -14,6 +14,7 @@ import { BindingRouter } from '../lib/router.js'
  */
 function makeCtx() {
   const agents = new Map()
+  const mountedPresets = []
   const resumedWith = []
   const workspaces = [
     { id: 'w1', title: 'demo', path: '/tmp/demo', sessionIds: ['session-old', 'session-mid', 'session-new'] },
@@ -68,6 +69,10 @@ function makeCtx() {
       },
     },
     agentDefaultModel: { currentSelection: () => ({ provider: 'zai-coding-cn', model: 'glm-5.3' }) },
+    agentPresets: {
+      resolve: async id => ({ id: id ?? 'standard' }),
+      mount: async (agentCtx, id) => { mountedPresets.push(id) },
+    },
     sessionController: {
       selectModel: async () => {},
       // Real surface: SessionSummary[] ordered by activity (updatedAt =
@@ -81,6 +86,7 @@ function makeCtx() {
     },
     sessionQuery: {
       listSessions: async () => queryRecords.map(r => ({ ...r })),
+      readSurface: async id => ({ session: { id, agentPreset: id.startsWith('session-') ? 'standard' : undefined } }),
       readTitleSnapshots: async ids => ids.map(id => ({
         status: 'fulfilled',
         value: { session: { id }, title: queryRecords.some(r => r.header.id === id) ? { title: `标题·${String(id)}` } : undefined },
@@ -122,6 +128,7 @@ function makeCtx() {
   }
   ctx.forgetLiveAgent = id => agents.delete(id)
   ctx.resumedWith = resumedWith
+  ctx.mountedPresets = mountedPresets
   return ctx
 }
 
@@ -398,6 +405,28 @@ test('resumed agents carry the default model too ({{model}} on resume path)', as
   ctx.forgetLiveAgent((await driver.router.get('oc_1')).activeSessionId)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'continue' })
   assert.ok(ctx.resumedWith.length >= 2 && ctx.resumedWith.at(-1).agentOptions?.model === 'glm-5.3')
+})
+
+test('agents are composed with their preset — create records it, resume reuses the session own', async () => {
+  const ctx = makeCtx()
+  const { driver } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  const binding = await driver.router.get('oc_1')
+  const agent = ctx.agents.get(binding.activeSessionId)
+  // Create: default preset resolved, mounted in setup, recorded in durable meta.
+  assert.equal(agent.createdWith.meta.agentPreset, 'standard')
+  assert.equal(typeof agent.createdWith.setup, 'function')
+  await agent.createdWith.setup({ tag: 'agentCtx' })
+  assert.deepEqual(ctx.mountedPresets, ['standard'])
+  // Resume (the session- prefix fixture carries agentPreset 'standard'): the
+  // session's OWN preset is used — never a blind default that would strip
+  // its tool history (the 36-tool-removal regression).
+  ctx.forgetLiveAgent(binding.activeSessionId)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: 'continue' })
+  assert.equal(ctx.resumedWith.at(-1).setup !== undefined, true, 'resume carries a setup')
+  await ctx.resumedWith.at(-1).setup({ tag: 'agentCtx2' })
+  assert.deepEqual(ctx.mountedPresets, ['standard', 'standard'], 'session preset re-mounted on resume')
 })
 
 test('sendStatus with a missing session never throws (host crash regression)', async () => {

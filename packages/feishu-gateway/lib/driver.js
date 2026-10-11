@@ -420,6 +420,38 @@ export class GatewayDriver {
     return agent?.status === 'running'
   }
 
+  /**
+   * Compose the agent's scoped world the way session-controller does it
+   * (api/session-controller/src/agent.ts composeAgent): resolve the preset
+   * and mount it inside the setup callback — the preset carries the tools,
+   * prompt, and plugin composition. Without it the resumed agent is a hollow
+   * shell: every historical tool gets a durable tool-removal event written
+   * into the session log (the 36-tool loss). Public services only:
+   * ctx.agentPresets.resolve/mount and the session header's durable
+   * agentPreset field.
+   * @param {string | undefined} presetId - the session's own preset on
+   *   resume; undefined resolves the deployment default (new sessions).
+   */
+  async composeSetup(presetId) {
+    const presets = this.ctx.get?.('agentPresets')
+    if (presets === undefined) return { agentPreset: undefined, setup: undefined }
+    const resolved = await presets.resolve(presetId)
+    return {
+      agentPreset: resolved.id,
+      setup: async (agentCtx) => { await presets.mount(agentCtx, resolved.id) },
+    }
+  }
+
+  /** The session's durable preset, read through the public query surface. */
+  async sessionPreset(sessionId) {
+    try {
+      const surface = await this.ctx.sessionQuery.readSurface(sessionId)
+      return surface?.session?.agentPreset
+    } catch {
+      return undefined
+    }
+  }
+
   async openSession(chatId, binding) {
     // Real API (webhook template pattern): the caller GENERATES the session
     // id and passes sessionId — agents.create builds the Agent's id from it,
@@ -433,10 +465,14 @@ export class GatewayDriver {
     // agents without one fail every turn with 'prompt variable "{{model}}"
     // has no value'.
     const selected = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
+    const { agentPreset, setup } = await this.composeSetup()
     const { agent } = await this.ctx.agents.create({
       sessionId,
-      meta: { cwd: binding.workspacePath },
+      // The durable agentPreset is what a later resume reads back — record it
+      // exactly like session-controller's create does.
+      meta: { cwd: binding.workspacePath, ...(agentPreset === undefined ? {} : { agentPreset }) },
       ...(selected === undefined ? {} : { agentOptions: { provider: selected.provider, model: selected.model } }),
+      ...(setup === undefined ? {} : { setup }),
     })
     // Workspace attachment is a method on the registry ENTITY (webhook
     // pattern: workspace.attachSession(id)) — the registry service itself
@@ -492,9 +528,14 @@ export class GatewayDriver {
       // ({{model}} reads agent.options.model); without it every turn dies
       // with 'prompt variable "{{model}}" has no value'.
       const selected = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
+      // Resume with the session's OWN preset (session-controller's
+      // assertPresetUnchanged rule): a different composition would replay
+      // history the model can no longer act on.
+      const { setup } = await this.composeSetup(await this.sessionPreset(sessionId))
       const { agent } = await this.ctx.agents.resume({
         resumeSessionId: sessionId,
         ...(selected === undefined ? {} : { agentOptions: { provider: selected.provider, model: selected.model } }),
+        ...(setup === undefined ? {} : { setup }),
       })
       return { agent }
     } catch (error) {

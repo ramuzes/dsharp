@@ -69,6 +69,7 @@ function makeWorld() {
       attachSession: () => {},
     },
     agentDefaultModel: { currentSelection: () => ({ provider: 'zai-coding-cn', model: 'glm-5.3' }) },
+    agentPresets: { resolve: async id => ({ id: id ?? 'standard' }), mount: async () => {} },
     sessionController: {
       selectModel: async () => ({ selected: {} }),
       list: async () => ({ items: Array.from({ length: 12 }, (_, i) => ({
@@ -82,6 +83,7 @@ function makeWorld() {
         header: { id: `feishu-s${String(11 - i).padStart(2, '0')}`, cwd: '/tmp/demo', createdAt: 1_000 + i },
         live: i < 2,
       })),
+      readSurface: async id => ({ session: { id, agentPreset: 'standard' } }),
       readTitleSnapshots: async ids => ids.map(id => ({ status: 'fulfilled', value: { session: { id }, title: { title: `标题 ${String(id)}` } } })),
     },
     workspaceChanges: {
