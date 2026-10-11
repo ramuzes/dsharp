@@ -298,40 +298,37 @@ export class GatewayDriver {
     const binding = await this.router.get(chatId)
     if (binding === undefined) return void this.lark.sendText(chatId, '先 /ws use 绑定一个工作区。')
     if (cmd.args.length === 0) {
-      const guard = guardDecision({ running: await this.isRunning(chatId) })
-      if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
-      // Real API: listProviders() then listModels(provider) per route — a
-      // bare listModels() called registration(undefined) and threw
-      // 'no adapter registered for provider "undefined"'.
-      const providers = []
-      for (const p of this.ctx.llm.listProviders()) {
-        const models = await this.ctx.llm.listModels(p.id)
-        providers.push({ provider: p.id, models: models.map(m => ({ id: m.id })) })
-      }
+      // Host Remote modelCatalog(): the same source the Web GUI's model
+      // picker reads (provider groups + deployment default) — replaces the
+      // per-provider listProviders/listModels fan-out that split the picker
+      // across several separate chat messages.
+      const catalog = await this.ctx.sessionController.modelCatalog()
+      const elements = []
       const actions = []
-      for (const p of providers) {
-        for (const m of p.models.slice(0, 20)) {
+      for (const group of catalog?.groups ?? []) {
+        elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: String(group.id) }] })
+        for (const model of group.models ?? []) {
           actions.push({
-            tag: 'button', text: { tag: 'plain_text', content: `${p.provider}/${m.id}` }, type: 'default',
-            value: { actionId: this.makeActionId(), kind: 'model', provider: p.provider, model: m.id },
+            tag: 'button', text: { tag: 'plain_text', content: `${String(model.name)} ${String(model.id)}`.slice(0, 20) }, type: 'default',
+            value: { actionId: this.makeActionId(), kind: 'model', provider: group.id, model: model.id },
           })
         }
       }
       for (let i = 0; i < actions.length; i += 5) {
-        await this.lark.sendJson(chatId, 'interactive', {
-          config: { update_multi: true },
-          header: { title: { tag: 'plain_text', content: '选择模型' }, template: 'blue' },
-          elements: [{ tag: 'action', actions: actions.slice(i, i + 5) }],
-        })
+        elements.push({ tag: 'action', actions: actions.slice(i, i + 5) })
       }
-      return
+      if (elements.length === 0) return void this.lark.sendText(chatId, '没有可用模型（/doctor 看看）。')
+      return void this.lark.sendJson(chatId, 'interactive', {
+        config: { update_multi: true },
+        header: { title: { tag: 'plain_text', content: '选择模型（下一轮生效）' }, template: 'blue' },
+        elements,
+      })
     }
-    // Direct selection `/model provider/model` is also a mutation: guard it
-    // like the other model-change paths (ADR 0002: 模型变更仅空闲时允许).
+    // Host semantics: selectModel picks for the NEXT request — safe while a
+    // turn is running, so no Switch Guard here (the old guard made model
+    // switches impossible whenever the chat had just started a turn).
     const [providerSlashModel] = cmd.args
     const [provider, model] = providerSlashModel.split('/')
-    const guard = guardDecision({ running: await this.isRunning(chatId) })
-    if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
     await this.selectModel(chatId, binding.activeSessionId, { provider, model })
     return void this.sendStatus(chatId)
   }
@@ -365,10 +362,9 @@ export class GatewayDriver {
         return void this.sessionList(chatId, binding, Number(value.page) || 1)
       }
       if (value.kind === 'model') {
-        // Re-guard at press time: the card may be pressed long after it was
-        // rendered, and a run may have started since (TOCTOU).
-        const guard = guardDecision({ running: await this.isRunning(chatId) })
-        if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
+        // selectModel picks for the NEXT request — deliberately NOT guarded
+        // against a running turn (host-safe); a press long after rendering
+        // is therefore fine too.
         const binding = await this.router.get(chatId)
         await this.selectModel(chatId, binding.activeSessionId, { provider: value.provider, model: value.model })
         return void this.sendStatus(chatId)
@@ -564,9 +560,9 @@ export class GatewayDriver {
   }
 
   async selectModel(chatId, sessionId, selection) {
+    if (sessionId === undefined) return void this.lark.sendText(chatId, '还没有活动会话：/session new 或 /session list。')
     // Host Remote selectModel resumes the session when cold; a cross-process
     // owner surfaces as session/writer-held, translated at the edge.
-    if (sessionId === undefined) return
     try {
       await this.ctx.sessionController.selectModel({ sessionId, ...selection })
     } catch (error) {

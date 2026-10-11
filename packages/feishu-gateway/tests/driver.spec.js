@@ -467,18 +467,30 @@ test('sendStatus with a missing session never throws (host crash regression)', a
   assert.equal(typeof card.header.title.content, 'string')
 })
 
-test('bare /model lists providers through listProviders + listModels(provider)', async () => {
+test('bare /model renders ONE picker card from sessionController.modelCatalog', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
-  const calls = []
-  ctx.llm.listModels = async provider => { calls.push(provider); return provider === 'deepseek' ? [{ id: 'deepseek-chat' }] : [] }
-  ctx.llm.listProviders = () => [{ id: 'deepseek' }, { id: 'zai-coding-cn' }]
+  let catalogCalls = 0
+  ctx.sessionController.modelCatalog = async () => {
+    catalogCalls++
+    return {
+      default: { provider: 'zai-coding-cn', model: 'glm-5.3' },
+      routableProviders: ['zai-coding-cn'],
+      groups: [
+        { id: 'zai-coding-cn', name: 'ZAI', models: [{ id: 'glm-5.3', name: 'GLM 5.3' }, { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' }] },
+      ],
+      failures: [],
+    }
+  }
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/model' })
-  assert.deepEqual(calls, ['deepseek', 'zai-coding-cn'], 'one listModels call per provider route, never undefined')
-  const card = sent.filter(m => m.type === 'interactive').map(m => m.content).find(c => JSON.stringify(c).includes('选择模型'))
-  assert.ok(card, 'model picker card rendered')
+  assert.equal(catalogCalls, 1, 'one modelCatalog call — the same source the Web GUI reads')
+  const cards = sent.filter(m => m.type === 'interactive').map(m => m.content).filter(c => JSON.stringify(c).includes('选择模型'))
+  assert.equal(cards.length, 1, 'picker is a single card, not one message per provider')
+  const buttons = cards[0].elements.filter(e => e.tag === 'action').flatMap(e => e.actions)
+  assert.deepEqual(buttons.map(a => a.value.model), ['glm-5.3', 'glm-5.3-flash'])
+  assert.deepEqual(buttons.map(a => a.value.provider), ['zai-coding-cn', 'zai-coding-cn'])
 })
 
 test('/model selects through sessionController with a flat ModelSelection request', async () => {
@@ -495,24 +507,23 @@ test('/model selects through sessionController with a flat ModelSelection reques
   assert.deepEqual(requests[0], { sessionId: binding.activeSessionId, provider: 'zai-coding-cn', model: 'glm-5.3' })
 })
 
-test('model card action while running is rejected with the /stop hint', async () => {
+test('model card action while a turn is running still selects (next-request semantics)', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_ses', senderOpenId: 'ou_a', text: '/session new' })
-
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: 'fix it' })
   const binding = await driver.router.get('oc_1')
   ctx.agents.get(binding.activeSessionId).status = 'running'
-  let selectModelCalls = 0
-  ctx.sessionController.selectModel = async () => { selectModelCalls++ }
+  const requests = []
+  ctx.sessionController.selectModel = async request => { requests.push(request) }
   await driver.handleCardAction({
     kind: 'card-action', actionId: 'a',
-    value: { actionId: 'a', kind: 'model', provider: 'deepseek', model: 'deepseek-chat' },
+    value: { actionId: 'a', kind: 'model', provider: 'zai-coding-cn', model: 'glm-5.3-flash' },
     messageId: 'om_c', chatId: 'oc_1', operatorOpenId: 'ou_a',
   })
-  assert.match(JSON.stringify(sent), /\/stop/)
-  assert.equal(selectModelCalls, 0)
+  assert.deepEqual(requests, [{ sessionId: binding.activeSessionId, provider: 'zai-coding-cn', model: 'glm-5.3-flash' }],
+    'host selectModel picks for the next request — no running guard')
+  assert.equal(JSON.stringify(sent).includes('/stop'), false)
 })
 
 test('diff card action threads seq and file index into workspaceChanges.diff', async () => {
