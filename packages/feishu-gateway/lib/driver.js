@@ -171,7 +171,11 @@ export class GatewayDriver {
         elements: [{ tag: 'action', actions }],
       })
     }
-    return void this.lark.sendText(chatId, '用法：/session new | list [页码] | resume [sessionId|序号]')
+    // Bare /session (or an unknown subcommand) falls through to the list —
+    // the list IS the session command's home screen (new/resume ride on it).
+    // `/session 2` reads the page from the subcommand slot too.
+    const pageArg = /^\d+$/.test(String(cmd.sub)) ? cmd.sub : cmd.args?.[0]
+    return this.sessionList(chatId, binding, Number(pageArg) || 1)
   }
 
   /** Sessions of the bound workspace, most recently ACTIVE first. The

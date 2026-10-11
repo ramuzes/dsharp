@@ -349,6 +349,18 @@ test('/session list renders newest-first page of workspace sessions with resume 
   assert.equal(card.elements.some(e => e.tag === 'action' && e.actions.some(a => a.text.content === '下一页')), false, 'single page has no pager')
 })
 
+test('bare /session defaults to the list; /session 2 reads the page from the sub slot', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session' })
+  const card = sent.filter(m => m.type === 'interactive').at(-1).content
+  assert.match(card.header.title.content, /共 3）/, 'bare /session renders the session list')
+  // Unknown subcommand also falls through to the list instead of a usage line.
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/session xyz' })
+  assert.match(sent.filter(m => m.type === 'interactive').at(-1).content.header.title.content, /共 3）/, 'unknown subcommand still lists')
+})
+
 test('/session resume <序号|前缀> resumes that session and switches the pointer', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
