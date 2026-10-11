@@ -27,17 +27,14 @@ const MAX_PENDING = 200
 /**
  * The chat a request's session belongs to, or undefined when it is not ours.
  *
- * The load-bearing path is our own durable state: the BindingRouter maps
- * activeSessionId → chatId (the host exposes no session.lastUserSource()).
- * The lastUserSource read stays as a secondary signal for sessions that
- * predate the binding lookup.
+ * The ONLY routing source is our own durable state: the BindingRouter maps
+ * activeSessionId → chatId. (An earlier fallback read
+ * session.lastUserSource(); that method does not exist on the host Session —
+ * dead code, removed in the audit pass.)
  */
 function feishuChatOf(request, resolveChat) {
   const chatId = resolveChat?.(request.agent?.session?.id)
-  if (typeof chatId === 'string') return chatId
-  const source = request.agent?.session?.lastUserSource?.()
-  if (source?.kind === 'feishu' && typeof source.chatId === 'string') return source.chatId
-  return undefined
+  return typeof chatId === 'string' ? chatId : undefined
 }
 
 export class GatewayAnswerer {
@@ -69,9 +66,14 @@ export class GatewayAnswerer {
   async handleUserQuestions(request, next) {
     const chatId = feishuChatOf(request, this.resolveChat)
     if (chatId === undefined) return next()
-    // v1 handles the first question only; later questions follow after answer.
-    const question = request.questions?.[0]
-    if (question === undefined) return next()
+    // v1 cards answer EXACTLY ONE closed-choice question. A request with
+    // several questions, or an open question without options, must be
+    // DELEGATED via next(): claiming it and returning a partial answers
+    // batch would be refused whole by the asker's validation (one answer
+    // per question, in order) and would also rob the Web UI of the request.
+    if (request.questions?.length !== 1) return next()
+    const question = request.questions[0]
+    if (!Array.isArray(question.options) || question.options.length === 0) return next()
     const actionId = this.makeActionId()
     const answer = await this.roundTrip(chatId, actionId, 'question', request,
       buildQuestionCard(question, actionId))
@@ -87,8 +89,14 @@ export class GatewayAnswerer {
     const chatId = feishuChatOf(request, this.resolveChat)
     if (chatId === undefined) return next()
     const actionId = this.makeActionId()
+    // ApprovalRequestEvent carries `reason` plus optional localized
+    // `displayReason: { en, zh, … }` (user-approval/src/types.ts) — there is
+    // no `prompt` field. Prefer the localized presentation, zh first (our
+    // card vocabulary is Chinese), then en, then the raw reason.
+    const display = request.displayReason ?? {}
+    const text = String(display.zh ?? display.en ?? request.reason ?? '权限请求')
     const outcome = await this.roundTrip(chatId, actionId, 'approval', request,
-      buildApprovalCard(String(request.prompt ?? request.reason ?? '权限请求'), actionId))
+      buildApprovalCard(text, actionId))
     if (outcome.timedOut) return next()
     // The approval waterfall answerer returns the ApprovalOutcome string
     // itself; a non-string return would be normalized to 'unavailable'.

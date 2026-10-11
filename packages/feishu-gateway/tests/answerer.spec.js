@@ -42,7 +42,7 @@ test('routes questions without any host source field via resolveChat (binding lo
 
 test('approvals without any host source field also route via resolveChat', async () => {
   const { answerer, sent } = makeAnswerer()
-  const request = { prompt: 'rm -rf', agent: { session: { id: 's1' } } }
+  const request = { reason: 'rm -rf', agent: { session: { id: 's1' } } }
   const outcomePromise = answerer.handleApproval(request, async () => { throw new Error('must not delegate') })
   await Promise.resolve()
   assert.ok(sent.some(s => /允许一次/.test(JSON.stringify(s.content))))
@@ -66,11 +66,27 @@ test('routes feishu-origin questions to a card and resolves on click', async () 
 
 test('non-feishu sessions delegate via next()', async () => {
   const { answerer, sent } = makeAnswerer()
-  // s9 has no router binding and no host source field: must delegate
-  const request = { questions: [{ id: 'q1', question: 'x', options: [] }], agent: { session: { id: 's9' } } }
+  // s9 has no router binding: must delegate
+  const request = { questions: [{ id: 'q1', question: 'x', options: [{ label: 'A' }] }], agent: { session: { id: 's9' } } }
   const result = await answerer.handleUserQuestions(request, async () => 'delegated')
   assert.equal(result, 'delegated')
   assert.equal(sent.length, 0)
+})
+
+test('multi-question and open questions delegate — a partial card answer would be refused whole', async () => {
+  const { answerer, sent } = makeAnswerer()
+  // Bound session, but TWO questions: v1 cards cannot answer the full batch.
+  const multi = await answerer.handleUserQuestions(feishuRequest([
+    { id: 'q1', question: 'a?', options: [{ label: 'A' }] },
+    { id: 'q2', question: 'b?', options: [{ label: 'B' }] },
+  ]), async () => 'delegated')
+  assert.equal(multi, 'delegated', 'multi-question requests are delegated to the Web UI')
+  // Open question (no options): buttons cannot express a free-text answer.
+  const open = await answerer.handleUserQuestions(feishuRequest([
+    { id: 'q1', question: 'name?', options: [] },
+  ]), async () => 'delegated')
+  assert.equal(open, 'delegated')
+  assert.equal(sent.length, 0, 'no card sent for either')
 })
 
 test('late answer after window close goes through userQuestions.answer', async () => {
@@ -93,11 +109,12 @@ test('late answer after window close goes through userQuestions.answer', async (
 
 test('approval card values map to DSH ApprovalOutcome vocabulary', async () => {
   const { answerer, sent } = makeAnswerer()
-  // s2 has no router binding: the lastUserSource read stays as the secondary signal
-  const request = { prompt: 'rm -rf', agent: { session: { id: 's2', lastUserSource: () => ({ kind: 'feishu', chatId: 'oc_1' }) } } }
+  // displayReason (zh) wins over the raw reason — the localized presentation
+  // the host supplies (user-approval/src/types.ts; there is no `prompt` field).
+  const request = { reason: 'rm -rf (en)', displayReason: { en: 'rm -rf (en)', zh: '删除文件' }, agent: { session: { id: 's1' } } }
   const outcomePromise = answerer.handleApproval(request, async () => 'delegated')
   await Promise.resolve()
-  assert.ok(sent.some(s => /允许一次/.test(JSON.stringify(s.content))))
+  assert.ok(sent.some(s => /允许一次/.test(JSON.stringify(s.content))) && sent.some(s => /删除文件/.test(JSON.stringify(s.content))), 'card carries the localized zh displayReason')
   await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'approval', outcome: 'allow-once' } })
   // The approval waterfall answerer returns the ApprovalOutcome string itself.
   assert.equal(await outcomePromise, 'allowed-once')
@@ -105,7 +122,7 @@ test('approval card values map to DSH ApprovalOutcome vocabulary', async () => {
 
 test('approval clicks outside the card vocabulary are ignored with a debug log', async () => {
   const { answerer, debug } = makeAnswerer()
-  const request = { prompt: 'rm -rf', agent: { session: { id: 's1', lastUserSource: () => ({ kind: 'feishu', chatId: 'oc_1' }) } } }
+  const request = { reason: 'rm -rf', agent: { session: { id: 's1' } } }
   const outcomePromise = answerer.handleApproval(request, async () => 'delegated')
   await Promise.resolve()
   await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'approval', outcome: 'bogus' } })
@@ -117,7 +134,7 @@ test('approval clicks outside the card vocabulary are ignored with a debug log',
 
 test('late approval click is dropped with a debug log', async () => {
   const { answerer, debug } = makeAnswerer()
-  const request = { prompt: 'rm -rf', agent: { session: { id: 's1', lastUserSource: () => ({ kind: 'feishu', chatId: 'oc_1' }) } } }
+  const request = { reason: 'rm -rf', agent: { session: { id: 's1' } } }
   const p = answerer.handleApproval(request, async () => 'delegated')
   await Promise.resolve()
   answerer.killPending('act_1')

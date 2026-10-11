@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Feishu Gateway",
+    "description": "Drive bound workspace sessions from Feishu (Lark) p2p chat: slash commands, task delivery with turn feedback, model switching, and question/approval cards that round-trip to the chat."
+  }
+}

@@ -122,7 +122,12 @@ export function apply(ctx, config) {
   // for scripts/doctor.mjs — info-level logs are easy to miss in the terminal.
   const status = createStatusWriter()
   status.write('waiting-services', { appId, appSecretEnv })
-  ctx.inject(['credentials', 'agents', 'workspaceRegistry', 'sessionController', 'sessionQuery', 'workspaceChanges', 'llm'], async (scope) => {
+  // Inject ONLY what the driver consumes. `llm` was removed in the audit
+  // pass: model listing goes through sessionController.modelCatalog, and a
+  // stale llm entry kept the plugin inactive in profiles without an llm
+  // service. `agents` stays: read-only registry lookups (isRunning, status,
+  // list liveness markers).
+  ctx.inject(['credentials', 'agents', 'workspaceRegistry', 'sessionController', 'sessionQuery', 'workspaceChanges'], async (scope) => {
     status.write('resolving-credential', appSecretEnv)
     const credential = await scope.credentials.resolve(appSecretEnv)
     const appSecret = credential?.value ?? ''

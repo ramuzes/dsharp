@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- dsh-feishu-gateway icon: a Feishu-blue chat bubble carrying a plug,
+       drawn as original artwork for this plugin. -->
+  <path d="M32 8C18.7 8 8 16.95 8 28c0 6.4 3.6 12.1 9.2 15.7-.5 2.9-1.9 5.5-4 7.6-.6.6-.1 1.6.7 1.5 5-.7 9.3-2.7 12.4-5.2 1.8.3 3.7.4 5.7.4 13.3 0 24-8.95 24-20S45.3 8 32 8z"
+        fill="#3370ff"/>
+  <g stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none">
+    <path d="M24 22v10M40 22v10"/>
+    <path d="M20 27h8M36 27h8M24 36c2.7 3.5 5.3 5.2 8 5.2s5.3-1.7 8-5.2"/>
+  </g>
+</svg>
