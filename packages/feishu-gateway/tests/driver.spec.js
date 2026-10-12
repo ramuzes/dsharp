@@ -314,6 +314,36 @@ test('status card reads title from ctx.sessionTitle and model from requestHeader
   assert.match(card, /deepseek\/deepseek-chat/)
 })
 
+test('status card shows a pending switch from the modelSelection projection', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws use demo' })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/session new' })
+  // After /model, the host records the pick as modelSelection.next — the
+  // logged request header still shows the OLD model until the next turn.
+  ctx.sessionController.projections = async () => ({
+    values: { modelSelection: {
+      lastUsed: { provider: 'zai-coding-cn', model: 'glm-5.3' },
+      next: { provider: 'zai-coding-cn', model: 'glm-5.3-flash' },
+    } },
+  })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/status' })
+  // runCommand fires sendStatus without awaiting it; flush before reading.
+  await new Promise(r => setTimeout(r, 10))
+  const card = JSON.stringify(sent.filter(s => s.type === 'interactive').at(-1))
+  assert.match(card, /zai-coding-cn\/glm-5.3-flash/, 'next wins the label')
+  assert.match(card, /切换待生效/, 'pending switch is marked')
+  // Once next == lastUsed (the turn ran on it), the mark disappears.
+  ctx.sessionController.projections = async () => ({
+    values: { modelSelection: { lastUsed: { provider: 'zai-coding-cn', model: 'glm-5.3-flash' } } },
+  })
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_4', senderOpenId: 'ou_a', text: '/status' })
+  await new Promise(r => setTimeout(r, 10))
+  const settled = JSON.stringify(sent.filter(s => s.type === 'interactive').at(-1))
+  assert.match(settled, /zai-coding-cn\/glm-5.3-flash/)
+  assert.equal(settled.includes('切换待生效'), false)
+})
+
 test('status card falls back to the binding title and a neutral model label', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)

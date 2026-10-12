@@ -586,27 +586,48 @@ export class GatewayDriver {
     if (binding === undefined) return void this.lark.sendText(chatId, '尚未绑定工作区。/ws use <名称>')
     const agent = binding.activeSessionId !== undefined ? this.ctx.agents.get(binding.activeSessionId) : undefined
     const session = agent?.session
-    // Real surfaces only: ctx.sessionTitle.get(session) for the title and the
-    // session's logged request header (Session.requestHeader()) for the model.
-    // No session.title()/currentModel()/pendingModel() exists on the host.
     const titleSnapshot = this.sessionTitleSnapshot(session)
-    const header = typeof session?.requestHeader === 'function' ? session.requestHeader() : undefined
-    // The session's OWN model first (its logged request header — a resumed
-    // session keeps using what it was using), the deployment default second.
-    const defaultModel = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
-    const model = header?.config?.provider !== undefined && header?.config?.model !== undefined
-      ? `${header.config.provider}/${header.config.model}`
-      : defaultModel !== undefined ? `${defaultModel.provider}/${defaultModel.model}（默认）` : '默认'
     await this.lark.sendJson(chatId, 'interactive', buildStatusCard({
       workspaceTitle: binding.workspaceTitle,
       workspacePath: binding.workspacePath,
       sessionTitle: titleSnapshot?.title ?? binding.activeSessionTitle ?? '（无会话）',
       sessionId: binding.activeSessionId ?? '（无）',
-      model,
+      model: await this.sessionModelLabel(binding.activeSessionId, session),
       modelPending: false,
       running: agent?.status === 'running',
       policy: await this.sessionPolicy(binding.activeSessionId),
     }))
+  }
+
+  /**
+   * The session's CURRENT model, the way the Web GUI shows it: the
+   * `modelSelection` projection (sessionController.projections — non-
+   * activating), where `next` wins over `lastUsed` and marks a pending
+   * switch. The logged request header (requestHeader()) only reflects the
+   * LAST committed request — after /model it still showed the old model,
+   * which is why the status card looked stuck. Fallback chain: header →
+   * deployment default.
+   */
+  async sessionModelLabel(sessionId, session) {
+    try {
+      const value = await this.ctx.sessionController.projections(
+        { sessionId }, new AbortController().signal)
+      const selection = value?.values?.modelSelection
+      const winner = selection?.next ?? selection?.lastUsed
+      if (winner?.provider !== undefined && winner?.model !== undefined) {
+        const pending = selection?.next !== undefined
+          && selection.lastUsed !== undefined
+          && (selection.next.provider !== selection.lastUsed.provider
+            || selection.next.model !== selection.lastUsed.model)
+        return `${winner.provider}/${winner.model}${pending ? '（切换待生效）' : ''}`
+      }
+    } catch { /* fall through to the header */ }
+    const header = typeof session?.requestHeader === 'function' ? session.requestHeader() : undefined
+    const defaultModel = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
+    if (header?.config?.provider !== undefined && header?.config?.model !== undefined) {
+      return `${header.config.provider}/${header.config.model}`
+    }
+    return defaultModel !== undefined ? `${defaultModel.provider}/${defaultModel.model}（默认）` : '默认'
   }
 
   /**
