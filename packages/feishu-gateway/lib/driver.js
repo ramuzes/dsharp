@@ -116,7 +116,9 @@ export class GatewayDriver {
 
   async runWs(cmd, message) {
     const { chatId } = message
-    if (cmd.sub === 'list') {
+    // Bare /ws (and unknown subcommands) falls through to the list — same
+    // default as /session: the list is the command's home screen.
+    if (cmd.sub !== 'use' && cmd.sub !== 'new') {
       const list = this.ctx.workspaceRegistry.list().map(w => `- **${w.title}**（\`${w.path}\`）`).join('\n')
       return void this.lark.sendJson(chatId, 'post', buildPostContent(`工作区：\n${list}`))
     }
@@ -124,20 +126,17 @@ export class GatewayDriver {
       // Pointer switch only: no guard, any running session keeps running.
       const title = cmd.args[0]
       const ws = this.ctx.workspaceRegistry.list().find(w => w.title === title || w.id === title)
-      if (ws === undefined) return void this.lark.sendText(chatId, `没有叫「${title ?? ''}」的工作区，/ws list 看看。`)
+      if (ws === undefined) return void this.lark.sendText(chatId, `没有叫「${title ?? ''}」的工作区，/ws 看看。`)
       await this.router.bind(chatId, { workspaceId: ws.id, workspaceTitle: ws.title, workspacePath: ws.path })
       return void this.sendStatus(chatId)
     }
-    if (cmd.sub === 'new') {
-      const path = cmd.args[0]
-      if (path === undefined) return void this.lark.sendText(chatId, '用法：/ws new <绝对路径> [标题]')
-      const guard = guardDecision({ running: await this.isRunning(chatId) })
-      if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
-      const ws = await this.ctx.workspaceRegistry.create(path, cmd.args[1])
-      await this.router.bind(chatId, { workspaceId: ws.id, workspaceTitle: ws.title, workspacePath: ws.path })
-      return void this.sendStatus(chatId)
-    }
-    return void this.lark.sendText(chatId, `用法：/ws list | use <名称> | new <路径> [标题]`)
+    const path = cmd.args[0]
+    if (path === undefined) return void this.lark.sendText(chatId, '用法：/ws new <绝对路径> [标题]')
+    const guard = guardDecision({ running: await this.isRunning(chatId) })
+    if (!guard.allowed) return void this.lark.sendText(chatId, guard.reason)
+    const ws = await this.ctx.workspaceRegistry.create(path, cmd.args[1])
+    await this.router.bind(chatId, { workspaceId: ws.id, workspaceTitle: ws.title, workspacePath: ws.path })
+    return void this.sendStatus(chatId)
   }
 
   async runSession(cmd, message) {

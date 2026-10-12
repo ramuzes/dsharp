@@ -166,6 +166,18 @@ test('plain message with no binding asks the user to bind a workspace', async ()
   assert.match(JSON.stringify(sent), /\/ws/)
 })
 
+test('bare /ws and unknown subcommands default to the workspace list', async () => {
+  const ctx = makeCtx()
+  const { driver, sent } = makeDriver(ctx)
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws' })
+  const post = sent.find(s => s.type === 'post')
+  assert.ok(post, 'bare /ws renders the workspace list post')
+  assert.match(JSON.stringify(post.content), /demo/, 'list content present')
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/ws xyz' })
+  assert.equal(sent.filter(s => s.type === 'post').length, 2, 'unknown subcommand still lists')
+  assert.equal(JSON.stringify(sent).includes('用法'), false, 'no usage line anymore')
+})
+
 test('task message without an active session asks for one (no auto-create)', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
