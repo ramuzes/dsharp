@@ -10,7 +10,7 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "lib", "client.js", "cordis.patch.yml", "README.md", "locale/*.json", "icon.svg"],
+  "files": ["index.js", "lib", "client.js", "cordis.patch.yml", "README.md", "README.zh-CN.md", "locale/*.json", "icon.svg"],
   "scripts": { "test": "node --test \"tests/*.spec.js\"" },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

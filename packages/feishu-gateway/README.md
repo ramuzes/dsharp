@@ -1,102 +1,130 @@
 # dsh-feishu-gateway
 
-飞书（Lark）机器人网关：把一个飞书自建应用机器人的 **p2p 单聊**接入 dsh。
-消息驱动绑定的 workspace 会话执行任务；结构化提问与权限审批以交互卡片
-往返；支持在 chat 内切换工作区 / 会话 / 模型，切换后回显状态卡。
+Feishu (Lark) bot gateway: connects one Feishu custom-app bot's **p2p chat**
+to dsh. Messages drive a bound workspace session; structured questions and
+permission approvals round-trip as interactive cards; workspace / session /
+model switching happens inside the chat with a status card echo.
 
-- 设计文档：`docs/specs/2026-10-09-feishu-gateway-design.md`
-- 依赖官方飞书 Node SDK（`@larksuiteoapi/node-sdk`，纯 JS 无构建脚本）
+- Design doc: `docs/specs/2026-10-09-feishu-gateway-design.md` (Chinese)
+- Chinese README: `README.zh-CN.md`
+- Uses the official Feishu Node SDK (`@larksuiteoapi/node-sdk`, plain JS,
+  no build scripts)
 
-## 安装
+## Install
 
 ```sh
 dsh plugin --profile <name> add /path/to/dsharp/packages/feishu-gateway
 ```
 
-> **升级注意**：client module system 会把「某 Loader 行不是 client 包」的判定
-> 缓存到 host 重启为止。若先安装过不含 browser 半边的旧版本，升级后必须
-> **重启 dsh host** 并刷新页面，Plugins 页的配置卡片才会出现；全新安装
-> （host 在安装后启动/重载）不受影响。
+> **Upgrade note**: the client module system caches "this Loader row is not
+> a client package" until host restart. If you previously installed a
+> version without the browser half, you must **restart the dsh host** and
+> refresh the page after upgrading for the Plugins-page config card to
+> appear; fresh installs (host started/reloaded after install) are not
+> affected.
 
-## 配置
+## Configuration
 
-在 Web GUI 的 **Plugins 页面**（bundle 卡片的配置表单，由 browser 半边注册）配置：
+Configure on the Web GUI **Plugins page** (the bundle card's config form,
+registered by the browser half):
 
-| 字段 | 说明 |
+| Field | Description |
 |---|---|
-| `appId` | 飞书自建应用 App ID（`cli_` 开头） |
-| App Secret（secret 控件） | 填入一次即存入 dsh **凭证存储**（`FEISHU_APP_SECRET` 引用），只显示 已配置/未配置，不再回显 |
-| `domain` | `https://open.feishu.cn`（海外用 `https://open.larksuite.com`） |
+| `appId` | Feishu custom-app App ID (`cli_`-prefixed) |
+| App Secret (secret control) | Typed once, stored in the dsh **credential store** (`FEISHU_APP_SECRET` ref); shows 已配置/未配置, never echoed back |
+| `domain` | `https://open.feishu.cn` (`https://open.larksuite.com` for the international version) |
 
-**secret 永不进 patch 层**：secret 控件经 `remote.credentials.set` 写入
-凭证存储（与 Models 页 API key 同模式），host 启动时经 `ctx.credentials`
-解析。启动环境 export `FEISHU_APP_SECRET=xxx` 同样有效（headless 场景）。
-未解析到时插件静默 inactive（日志提示一次并指明缺哪个引用）。
+**The secret never enters a patch layer**: the secret control writes
+through `remote.credentials.set` into the credential store (same pattern as
+the Models-page API keys); the host resolves it via `ctx.credentials` at
+boot. Exporting `FEISHU_APP_SECRET=xxx` in the launch environment also
+works (headless). When unresolved, the plugin stays silently inactive (one
+log line naming the missing ref).
 
-## 飞书开发者后台 checklist
+## Feishu developer-console checklist
 
-1. 企业自建应用 → 添加应用能力 → **机器人**；**创建版本并发布**（能力发布后才生效）。
-2. 权限（发布后生效）：`im:message`、`im:message.p2p_msg`、`im:chat:readonly`、`im:resource`。
-3. 事件与回调 → 事件配置：订阅方式选 **使用长连接接收事件**，添加事件 `im.message.receive_v1`。
-4. 事件与回调 → 回调配置：选 **长连接**，配置 `card.action.trigger`。
-   （`card.action.trigger` 必须配在回调配置，不是事件订阅；点按钮报 200340 通常是这里配错。）
-5. 可用范围：把使用者加入应用可用范围，用户才能与机器人单聊。
+1. Custom app → add capability → **Bot**; **create a version and publish**
+   (capabilities take effect only after release).
+2. Permissions (effective after release): `im:message`, `im:message.p2p_msg`,
+   `im:chat:readonly`, `im:resource`.
+3. Events & callbacks → event configuration: subscription mode **persistent
+   connection (long connection)**, add event `im.message.receive_v1`.
+4. Events & callbacks → callback configuration: choose **long connection**
+   and configure `card.action.trigger`.
+   (`card.action.trigger` belongs in the callback configuration, not event
+   subscriptions; a 200340 error on button presses usually means this is
+   misconfigured.)
+5. Availability scope: add users to the app's availability range so they
+   can chat with the bot.
 
-## Chat 命令
+## Chat commands
 
-| 命令 | 作用 |
+| Command | Effect |
 |---|---|
-| `/ws` | 工作区列表（默认行为，同 `/ws list`；未知子命令同样回落到列表） |
-| `/ws use <名称>` | 切换绑定的工作区（纯指针切换，不受运行限制） |
-| `/ws new <路径> [标题]` | 注册新工作区并绑定（需会话空闲） |
-| `/session` | 会话列表（默认行为，同 `/session list`，时间倒序 10/页，按钮恢复） |
-| `/session new` | 当前工作区开新会话（需会话空闲） |
-| `/session resume [序号\|sessionId前缀]` | 恢复指定会话（需空闲；指针切换+回显上一轮输出） |
-| `/stop` | 打断当前回合 |
-| `/model` | 模型目录单卡选择（**运行中可选**，下一轮生效） |
-| `/status` | 当前状态卡（模型行读 modelSelection 投影，待生效切换有标注） |
-| `/doctor` | 网关自检（启动阶段/最近事件/绑定/写锁/默认模型） |
-| `/help` | 帮助 |
+| `/ws` | Workspace list (default behavior, same as `/ws list`; unknown subcommands also fall back to the list) |
+| `/ws use <name>` | Switch the bound workspace (pointer switch only, not restricted while running) |
+| `/ws new <path> [title]` | Register a workspace and bind it (session must be idle) |
+| `/session` | Session list (default behavior, same as `/session list`; newest first, 10/page, resume by button) |
+| `/session new` | New session in the current workspace (session must be idle) |
+| `/session resume [index\|sessionId prefix]` | Resume a session (idle required; pointer switch + echo of the last turn's output) |
+| `/stop` | Interrupt the active turn |
+| `/model` | Single-card model catalog picker (**selectable while running**, effective next turn) |
+| `/status` | Status card (model line reads the modelSelection projection; a pending switch is marked) |
+| `/doctor` | Gateway self-check (boot stage / recent events / binding / write lease / default model) |
+| `/help` | Help |
 
-普通文本消息进入当前活动会话（宿主 `prompt()`，幂等 requestId）；会话运行中的
-消息作为 steer 插入当前回合。每回合结束发送最终回复（markdown → 飞书富文本，
-超长分片）与改动摘要卡（可按文件点开 unified diff）。提问与权限请求以卡片按钮
-作答，迟到答案自动走续答通道。
+Plain text messages go to the active session (host `prompt()` with an
+idempotent requestId); messages during a running turn are inserted as
+steering. Each turn's end sends the final reply (markdown → Feishu rich
+text, chunked when long) and a changes card (per-file unified diffs on
+demand). Questions and approval requests are answered via card buttons;
+late answers go through the continued-answer channel automatically.
 
-## 开发规约（本插件专属）
+## Development conventions (plugin-specific)
 
-以下规则是本插件开发中踩过的坑，通用规则见仓库根 `AGENTS.md`，这里只记
-飞书侧与本插件的 specifics。
+These rules come from pitfalls hit during this plugin's development.
+Repository-generic rules live in the root `AGENTS.md`; only Feishu-side and
+plugin-specific facts are recorded here.
 
-### 架构：gateway-as-browser
+### Architecture: gateway-as-browser
 
-驱动会话一律走宿主 `sessionController` Remote 面（`prompt/create/cancel/
-selectModel/modelCatalog/projections/list`）——与 Web GUI 相同的入口。**绝不**
-直接调 `agents.create/resume`、手挂 preset setup、手拼 agentOptions：那会重新
-发明宿主已保证的语义（按会话 preset 恢复、模型解析、幂等 requestId、跨进程
-`session/writer-held` 错误码），历史上造成过 {{model}} 变量崩溃、空心 Agent
-（36 个 tool-removal）、锁冲突三类故障。注意 Remote 方法签名可能带必填的
-第二参数 `signal`（如 `prompt(request, signal)` 首行裸调
-`signal.throwIfAborted()`），进程内调用必须传。
+Session driving always goes through the host's `sessionController` Remote
+surface (`prompt/create/cancel/selectModel/modelCatalog/projections/list`) —
+the same entry the Web GUI uses. **Never** call `agents.create/resume`
+directly, hand-mount preset setups, or hand-assemble agentOptions: that
+re-invents semantics the host already guarantees (preset-faithful resume,
+model resolution, idempotent request ids, the cross-process
+`session/writer-held` error code) and historically caused three failure
+classes: {{model}}-variable crashes, hollow agents (36 tool-removal events),
+and lock conflicts. Note that Remote signatures may take a mandatory second
+`signal` argument (`prompt(request, signal)` bare-calls
+`signal.throwIfAborted()` on its first line) — in-process callers must pass
+one.
 
-### 飞书侧协议事实
+### Feishu protocol facts
 
-- **事件被 SDK 扁平化**：`EventDispatcher.parse()` 把 schema-2.0 事件的
-  `message/sender/action/context/operator` 放到顶层，不在 `data.event` 下。
-  解析同时兼容两种形状（`lib/transport.js`）。
-- **字段以 SDK 类型为准**：`ApprovalRequestEvent` 只有 `reason` +
-  `displayReason: {en, zh, …}`，没有 `prompt`；卡片文案优先 `displayReason.zh`。
-- **入站先记日志再解析**：每个到达的事件（含被过滤的）写入
-  `~/.dsh/feishu-gateway-events.json`（type/chatType/outcome），排查"没反应"
-  先看这里和 `~/.dsh/feishu-gateway-status.json`。
-- **出站限速**：飞书对同 chat 限 5 QPS，`lib/lark-client.js` 按 chat 串行 +
-  250ms 间隔；发送失败只记日志不抛出（绝不进宿主调用栈）。
+- **Events are flattened by the SDK**: `EventDispatcher.parse()` lifts
+  schema-2.0 `message/sender/action/context/operator` to the top level,
+  not under `data.event`. Parsing accepts both shapes (`lib/transport.js`).
+- **Fields follow the SDK types**: `ApprovalRequestEvent` has only `reason`
+  + `displayReason: {en, zh, …}` — there is no `prompt`; card text prefers
+  `displayReason.zh`.
+- **Log inbound before parsing**: every arriving event (including filtered
+  ones) is written to `~/.dsh/feishu-gateway-events.json`
+  (type/chatType/outcome). Start debugging "no reaction" there and at
+  `~/.dsh/feishu-gateway-status.json`.
+- **Outbound rate limits**: Feishu caps one bot at 5 QPS per chat;
+  `lib/lark-client.js` serializes per chat with a 250ms gap. Send failures
+  only log — they never propagate into host call stacks.
 
-### 集成测试（FGTEST 流程）
+### Integration testing (the FGTEST loop)
 
-1. 改动 → `node --test tests/*.spec.js` 全绿（fake 必须复刻真实签名严格性）。
-2. 用独立 profile 起 dsh 宿主（托管后台任务，按 pid 停止，勿用 `pkill -f`）。
-3. 从飞书真实发消息驱动，观察宿主日志 + 状态/事件文件，确认宿主稳定
-   （`dsh: fatal load failure` = 插件把宿主搞挂了，最高优先级事故）。
-4. `node scripts/doctor.mjs --profile <dir>` 自检凭证与长连接。
-
+1. Change → `node --test tests/*.spec.js` all green (fakes must replicate
+   real-signature strictness).
+2. Start a dsh host under a dedicated profile (managed background job,
+   stop by exact pid — never `pkill -f`).
+3. Drive with real Feishu messages; watch the host log plus the
+   status/event files; confirm the host stayed healthy (`dsh: fatal load
+   failure` = the plugin killed the host — top-severity incident).
+4. `node scripts/doctor.mjs --profile <dir>` for credential and
+   long-connection self-checks.
