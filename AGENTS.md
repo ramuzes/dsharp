@@ -1,9 +1,9 @@
 # AGENTS.md — Working Rules for Agents on This Repo
 
-Guidance distilled from the feishu-gateway development retrospective
-(`docs/retrospective-2026-10-12-feishu-gateway-pitfalls.md`). Two rule
-domains follow: integration testing against a live dsh host, and interface
-conformance (external services vs. the dsh host itself).
+Working rules for agents on this repository, distilled from the
+feishu-gateway development cycle. Two domains follow: integration testing
+against a live dsh host, and interface conformance (external services vs.
+the dsh host itself).
 
 ## 1. Integration Testing Must Observe the Real Host
 
