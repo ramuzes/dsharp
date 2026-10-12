@@ -1,16 +1,15 @@
 # AGENTS.md — Working Rules for Agents on This Repo
 
-Working rules for agents on this repository, distilled from the
-feishu-gateway development cycle. Two domains follow: integration testing
-against a live dsh host, and interface conformance (external services vs.
-the dsh host itself).
+Rules distilled from the feishu-gateway development cycle; they apply to
+every plugin in this repository. Plugin-specific notes live in each
+plugin's own README.
 
 ## 1. Integration Testing Must Observe the Real Host
 
 Unit tests with hand-written fakes are not enough: the two worst bugs of
-this project (an unhandled `TypeError` from a missing `AbortSignal`
-argument, and a bare-array vs `{items}` mismatch that killed the whole host
-process) both passed a 100% green fake-based suite.
+this repository (an unhandled `TypeError` from a missing `AbortSignal`
+argument, and a bare-array vs `{items}` return-shape mismatch that killed
+the whole host process) both passed a 100% green fake-based suite.
 
 - **A background dsh host is part of the test loop.** When you change
   plugin behavior, verify against a real host process (a dedicated test
@@ -21,7 +20,7 @@ process) both passed a 100% green fake-based suite.
   fatal path (`dsh: fatal load failure` — any dangling rejected promise
   kills the process), crashes, and silent degradation. A plugin bug must
   never take the host down; every plugin entry point stays wrapped in
-  containment (`safely()` / `guarded()`).
+  containment (e.g. `safely()` / `guarded()` wrappers).
 - **Fakes must replicate real strictness.** A fake that is more forgiving
   than the real interface (missing required parameters, looser return
   shapes) makes the suite lie. Fakes mirror real signatures exactly —
@@ -33,26 +32,24 @@ process) both passed a 100% green fake-based suite.
   `pkill -f` with a pattern that can match your own shell or another
   profile's host. Long-running test hosts run as managed background jobs,
   not shell `&`.
-- **Per-instance state.** Status/event files are named per profile or
-  appId; never assume a single host instance owns `~/.dsh`.
+- **Per-instance state.** Plugin state/status files are named per profile
+  or per instance; never assume a single host instance owns `~/.dsh`.
 
 ## 2. Interface Conformance: External Services vs. the dsh Host
 
-Feishu is the representative *external* service; the dsh host is the
-*internal* platform. Both were violated during development; both rules
-below are mandatory.
+Every plugin in this repository sits between at least one *external*
+service and the *internal* dsh platform. Both sides have mandatory
+conformance rules.
 
-### 2a. External services (Feishu / Lark SDK and any third-party API)
+### 2a. External services (any third-party SDK or API)
 
 - **Follow the external protocol strictly.** Do not guess payload shapes
-  from examples or analogy. The Lark SDK flattens schema-2.0 events to the
-  top level; card JSON has exact schemas. Before writing parsing code, log
-  the raw payload (`JSON.stringify`) to the event log and build against
-  what actually arrives.
+  from examples or analogy. Before writing parsing code, log the raw
+  payload (`JSON.stringify`) to the event log and build against what
+  actually arrives.
 - **Verify members exist before calling them.** Any field or method taken
   from an external service must be confirmed against its shipped types or
-  source first. `request.prompt` and `session.lastUserSource()` both looked
-  plausible and neither existed.
+  source first — plausibility is not existence.
 - **Silent filtering is a defect.** Every filtered/dropped inbound path
   counts and logs its reason; a 100% filter rate must surface loudly, not
   swallow traffic.
@@ -78,11 +75,9 @@ below are mandatory.
 - **Hand-writing framework-level code is a stop signal.** The moment you
   are hand-assembling setup callbacks, lifecycle resume, queue/steer
   semantics, or catalog assembly, stop and check whether the host already
-  provides it. In this project, replacing hand composition with
-  `sessionController` calls deleted more code than it added and eliminated
-  an entire failure class.
+  provides it.
 - **Match the host's design philosophy; do not improvise.** Error codes are
-  namespaced and typed (`session/writer-held`, `session/agent-busy`) —
+  namespaced and typed (e.g. `session/writer-held`, `session/agent-busy`) —
   translate them, don't probe around them. Configuration uses the host's
   schema system with its exact semantics (volatile = live-editable AND
   persisted). Persistence goes through host services (`storageDomain` with
@@ -93,7 +88,7 @@ below are mandatory.
 
 ## Quick checklist before finishing any change
 
-1. `node --test tests/*.spec.js` green, with strict fakes.
+1. The plugin's unit tests green, with strict fakes.
 2. Verified on a live background host: plugin active, host stable, inbound
    and outbound paths exercised.
 3. Every dsh interface consumed was located in the dsh source (cite file
