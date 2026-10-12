@@ -503,6 +503,8 @@ test('bare /model renders ONE picker card from sessionController.modelCatalog', 
   assert.equal(cards.length, 1, 'picker is a single card, not one message per provider')
   const buttons = cards[0].elements.filter(e => e.tag === 'action').flatMap(e => e.actions)
   assert.deepEqual(buttons.map(a => a.value.model), ['glm-5.3', 'glm-5.3-flash', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-coder'])
+  // Button labels carry the display NAME only — the id rides in the value.
+  assert.deepEqual(buttons.map(a => a.text.content), ['GLM 5.3', 'GLM 5.3 Flash', 'Chat', 'Reasoner', 'Coder'])
   // GROUPING: each provider label sits IMMEDIATELY before that group's own
   // button rows (the old flatten-then-chunk piled both labels at the top).
   const kinds = cards[0].elements.map(e => (e.tag === 'note' ? `note:${String(e.elements[0].content)}` : `actions:${e.actions.map(a => a.value.provider).join(',')}`))

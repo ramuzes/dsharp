@@ -315,7 +315,10 @@ export class GatewayDriver {
       let any = false
       for (const group of catalog?.groups ?? []) {
         const buttons = [...(group.models ?? [])].map(model => ({
-          tag: 'button', text: { tag: 'plain_text', content: `${String(model.name)} ${String(model.id)}`.slice(0, 20) }, type: 'default',
+          // Button text shows the display NAME only (e.g. "GLM 5.3"); the id
+          // travels in the action value and never inflates the label — the
+          // old "name + id" concat truncated at 20 chars into gibberish.
+          tag: 'button', text: { tag: 'plain_text', content: String(model.name ?? model.id) }, type: 'default',
           value: { actionId: this.makeActionId(), kind: 'model', provider: group.id, model: model.id },
         }))
         if (buttons.length === 0) continue
