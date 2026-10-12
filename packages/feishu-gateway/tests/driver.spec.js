@@ -492,6 +492,7 @@ test('bare /model renders ONE picker card from sessionController.modelCatalog', 
       routableProviders: ['zai-coding-cn'],
       groups: [
         { id: 'zai-coding-cn', name: 'ZAI', models: [{ id: 'glm-5.3', name: 'GLM 5.3' }, { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' }] },
+        { id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'Chat' }, { id: 'deepseek-reasoner', name: 'Reasoner' }, { id: 'deepseek-coder', name: 'Coder' }] },
       ],
       failures: [],
     }
@@ -501,8 +502,14 @@ test('bare /model renders ONE picker card from sessionController.modelCatalog', 
   const cards = sent.filter(m => m.type === 'interactive').map(m => m.content).filter(c => JSON.stringify(c).includes('选择模型'))
   assert.equal(cards.length, 1, 'picker is a single card, not one message per provider')
   const buttons = cards[0].elements.filter(e => e.tag === 'action').flatMap(e => e.actions)
-  assert.deepEqual(buttons.map(a => a.value.model), ['glm-5.3', 'glm-5.3-flash'])
-  assert.deepEqual(buttons.map(a => a.value.provider), ['zai-coding-cn', 'zai-coding-cn'])
+  assert.deepEqual(buttons.map(a => a.value.model), ['glm-5.3', 'glm-5.3-flash', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-coder'])
+  // GROUPING: each provider label sits IMMEDIATELY before that group's own
+  // button rows (the old flatten-then-chunk piled both labels at the top).
+  const kinds = cards[0].elements.map(e => (e.tag === 'note' ? `note:${String(e.elements[0].content)}` : `actions:${e.actions.map(a => a.value.provider).join(',')}`))
+  assert.deepEqual(kinds, [
+    'note:ZAI', 'actions:zai-coding-cn,zai-coding-cn',
+    'note:DeepSeek', 'actions:deepseek,deepseek,deepseek',
+  ])
 })
 
 test('/model selects through sessionController with a flat ModelSelection request', async () => {

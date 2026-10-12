@@ -307,21 +307,25 @@ export class GatewayDriver {
       // per-provider listProviders/listModels fan-out that split the picker
       // across several separate chat messages.
       const catalog = await this.ctx.sessionController.modelCatalog()
+      // ONE card, provider-grouped: each group renders as its label (note)
+      // immediately followed by THAT group's button rows — buttons are
+      // chunked per group, never flattened across groups (the flattening
+      // piled every label at the top and detached them from their models).
       const elements = []
-      const actions = []
+      let any = false
       for (const group of catalog?.groups ?? []) {
-        elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: String(group.id) }] })
-        for (const model of group.models ?? []) {
-          actions.push({
-            tag: 'button', text: { tag: 'plain_text', content: `${String(model.name)} ${String(model.id)}`.slice(0, 20) }, type: 'default',
-            value: { actionId: this.makeActionId(), kind: 'model', provider: group.id, model: model.id },
-          })
+        const buttons = [...(group.models ?? [])].map(model => ({
+          tag: 'button', text: { tag: 'plain_text', content: `${String(model.name)} ${String(model.id)}`.slice(0, 20) }, type: 'default',
+          value: { actionId: this.makeActionId(), kind: 'model', provider: group.id, model: model.id },
+        }))
+        if (buttons.length === 0) continue
+        any = true
+        elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: String(group.name ?? group.id) }] })
+        for (let i = 0; i < buttons.length; i += 5) {
+          elements.push({ tag: 'action', actions: buttons.slice(i, i + 5) })
         }
       }
-      for (let i = 0; i < actions.length; i += 5) {
-        elements.push({ tag: 'action', actions: actions.slice(i, i + 5) })
-      }
-      if (elements.length === 0) return void this.lark.sendText(chatId, '没有可用模型（/doctor 看看）。')
+      if (!any) return void this.lark.sendText(chatId, '没有可用模型（/doctor 看看）。')
       return void this.lark.sendJson(chatId, 'interactive', {
         config: { update_multi: true },
         header: { title: { tag: 'plain_text', content: '选择模型（下一轮生效）' }, template: 'blue' },
