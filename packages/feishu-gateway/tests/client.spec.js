@@ -17,6 +17,27 @@ function SettingsForm(props) { return { type: 'settings-form', props } }
 function SettingsValueField(props) { return { type: 'settings-value-field', props } }
 function SettingsSecretField(props) { return { type: 'settings-secret-field', props } }
 
+/**
+ * Fake React mirroring the real surface the card consumes: createElement
+ * (plain tree nodes), Fragment, and the three hooks the diagnostics section
+ * uses (useState/useCallback/useEffect). Hook semantics are minimal — state
+ * never updates (renders here are synchronous one-shots) and effects run
+ * immediately — which is exactly what the assertions rely on.
+ */
+const fakeReact = {
+  Fragment: 'Fragment',
+  createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+  useState: () => [undefined, () => {}],
+  useCallback: fn => fn,
+  useEffect: fn => { fn(); return () => {} },
+}
+
+/** Fake remote service: credentials face (per test) plus $mount for namespaces. */
+const fakeRemote = (credentials) => ({
+  ...(credentials === undefined ? {} : { credentials }),
+  $mount: async () => async () => {},
+})
+
 /** A fake SettingsFormModel over a stub scope. */
 class FakeFormModel {
   static instances = []
@@ -79,7 +100,7 @@ test('registers one plugin under the package id in factory format', () => {
 
 test('the plugin registers a bundle config card into plugins.bundle.config', () => {
   const plugin = loaded[0].factory(name => {
-    if (name === 'react') return { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) }
+    if (name === 'react') return fakeReact
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       return { SettingsForm, SettingsValueField, SettingsFormModel: FakeFormModel, settingsTextField: (field) => ({ field }) }
     }
@@ -91,6 +112,7 @@ test('the plugin registers a bundle config card into plugins.bundle.config', () 
   const ctx = {
     locale: { register: () => () => {} },
     configForms: { get: (row) => ({ getSnapshot: () => ({ status: 'ready', writable: true, value: { appId: 'cli_1', appSecretEnv: 'FEISHU_APP_SECRET', domain: 'https://open.feishu.cn' } }) }) },
+    remote: fakeRemote(),
     slots: {
       inject: (slot, register) => { registrations.push(slot); register(); return () => {} },
       register: (declaration, component) => ({ declaration, component }),
@@ -108,7 +130,7 @@ test('the config snapshot identity is stable between notifications (React #185 r
   )
   let configured = false
   const plugin = loaded[0].factory(name => {
-    if (name === 'react') return { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) }
+    if (name === 'react') return fakeReact
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       return {
         SettingsForm, SettingsValueField, SettingsSecretField,
@@ -121,10 +143,10 @@ test('the config snapshot identity is stable between notifications (React #185 r
   const ctx = {
     locale: { register: () => () => {}, bind: (ns) => (key) => `${ns}:${key}` },
     configForms: { get: () => model.scope },
-    remote: { credentials: {
+    remote: fakeRemote({
       describe: async (refs) => ({ ok: true, value: { [refs[0]]: { configured } } }),
       set: async () => {},
-    } },
+    }),
     slots: {
       inject: (_slot, register) => { card = register(); return () => {} },
       register: (declaration, component) => ({ declaration, component }),
@@ -167,7 +189,7 @@ test('the config card renders two staged fields plus a credentials-backed secret
   const credentialCalls = []
   let configured = false
   const plugin = loaded[0].factory(name => {
-    if (name === 'react') return { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) }
+    if (name === 'react') return fakeReact
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       return {
         SettingsForm, SettingsValueField, SettingsSecretField,
@@ -183,10 +205,10 @@ test('the config card renders two staged fields plus a credentials-backed secret
   const ctx = {
     locale: { register: () => () => {}, bind: (ns) => (key) => `${ns}:${key}` },
     configForms: { get: () => model.scope },
-    remote: { credentials: {
+    remote: fakeRemote({
       describe: async (refs) => { credentialCalls.push(['describe', ...refs]); return { ok: true, value: { [refs[0]]: { configured } } } },
       set: async (ref, value) => { credentialCalls.push(['set', ref, value]); configured = true; return { ok: true } },
-    } },
+    }),
     slots: {
       inject: (_slot, register) => { card = register(); return () => {} },
       register: (declaration, component) => ({ declaration, component }),
@@ -210,15 +232,18 @@ test('the config card renders two staged fields plus a credentials-backed secret
   const actions = { edit: face.edit, resetField: face.resetField, save: face.save, discard: face.discard }
   assert.equal(face.storeSecret, undefined, 'the face exposes only staged-form actions')
   const element = card.component({ view: 'page', t: (key) => key, ...hooks, ...actions })
-  assert.equal(element.type, SettingsForm)
-  const staged = element.children.filter(child => typeof child.type === 'function' && child.type !== SettingsSecretField)
+  assert.equal(element.type, 'Fragment', 'page view renders diagnostics + form in a fragment')
+  assert.equal(typeof element.children[0].type, 'function', 'diagnostics section rendered first')
+  const form = element.children[1]
+  assert.equal(form.type, SettingsForm)
+  const staged = form.children.filter(child => typeof child.type === 'function' && child.type !== SettingsSecretField)
   assert.equal(staged.length, 2)
   const fields = staged.flatMap(child => [child.type(child.props)])
   assert.deepEqual(fields.map(f => f.props.id), [
     'feishu-gateway-config-app-id',
     'feishu-gateway-config-domain',
   ])
-  const secret = element.children.find(child => child.type === SettingsSecretField)
+  const secret = form.children.find(child => child.type === SettingsSecretField)
   assert.ok(secret, 'secret control rendered')
   assert.equal(secret.props.id, 'feishu-gateway-config-app-secret')
   assert.equal(secret.props.configured, false, 'presence projected from the presence store')

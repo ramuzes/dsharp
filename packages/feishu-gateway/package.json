@@ -10,16 +10,48 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "lib", "client.js", "cordis.patch.yml", "README.md", "README.zh-CN.md", "locale/*.json", "icon.svg"],
-  "scripts": { "test": "node --test \"tests/*.spec.js\"" },
+  "files": [
+    "index.js",
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "scripts": {
+    "test": "node --test \"tests/*.spec.js\""
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-client-ui-settings"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
-  "dependencies": { "@larksuiteoapi/node-sdk": "^1.74.0", "zod": "^4.4.3" },
-  "peerDependencies": { "@deepseek-ai/schemastery": "*", "@deepseek-ai/dsh-storage-domain": "*" },
-  "devDependencies": { "@deepseek-ai/schemastery": "*" }
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.74.0",
+    "axios": "^1.20.0",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-storage-domain": "0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-storage": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-invariants": "0.0.1-rc.1",
+    "@deepseek-ai/cordis": "4.0.4"
+  }
 }

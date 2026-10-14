@@ -158,7 +158,11 @@ async function boot() {
     Client: class { constructor() { this.im = { v1: { message: world.messageApi } } } },
     WSClient: class {
       constructor(options) { world.wsOptions = options }
-      async start({ eventDispatcher }) { world.dispatcher = eventDispatcher; world.ready = true }
+      async start({ eventDispatcher }) {
+        world.dispatcher = eventDispatcher; world.ready = true
+        // The real SDK fires onReady once the long connection is up (>=1.74).
+        this.options?.onReady?.(); world.wsOptions?.onReady?.()
+      }
       async close() { world.ready = false }
     },
     EventDispatcher: class {
@@ -194,8 +198,16 @@ test('boots through the real apply() against a strict cordis context', async () 
   assert.ok(world.dispatcher.handles.has('im.message.receive_v1'))
   assert.ok(world.dispatcher.handles.has('card.action.trigger'))
   const status = JSON.parse(readFileSync(process.env.FEISHU_GATEWAY_STATUS_FILE, 'utf8'))
+  // onReady (not boot) is what writes connected; connectedAt rides the record.
   assert.equal(status.stage, 'connected')
+  assert.equal(status.detail, null, 'onReady carries no detail — boot-time writes no longer fake connected')
+  assert.equal(status.appId, 'cli_e2e')
+  assert.ok(status.connectedAt, 'connectedAt recorded')
   assert.equal(world.wsOptions.appId, 'cli_e2e')
+  // WS error lines are captured into the status record (desktop proxy incident).
+  world.wsOptions.logger.error('[ws]', 'Protocol "https:" not supported. Expected "http:"')
+  const afterError = JSON.parse(readFileSync(process.env.FEISHU_GATEWAY_STATUS_FILE, 'utf8'))
+  assert.ok(String(afterError.lastWsError).includes('not supported'), 'lastWsError captured')
 })
 
 test('documented p2p /help fixture flows through to a documented REST reply', async () => {

@@ -124,7 +124,10 @@ test('boot survives a strict cordis context (optional services uninjected)', asy
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
   const status = JSON.parse(readFileSync(statusFile(), 'utf8'))
-  assert.equal(status.stage, 'connected', `boot reaches connected even without optional services; got ${JSON.stringify(status)}`)
+  // STAGE SEMANTICS: boot writes transport-started; only the SDK's onReady
+  // (not fired by this inert fake) may write connected.
+  assert.equal(status.stage, 'transport-started', `boot reaches transport-started even without optional services; got ${JSON.stringify(status)}`)
+  assert.equal(status.appId, 'cli_x', 'slow facts ride every status record')
   assert.ok(base.registered.effects.length > 0, 'transport effects mounted')
 })
 

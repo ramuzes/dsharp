@@ -48,7 +48,7 @@ log line naming the missing ref).
 2. Permissions (effective after release): `im:message`, `im:message.p2p_msg`,
    `im:chat:readonly`, `im:resource`.
 3. Events & callbacks → event configuration: subscription mode **persistent
-   connection (long connection)**, add event `im.message.receive_v1`.
+   connection (长连接)**, add event `im.message.receive_v1`.
 4. Events & callbacks → callback configuration: choose **long connection**
    and configure `card.action.trigger`.
    (`card.action.trigger` belongs in the callback configuration, not event

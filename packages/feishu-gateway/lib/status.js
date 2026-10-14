@@ -21,16 +21,40 @@ export function statusFile() {
 
 /**
  * Best-effort staged status writer; never throws into the boot path.
+ *
+ * The writer also keeps the current record in memory: `setExtra` merges
+ * slow-changing facts (appId, connectedAt, lastWsError, inboundCount) into
+ * every persisted record, and `snapshot()` serves the same record to the
+ * diagnostics Remote so the UI reads one object instead of re-parsing the
+ * file. STAGE SEMANTICS (learned the hard way on the desktop deployment):
+ * only the SDK's onReady may write `connected`; boot itself writes
+ * `transport-started` — a status file that says `connected` while the WS
+ * never came up cost a full debugging session.
+ *
  * @param {string} [file] - override for tests.
- * @returns {{ write: (stage: string, detail?: unknown) => void }} the writer.
+ * @returns {{
+ *   write: (stage: string, detail?: unknown) => void,
+ *   setExtra: (extra: Record<string, unknown>) => void,
+ *   snapshot: () => Record<string, unknown>,
+ * }} the writer.
  */
 export function createStatusWriter(file = statusFile()) {
+  let current = { stage: 'starting', detail: null, at: new Date().toISOString() }
+  const persist = () => {
+    try {
+      writeFileSync(file, `${JSON.stringify(current, null, 2)}\n`)
+    } catch { /* best effort: diagnostics must never break the gateway */ }
+  }
   return {
     write(stage, detail) {
-      try {
-        writeFileSync(file, `${JSON.stringify({ stage, detail: detail === undefined ? null : detail, at: new Date().toISOString() }, null, 2)}\n`)
-      } catch { /* best effort: diagnostics must never break the gateway */ }
+      current = { ...current, stage, detail: detail === undefined ? null : detail, at: new Date().toISOString() }
+      persist()
     },
+    setExtra(extra) {
+      current = { ...current, ...extra }
+      persist()
+    },
+    snapshot() { return { ...current } },
   }
 }
 

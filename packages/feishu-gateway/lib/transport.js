@@ -110,7 +110,7 @@ export class ActionDedup {
  * @param {{ config: { appId: string, appSecret: string, domain: string }, handlers: { onMessage: (n: any) => Promise<void> | void, onCardAction: (n: any) => Promise<void> | void }, logger?: any, wsClientFactory?: (config: any, dispatcher: any) => Promise<() => void>, loadSdk?: () => Promise<any> }} args
  * @returns {Promise<() => void>}
  */
-export async function startGatewayTransport({ config, handlers, logger, wsClientFactory, loadSdk = () => import('@larksuiteoapi/node-sdk'), eventLog, onState }) {
+export async function startGatewayTransport({ config, handlers, logger, wsClientFactory, loadSdk = () => import('@larksuiteoapi/node-sdk'), eventLog, onState, onWsError }) {
   const messages = new MessageDedup()
   const actions = new ActionDedup()
   let live = true
@@ -151,7 +151,7 @@ export async function startGatewayTransport({ config, handlers, logger, wsClient
     },
   }
 
-  const start = wsClientFactory ?? ((cfg, dispatcherHandlers) => defaultWsClientFactory(cfg, dispatcherHandlers, loadSdk, onState))
+  const start = wsClientFactory ?? ((cfg, dispatcherHandlers) => defaultWsClientFactory(cfg, dispatcherHandlers, loadSdk, onState, onWsError, logger))
   const stop = await start(config, dispatcherHandlers)
   return () => { live = false; try { stop?.() } catch { /* best effort */ } }
 }
@@ -161,11 +161,34 @@ export async function startGatewayTransport({ config, handlers, logger, wsClient
  * injected `loadSdk` (default: dynamic import) so tests and later tasks can
  * substitute a fake SDK without touching the real package; the dispatcher
  * shape is `EventDispatcher({}).register(map)`.
+ *
+ * SDK error-level log lines never reach onError (the desktop proxy incident:
+ * `Protocol "https:" not supported` looped for hours with status stuck at a
+ * boot-time `connected`), so a custom `logger` adapter forwards them to
+ * `onWsError` for the status record.
  */
-async function defaultWsClientFactory(config, dispatcherHandlers, loadSdk, onState) {
+async function defaultWsClientFactory(config, dispatcherHandlers, loadSdk, onState, onWsError, logger) {
   const Lark = await loadSdk()
   const wsClient = new Lark.WSClient({
     appId: config.appId, appSecret: config.appSecret, domain: config.domain, loggerLevel: Lark.LoggerLevel.info,
+    // Proxy ownership (lib/proxy.js): our axios instance replaces the env-
+    // proxy-sensitive default; the agent carries the wss socket itself.
+    ...(config.httpInstance === undefined ? {} : { httpInstance: config.httpInstance }),
+    ...(config.agent === undefined ? {} : { agent: config.agent }),
+    // Logger adapter over the SDK default (console): warn/error stay visible
+    // in the host terminal, error lines are additionally captured for status.
+    // LoggerProxy (node-sdk lib/index.js) calls debug/info/warn/error/trace.
+    logger: {
+      debug: () => {}, trace: () => {}, info: () => {},
+      warn: (...msgs) => console.warn('[lark]', ...msgs),
+      error: (...msgs) => {
+        console.error('[lark]', ...msgs)
+        try {
+          onWsError?.(msgs.map(m => (typeof m === 'string' ? m : JSON.stringify(m))).join(' ').slice(0, 300))
+        } catch { /* capture must not break the SDK */ }
+        logger?.warn?.('feishu-gateway: lark sdk ws error logged')
+      },
+    },
     // Lifecycle callbacks (IConstructorParams, SDK >= 1.74): report the real
     // connection state — start() resolving only proves the first attempt.
     ...(onState === undefined ? {} : {
