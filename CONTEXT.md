@@ -4,25 +4,25 @@ DeepSeek Harness 插件 bundle 仓库：每个 `packages/` 子目录是一个可
 
 ## Language
 
-### Chrome CDP 插件（chrome-cdp）
+### Chrome CDP plugin (chrome-cdp)
 
-把用户正在使用的真实 Chrome 经 Chrome DevTools Protocol 接入 DSH 的 provider bundle：为每个活跃会话独占挂载 chrome-devtools-mcp，叠加逐操作审批门与 Plugins 页配置卡。只做"接入已有浏览器"，不负责启动一次性浏览器（树内 provider 已覆盖）。
-_Avoid_: browser-use（宿主子系统名，另有所指）、WebBridge（第三方产品名）。
+A provider bundle that brings the user's real, in-use Chrome into DSH over the Chrome DevTools Protocol: mounts chrome-devtools-mcp exclusively for each live session, layered with a per-action approval gate and a Plugins-page config card. It only attaches to an existing browser; it does not launch disposable browsers (already covered by the in-tree provider).
+_Avoid_: browser-use (the host subsystem name, means something else), WebBridge (a third-party product name).
 
-### 连接模式（Connection Mode）
+### Connection Mode
 
-插件与浏览器实例的接入方式，三选一：`auto`（Chrome ≥144 审批模式，按 channel 读取默认 profile 的 DevToolsActivePort）；`url`（调试端点 http://host:port，覆盖 WSL 端口映射等跨层场景）；`ws`（浏览器级 WebSocket 端点）。端点可达性由环境负责，插件不做任何网络拓扑假设。
-_Avoid_: 远程调试（泛指 Chrome 开关时另有所指）、附加/attach（口语，勿用于配置字段以外）。
+How the plugin reaches the browser instance, one of three: `auto` (Chrome ≥144 approval mode, reads the default profile's DevToolsActivePort by channel); `url` (a debug endpoint http://host:port, covering cross-layer setups such as WSL port mappings); `ws` (a browser-level WebSocket endpoint). Endpoint reachability is the environment's responsibility; the plugin makes no network-topology assumptions.
+_Avoid_: remote debugging (ambiguous with the Chrome switches of the same name), attach (colloquial; do not use outside the config field).
 
-### 敏感操作（Sensitive Action）
+### Sensitive Action
 
-审批门默认需要用户 Allow/Deny 的浏览器工具调用。默认只读清单之外的工具一律视为敏感：列表/读取/快照/截图/网络与堆快照分析/等待为只读；导航、交互、输入、evaluate、页面与扩展管理为敏感。策略三档：sensitive（默认）/ all / none。
-_Avoid_: 危险操作（语义模糊）。
+A browser tool call that the approval gate requires the user to Allow/Deny by default. Every tool outside the default read-only list is treated as sensitive: listing/reading/snapshot/screenshot/network and heap-snapshot analysis/waiting are read-only; navigation, interaction, input, evaluate, and page/extension management are sensitive. Three policy levels: sensitive (default) / all / none.
+_Avoid_: dangerous operation (semantically vague).
 
-### 审批门（Approval Gate）
+### Approval Gate
 
-经 `tools/pre-execute` 返回 ask 的逐操作人工审批，由宿主 approval service 呈现在 Web GUI，附着于当次工具调用卡；无审批渠道时按宿主语义 fail-closed。
-_Avoid_: 连接级授权（Kimi WebBridge 式一次性授权，粒度不同，勿混用）。
+Per-action human approval returned as ask from `tools/pre-execute`, presented in the Web GUI by the host approval service and attached to that tool-call card; fail-closed per host semantics when no approval channel is available.
+_Avoid_: connect-level authorization (Kimi WebBridge-style one-shot authorization; different granularity, do not conflate).
 
 ### 飞书网关（Feishu Gateway）
 
