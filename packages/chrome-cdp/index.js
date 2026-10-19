@@ -1,9 +1,10 @@
 /**
  * dsh-chrome-cdp host half. Connection modes and the approval gate are
  * documented in README.md; the spec is docs/specs/2026-10-19-chrome-cdp-design.md.
- * Every field is volatile so the Plugins-page form can edit it; structural
- * fields (mode/endpoint/channel) take effect after plugin reload — behavioral
- * fields (approvalPolicy/readOnlyTools) apply live.
+ * Every Plugins-editable field is volatile except toolCallTimeoutMs;
+ * structural fields (mode/endpoint/channel/toolCallTimeoutMs) take effect
+ * after plugin reload — behavioral fields (approvalPolicy/readOnlyTools)
+ * apply live.
  *
  * Schema constructors verified against the installed @deepseek-ai/schemastery
  * (Schema.array(String), Schema.union([Schema.const(...)]), .pattern/.default/

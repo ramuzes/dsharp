@@ -85,9 +85,23 @@ export function wireChromeCdp(ctx, config, deps = {}) {
       channel: structural.channel ?? 'stable',
       approvalPolicy: settings.policy,
       readOnlyToolCount: settings.readOnlyTools.length,
+      // Spec Status bullet lists the upstream version; pinned exactly in
+      // package.json (chrome-devtools-mcp 1.9.0 — a stable tool-name surface
+      // is the precondition for the approval lists).
+      upstreamVersion: '1.9.0',
       serverEntry: spawn.args[0],
       exclusive: true,
     }
   }
-  registerStatus(ctx, getState)
+  // The commands runtime owns register()'s effect on ITS OWN ctx
+  // (packages/interaction/commands/src/index.ts:285-292
+  // 'this.layers.effect(this.ctx, …)'), so an unwrapped /cdc registration
+  // SURVIVES plugin unload; on re-load the duplicate name throws in the
+  // global layer (index.ts:96-104) and status.js's contained catch swallows
+  // it — leaving the old registration serving a stale getState forever
+  // (final review I1). Route the disposer through the plugin's own fiber
+  // (cordis fiber.effect, node_modules/@deepseek-ai/cordis/lib/types/
+  // fiber.d.ts:145-157; feishu-gateway pattern packages/feishu-gateway/
+  // client.js:353) so unload unregisters it.
+  ctx.effect(() => registerStatus(ctx, getState), 'chrome-cdp: status')
 }
