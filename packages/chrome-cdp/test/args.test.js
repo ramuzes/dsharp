@@ -12,9 +12,13 @@ test('auto mode rejects endpoint', () => {
     /endpoint.*auto/i)
 })
 
-test('url mode: --browser-url with validated http endpoint', () => {
+test('url mode: --browser-url with validated http endpoint, NO --channel (1.9.0 conflicts)', () => {
+  // chrome-devtools-mcp@1.9.0 build/src/config/browser-options.js:105 declares
+  // channel: { conflicts: ['browserUrl', 'wsEndpoint', 'executablePath'] } — passing
+  // both aborts the server with "Arguments channel and browserUrl are mutually
+  // exclusive" (caught live on the dsh-btest2 host, 2026-10-19).
   assert.deepEqual(buildServerArgs({ mode: 'url', endpoint: 'http://127.0.0.1:9223' }),
-    ['--no-usage-statistics', '--channel', 'stable', '--browser-url', 'http://127.0.0.1:9223'])
+    ['--no-usage-statistics', '--browser-url', 'http://127.0.0.1:9223'])
 })
 
 test('url mode requires an http(s) endpoint', () => {
@@ -23,9 +27,9 @@ test('url mode requires an http(s) endpoint', () => {
   assert.throws(() => buildServerArgs({ mode: 'url', endpoint: 'http://a b' }), /whitespace|http/i)
 })
 
-test('ws mode: --ws-endpoint with validated ws(s) endpoint', () => {
+test('ws mode: --ws-endpoint with validated ws(s) endpoint, NO --channel (1.9.0 conflicts)', () => {
   assert.deepEqual(buildServerArgs({ mode: 'ws', endpoint: 'ws://127.0.0.1:9223/devtools/browser/abc' }),
-    ['--no-usage-statistics', '--channel', 'stable', '--ws-endpoint', 'ws://127.0.0.1:9223/devtools/browser/abc'])
+    ['--no-usage-statistics', '--ws-endpoint', 'ws://127.0.0.1:9223/devtools/browser/abc'])
   assert.throws(() => buildServerArgs({ mode: 'ws', endpoint: 'http://x:1' }), /ws/i)
 })
 
