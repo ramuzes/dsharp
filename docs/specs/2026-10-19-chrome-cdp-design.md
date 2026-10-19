@@ -1,67 +1,67 @@
-# chrome-cdp — 把用户真实 Chrome 经 CDP 接入 DSH
+# chrome-cdp — Bring the user's real Chrome into DSH over CDP
 
-## Requirement（为什么 & 做什么）
+## Requirement (the why & what)
 
-### 问题陈述
+### Problem statement
 
-用户在浏览器里保有登录态与工作现场，agent 却只能用无状态的 web_fetch 看页面。用户希望 agent 能操作"正在使用的 Chrome"完成网页任务，且敏感操作必须经人工批准——类似 Kimi WebBridge 的体验，但不依赖其闭源组件，并以更细的逐操作审批替代其连接级授权。
+The user keeps login sessions and working context in their browser, while the agent can only view pages through the stateless web_fetch. The user wants the agent to operate the Chrome they are actually using, with sensitive actions gated by human approval — a Kimi WebBridge-like experience, but without depending on its closed-source components, and with per-action approval instead of WebBridge's connect-once authorization.
 
-### 目标
+### Goal
 
-安装 chrome-cdp bundle 后：agent 获得 chrome-devtools-mcp 全量浏览器工具，作用于用户指定的真实浏览器实例（三种连接模式，环境无关）；敏感操作在 Web GUI 逐次弹 Allow/Deny；连接与策略在 Plugins 页可配置、热改生效；状态可查。B 实验已证明宿主机制全部就绪，本插件为组装层。
+After installing the chrome-cdp bundle: the agent gets the full chrome-devtools-mcp browser toolset, acting on the real browser instance the user designates (three connection modes, environment-agnostic); sensitive actions prompt Allow/Deny in the Web GUI one by one; connection and policy are configurable on the Plugins page with live effect; status is queryable. The B spike has proven every host mechanism is in place — this plugin is an assembly layer.
 
-### 用户故事
+### User stories
 
-1. 作为用户，我想让 agent 操作我正在使用的 Chrome（带登录态），以便把网页上的信息与操作交给 agent。
-2. 作为用户，我想选择连接模式（auto / url / ws），以便适配同机默认 profile（Chrome ≥144 审批模式）、端口映射（WSL→Windows 等）或任意可达调试端点——插件不假设网络拓扑。
-3. 作为用户，我想敏感浏览器操作默认弹 Allow/Deny、只读操作免打扰，以便agent 动浏览器必须过我这一关，又不至于刷屏。
-4. 作为用户，我想把审批策略切成 all / sensitive / none，以便按场景收紧或放开。
-5. 作为用户，我想在 Plugins 页改端点与策略并即时生效（新会话起），以便换浏览器不用重启宿主。
-6. 作为用户，我想随时查看连接健康（DevToolsActivePort 探测、挂载归属、上游版本），以便排查"浏览器没反应"。
-7. 作为用户，我想第二个会话不抢已在用的浏览器连接（独占 + 明确报错），以免两个 agent 同时操作。
-8. 作为 agent，我想先 take_snapshot / take_screenshot 看页面再动手，以便操作有依据。
+1. As a user, I want the agent to operate the Chrome I am using (with my logins), so that browsing-based information and actions can be delegated to the agent.
+2. As a user, I want to choose the connection mode (auto / url / ws), so that same-machine default profiles (Chrome ≥144 approval mode), port mappings (WSL→Windows and the like), or any reachable debug endpoint all work — the plugin makes no network-topology assumptions.
+3. As a user, I want sensitive browser actions to prompt Allow/Deny by default while read-only actions pass silently, so that nothing touches my browser without consent, without being spammed.
+4. As a user, I want to switch the approval policy between all / sensitive / none, so that I can tighten or loosen per scenario.
+5. As a user, I want to edit the endpoint and policy on the Plugins page with immediate effect (from new sessions on), so that switching browsers never restarts the host.
+6. As a user, I want to check connection health at any time (DevToolsActivePort probe result, mount ownership, upstream version), so that "the browser is not responding" is diagnosable.
+7. As a user, I want a second session to never steal the browser connection already in use (exclusive attach with an explicit error), so two agents never operate the same browser at once.
+8. As an agent, I want to take_snapshot / take_screenshot before acting, so that actions are grounded in what the page actually shows.
 
-### 范围外
+### Out of scope
 
-- Kimi WebBridge daemon 的对接（调研已确认可行，留作后续 provider 选项）。
-- Web GUI 侧栏浏览器面板（标签页列表/操作流水视图）。
-- launch（一次性浏览器）模式——树内 browser-use-chrome-devtools-mcp 已覆盖。
-- WSL↔Windows 的网络打通（端口映射、mirrored networking 由环境侧负责，插件只消费端点）。
-- 桌面级 computer-use 控制。
+- Bridging to the Kimi WebBridge daemon (feasible per the research note; left as a future provider option).
+- A Web GUI sidebar browser panel (tab list / action feed view).
+- The launch (disposable browser) mode — already covered by the in-tree browser-use-chrome-devtools-mcp.
+- WSL↔Windows network plumbing (port mapping, mirrored networking are the environment's responsibility; the plugin only consumes endpoints).
+- Desktop-level computer-use control.
 
-## Design（怎么做）
+## Design (the how)
 
-### 方案
+### Solution
 
-一个 dsharp bundle（host 半边 + client 半边）。host 半边注册为 browser-use 子系统的 provider：按连接模式拼装 chrome-devtools-mcp 启动参数，复用宿主每会话挂载语义（独占 attach、忙碌遮罩、创建期发现等待）；再注册全局审批门与状态命令。client 半边在 Plugins 页提供配置卡与连接状态显示。
+One dsharp bundle (host half + client half). The host half registers as a provider of the browser-use subsystem: it assembles chrome-devtools-mcp launch arguments per the connection mode and reuses the host's per-Session mounting semantics (exclusive attach, busy-session masking, discovery awaited during creation); it also registers the global approval gate and a status command. The client half provides a config card and connection status on the Plugins page.
 
-### 实现决策
+### Implementation decisions
 
-- **连接模式**（Config，enum）：
-  - `auto`：透传 `--auto-connect`（Chrome ≥144 审批模式；`channel` 默认 stable，可配）。插件不读端口文件——上游自行解析 DevToolsActivePort。注意 auto 隐含「浏览器与 DSH 同环境」（同 OS 的默认 profile 目录）；跨环境（如 WSL→Windows）用 url + 端口映射。
-  - `url`：透传 `--browser-url <endpoint>`（http 端点；含端口映射场景）。
-  - `ws`：透传 `--ws-endpoint <endpoint>`（浏览器级 WS 端点）。
-  - 统一追加 `--no-usage-statistics`。
-- **审批门**：全局 `tools/pre-execute` 监听，匹配 `mcp__chrome-cdp__` 前缀；按策略与只读清单返回 ask（displayReason 中英双语，reason 落审计）/ allow；不匹配前缀一律放行。ask 的 UI 与审计由宿主 approval service 承担（无渠道即 fail-closed）。
-  - 默认只读清单（chrome-devtools-mcp 1.9.0 工具名面）：list_pages、list_network_requests、list_console_messages、list_extensions、list_webmcp_tools、get_network_request、get_console_message、get_tab_id、get_os_app_state、take_snapshot、take_screenshot、wait_for、performance_start_trace、performance_stop_trace、performance_analyze_insight、take_heapsnapshot、close_heapsnapshot、compare_heapsnapshots、query_heapsnapshot_objects、get_heapsnapshot_*（9 个）。
-  - 策略：`sensitive`（默认，清单外皆审）、`all`（全审）、`none`（全放行）。
-  - 清单与策略均为 Config 字段；只读清单为覆盖式替换（用户给清单即整体取代默认清单）。
-- **配置**（schemastery，volatile 标注热改字段）：连接模式、端点、channel、审批策略、只读清单覆盖、工具调用超时。volatile 语义按宿主：改动写回 profile patch、对新挂载生效。
-- **依赖**：dsh 包全部 peer `*`（随宿主解析）；`chrome-devtools-mcp` 精确锁 1.9.0（工具名面稳定是审批清单的前提）。
-- **上游验证（实施第 0 步）**：确认发布版 browser-use-runtime 含 `./mcp` 导出与 `mountSessionMcp`；缺失则 vendor 最小挂载核心（scope + agent/created + mcp-client plugin），代码注释注明出处与差异，并回写本 SPEC 的决策记录。
-- **状态**：`/cdc` 斜杠命令（dsh-commands）+ Plugins 卡状态区：连接模式、端点/通道、上游版本、当前挂载归属会话；探测不主动连接浏览器（不产生额外审批弹窗），仅组装当前配置的诊断文本。
-- **containment**：一切回调经 safely 包装；挂载生命周期由宿主 effect 管理；状态文件按 profile 命名。
-- **每会话独占**：沿用宿主 browser-use 语义（attach 独占、忙碌会话工具遮罩）。
+- **Connection modes** (Config, enum):
+  - `auto`: pass through `--auto-connect` (Chrome ≥144 approval mode; `channel` defaults to stable, configurable). The plugin never reads the port file — the upstream resolves DevToolsActivePort itself. Note `auto` implicitly assumes the browser lives in the same environment as DSH (same-OS default profile directory); cross-environment setups (e.g. WSL→Windows) use `url` plus a port mapping.
+  - `url`: pass through `--browser-url <endpoint>` (an HTTP endpoint; covers port-mapped setups).
+  - `ws`: pass through `--ws-endpoint <endpoint>` (a browser-level WebSocket endpoint).
+  - `--no-usage-statistics` is always appended.
+- **Approval gate**: a global `tools/pre-execute` listener matching the `mcp__chrome-cdp__` prefix; per policy and read-only list it returns ask (bilingual displayReason, audited reason) or allow; anything not matching the prefix is passed through. The ask UI and audit trail are owned by the host approval service (fail-closed when no channel is composed).
+  - Default read-only list (chrome-devtools-mcp 1.9.0 tool surface): list_pages, list_network_requests, list_console_messages, list_extensions, list_webmcp_tools, get_network_request, get_console_message, get_tab_id, get_os_app_state, take_snapshot, take_screenshot, wait_for, performance_start_trace, performance_stop_trace, performance_analyze_insight, take_heapsnapshot, close_heapsnapshot, compare_heapsnapshots, query_heapsnapshot_objects, get_heapsnapshot_* (9 tools).
+  - Policies: `sensitive` (default; everything off the list is asked), `all` (ask for everything), `none` (allow everything).
+  - The list and policy are Config fields; the read-only list replaces wholesale (a user-provided list fully supersedes the default).
+- **Config** (schemastery; volatile marks live-editable fields): connection mode, endpoint, channel, approval policy, read-only list override, tool-call timeout. Volatile semantics follow the host: edits are written back to the profile patch and take effect for new mounts.
+- **Dependencies**: all dsh packages as peer `*` (resolved with the host); `chrome-devtools-mcp` pinned exactly to 1.9.0 (a stable tool-name surface is the precondition for the approval lists).
+- **Upstream verification (implementation step 0)**: confirm the published browser-use-runtime ships the `./mcp` export and `mountSessionMcp`; if missing, vendor the minimal mounting core (scope + agent/created + mcp-client plugin), citing provenance and differences in code comments, and record the decision back into this SPEC.
+- **Status**: a `/cdc` slash command (dsh-commands) + a status area on the Plugins card: connection mode, endpoint/channel, upstream version, current mount-owning session; probing never connects to the browser (no extra approval popups) — it only composes diagnostic text from current config.
+- **Containment**: every callback wrapped in safely; mount lifecycle owned by host effects; status files named per profile.
+- **Per-Session exclusivity**: the host browser-use semantics apply (exclusive attach, busy-session tool masking).
 
-### 测试决策
+### Testing decisions
 
-- **单元测试**（node --test，strict fakes）：审批门策略矩阵（sensitive/all/none × 只读/敏感/前缀外工具 → allow/ask）、参数拼装（三种连接模式 + 旗标）、配置校验（非法模式/端点缺失）。fake 严格复刻 pre-execute 载荷形状与 waterfall 语义（含 next() 委托），不放宽任何字段。
-- **真机 host 验证循环**（AGENTS.md 要求）：复用 B 实验装置（工作区 .scratch 测试 home + headless profile + 本地 chromium 调试端口）：①策略 none 端到端（agent 驱动真实浏览器）；②策略 sensitive 下敏感工具被拦截（无审批渠道时 fail-closed 报错可见）；③宿主全程稳定、无 dangling rejection。
-- **GUI 人工验证**（一次）：fgtest host 上策略 sensitive，浏览器敏感操作在 Web GUI 弹出 Allow/Deny，Allow 放行、Deny 拒绝（模型侧收到明确拒绝原因）。
-- 先例：feishu-gateway 的 strict-fake 测试与真机验证循环。
+- **Unit tests** (node --test, strict fakes): the approval-gate policy matrix (sensitive/all/none × read-only/sensitive/off-prefix tools → allow/ask), argument assembly (three connection modes + flags), config validation (illegal mode / missing endpoint). Fakes replicate the pre-execute payload shape and waterfall semantics strictly (including next() delegation) with no loosened fields.
+- **Live-host verification loop** (required by AGENTS.md): reuse the B-spike rig (workspace .scratch test home + headless profile + local chromium debug port): (1) end-to-end with policy none (agent drives the real browser); (2) under policy sensitive a sensitive tool is gated (fail-closed error visible when no approval channel); (3) host stable throughout, no dangling rejections.
+- **GUI manual check** (once): on an fgtest host with policy sensitive, a sensitive browser action prompts Allow/Deny in the Web GUI; Allow proceeds, Deny rejects (the model receives an explicit rejection reason).
+- **Prior art**: feishu-gateway's strict-fake tests and live-host loop.
 
-## 补充说明
+## Further notes
 
-- 背景与可行性论证见 docs/research/2026-10-19-dsh-cdp-browser-control.md（含 B 实验记录与两个实操坑）。
-- 架构决策记录：docs/adr/0004-chrome-cdp-via-browser-use-mcp.md。
-- 安全基线：调试端点无鉴权，本机任意进程可连；插件的缓解是审批门 + 文档明示，不得宣称沙箱隔离。
+- Background and feasibility: docs/research/2026-10-19-dsh-cdp-browser-control.md (includes the B-spike record and the two practical pitfalls).
+- Architecture decision record: docs/adr/0004-chrome-cdp-via-browser-use-mcp.md.
+- Security baseline: debug endpoints are unauthenticated — any local process can connect. This plugin's mitigations are the approval gate plus explicit documentation; it must not claim sandbox isolation.

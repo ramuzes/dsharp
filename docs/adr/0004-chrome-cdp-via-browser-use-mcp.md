@@ -1,27 +1,27 @@
-# 0004 — chrome-cdp 复用 browser-use 子系统挂载 chrome-devtools-mcp
+# 0004 — chrome-cdp reuses the browser-use subsystem to mount chrome-devtools-mcp
 
-状态：已接受（2026-10-19）
+Status: Accepted (2026-10-19)
 
-## 背景
+## Context
 
-需要让 DSH agent 操作用户正在使用的真实 Chrome（CDP，带登录态），并且敏感操作须经人工审批。可选实现路径：
+The DSH agent must be able to operate the user's real, daily-use Chrome (over CDP, with logged-in sessions), and sensitive actions must pass human approval. Candidate implementation paths:
 
-1. 依附宿主 browser-use 子系统：`ctx.browserUse.register` + 复用 `mountSessionMcp`（每会话独占挂载 MCP 子进程）；
-2. 自绘每会话挂载：仅依赖 dsh-mcp-client + dsh-scope，复刻 createScope / agent/created / scope.ctx.plugin 核心；
-3. 纯配置 bundle：cordis.patch.yml 插入全局 mcp-client 行（B 实验已验证该机制可行）；
-4. 原生 CDP 工具：宿主进程内自持 WebSocket 直连调试端点，自注册工具。
+1. Ride the host browser-use subsystem: `ctx.browserUse.register` + reuse `mountSessionMcp` (one exclusive MCP child process per live Session);
+2. Hand-rolled per-session mount: depend only on dsh-mcp-client + dsh-scope, replicating the createScope / agent/created / scope.ctx.plugin core;
+3. Config-only bundle: a cordis.patch.yml inserting a global mcp-client row (the mechanism already proven by the B spike);
+4. Native CDP tools: hold a WebSocket to the debug endpoint inside the host process and register tools ourselves.
 
-## 决策
+## Decision
 
-采用路径 1。插件形态 = provider（复用树内 browser-use-chrome-devtools-mcp 的挂载模式，新增 `auto` 连接模式透传 `--auto-connect`）+ 全局 `tools/pre-execute` 审批门（按 `mcp__chrome-cdp__` 前缀匹配，不侵入 runtime）+ Plugins 页配置卡与状态命令。
+Path 1. The plugin = a provider (following the in-tree browser-use-chrome-devtools-mcp mounting pattern, adding the `auto` connection mode that passes through `--auto-connect`) + a global `tools/pre-execute` approval gate (matching the `mcp__chrome-cdp__` prefix, not intruding into the runtime) + a Plugins-page config card and a status command.
 
-- `chrome-devtools-mcp` 依赖**精确锁版本**：审批清单按其工具名面维护，次版本变动可能改名/新增工具。
-- 不实现 launch（一次性浏览器）模式：树内 provider 已覆盖该场景，本插件只面向"真实浏览器"。
-- 审批门为全局监听（非 agent scope）：MCP 工具对全部会话可见性一致，门也必须一致。
+- The `chrome-devtools-mcp` dependency is **pinned exactly**: the approval lists are maintained against its tool-name surface, and minor-version changes may rename or add tools.
+- No launch (disposable browser) mode: the in-tree provider already covers that scenario; this plugin targets the real browser only.
+- The approval gate is a global listener (not agent-scoped): MCP tools are uniformly visible to all sessions, so the gate must be uniform too.
 
-## 后果
+## Consequences
 
-- 继承宿主每会话独占、忙碌遮罩、创建期发现等待等全部语义；不手搓框架级生命周期（AGENTS.md 铁律）。
-- 代价一：依赖 experimental alpha 包（browser-use-runtime）。实施第 0 步必须验证其 npm 包实含 `./mcp` 导出与 `mountSessionMcp`；若缺失，按方案 2 vendor 最小核心并在代码注释注明出处与差异。
-- 代价二：上游 provider 行为变化（experimental）可能要求跟进；以真机 host 验证循环兜底。
-- 与 B 实验结论一致：机制全部现成，插件是组装而非发明；两个实操坑（- insert 方言、chrome-devtools-mcp 双 bin）已记入调研报告 §7。
+- We inherit all host semantics — per-Session exclusivity, busy-session masking, discovery awaited during creation — and hand-roll no framework-level lifecycle (an AGENTS.md hard rule).
+- Cost one: a dependency on an experimental alpha package (browser-use-runtime). Implementation step 0 must verify that its published npm tarball actually ships the `./mcp` export and `mountSessionMcp`; if missing, vendor the minimal mounting core per path 2, citing provenance and differences in code comments.
+- Cost two: upstream provider behavior may change (experimental); the live-host verification loop is the backstop.
+- Consistent with the B-spike findings: every mechanism already exists; the plugin assembles rather than invents. The two practical pitfalls (the `- insert:` patch dialect and the chrome-devtools-mcp dual-bin trap) are recorded in the research note §7.
