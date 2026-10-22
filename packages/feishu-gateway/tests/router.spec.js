@@ -52,3 +52,22 @@ test('chatForSession resolves the chat whose active session matches', async () =
   assert.equal(router.chatForSession('s9'), 'oc_2')
   assert.equal(router.chatForSession('sX'), undefined, 'unbound session id resolves to undefined')
 })
+
+test('clearActive releases the pointer, parks the session in history, keeps the workspace', async () => {
+  const router = new BindingRouter({ persist: memoryPersist() })
+  await router.load()
+  await router.bind('oc_1', { workspaceId: 'w1', workspaceTitle: 'demo', workspacePath: '/tmp/demo' })
+  await router.setActive('oc_1', 's1', 'first')
+  await router.clearActive('oc_1')
+  const b = await router.get('oc_1')
+  assert.equal(b.activeSessionId, undefined, 'pointer released')
+  assert.equal(b.activeSessionTitle, undefined)
+  assert.equal(b.workspaceId, 'w1', 'workspace binding untouched')
+  assert.deepEqual(b.sessionHistory.map(e => e.sessionId), ['s1'], 'released session parked for /session resume')
+  // chatForSession stops routing answerer cards to the released chat.
+  assert.equal(router.chatForSession('s1'), undefined)
+  // Idempotent on an already-released chat; unknown chat throws like setActive.
+  await router.clearActive('oc_1')
+  assert.equal((await router.get('oc_1')).sessionHistory.length, 1)
+  await assert.rejects(() => router.clearActive('oc_unknown'), /no binding/)
+})

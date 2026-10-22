@@ -103,6 +103,23 @@ export class GatewayDriver {
           }
           return void this.sendStatus(chatId)
         }
+        case 'release': {
+          // IM-side release: keep the workspace binding and history, drop the
+          // active-session pointer so IM messages stop driving the session
+          // while the user works in the web/desktop client. Guarded by the
+          // same switch rule — a running turn is never orphaned from its chat.
+          const binding = await this.router.get(chatId)
+          if (binding?.activeSessionId === undefined) return void this.sendStatus(chatId)
+          const decision = guardDecision({ running: await this.isRunning(chatId) })
+          if (!decision.allowed) return void this.lark.sendText(chatId, decision.reason)
+          const released = binding.activeSessionTitle ?? binding.activeSessionId
+          await this.router.clearActive(chatId)
+          return void this.lark.sendText(
+            chatId,
+            `已释放会话「${released}」：本聊天不再向它投递消息（工作区绑定保留）。\n`
+            + '回到 IM 工作：/session list 从历史恢复，或 /session new 新开。',
+          )
+        }
         case 'ws': return this.runWs(cmd, message)
         case 'session': return this.runSession(cmd, message)
         case 'model': return this.runModel(cmd, message)

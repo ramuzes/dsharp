@@ -68,6 +68,26 @@ export class BindingRouter {
   async history(chatId) { return this.bindings.get(chatId)?.sessionHistory ?? [] }
 
   /**
+   * Release the chat's Active Session pointer without touching the workspace
+   * binding or history: IM messages stop driving the session (the user works
+   * in the web/desktop client instead), and /session resume can re-attach.
+   * The released session keeps its place in history for exactly that.
+   */
+  async clearActive(chatId) {
+    const binding = this.bindings.get(chatId)
+    if (binding === undefined) throw new Error(`no binding for chat ${chatId}`)
+    if (binding.activeSessionId !== undefined) {
+      const history = binding.sessionHistory.filter(e => e.sessionId !== binding.activeSessionId)
+      history.unshift({ sessionId: binding.activeSessionId, title: binding.activeSessionTitle ?? binding.activeSessionId })
+      binding.sessionHistory = history.slice(0, HISTORY_LIMIT)
+    }
+    binding.activeSessionId = undefined
+    binding.activeSessionTitle = undefined
+    binding.updatedAt = Date.now()
+    await this.save()
+  }
+
+  /**
    * The chat whose Active Session is sessionId, or undefined. The answerer's
    * load-bearing feishu routing path: the host exposes no per-session source
    * field, so our own durable bindings decide which questions round-trip.

@@ -45,6 +45,7 @@ function fixture(name) {
 function makeWorld() {
   const world = { outbound: [], wsOptions: undefined, dispatcher: undefined, ready: false }
   const agents = new Map()
+  world.agents = agents
   let agentSeq = 0
 
   const services = {
@@ -303,4 +304,52 @@ test('BindingRecord (zod) still validates the incident-era stored shape', () => 
     sessionHistory: [], updatedAt: 1,
   })
   assert.equal(parsed.activeSessionId, undefined)
+})
+
+test('/release drops the active-session pointer; plain messages stop driving the session', async () => {
+  const world = globalThis.world0
+  const bind = fixture('im.message.receive_v1.p2p.text')
+  bind.flat.message.content = JSON.stringify({ text: '/ws use demo' })
+  bind.flat.message.message_id = 'om_rls_bind'
+  await deliver(world, 'im.message.receive_v1.p2p.text', { override: bind.flat })
+  // Fresh message_id: earlier tests already delivered this card fixture and
+  // ActionDedup (messageId:actionId, 15-min window) would drop ours.
+  const card = fixture('card.action.trigger.button')
+  card.flat.context.open_message_id = 'om_rls_card'
+  await deliver(world, 'card.action.trigger.button', { override: card.flat })
+  const events = JSON.parse(readFileSync(process.env.FEISHU_GATEWAY_EVENT_LOG, 'utf8'))
+  assert.equal(events.at(-1).outcome, 'handled', `card delivered (got ${JSON.stringify(events.at(-1))})`)
+  // /release while idle: confirmation names the session.
+  const rel = fixture('im.message.receive_v1.p2p.text')
+  rel.flat.message.content = JSON.stringify({ text: '/release' })
+  rel.flat.message.message_id = 'om_rls_1'
+  await deliver(world, 'im.message.receive_v1.p2p.text', { override: rel.flat })
+  const confirmed = world.outbound.filter(e => e.data.msg_type === 'text').at(-1)
+  assert.match(JSON.parse(confirmed.data.content).text, /已释放会话/, 'release confirmation sent')
+  // Follow-up plain text no longer prompts the session; it asks to pick one.
+  const plain = fixture('im.message.receive_v1.p2p.text')
+  plain.flat.message.content = JSON.stringify({ text: '还在吗' })
+  plain.flat.message.message_id = 'om_rls_2'
+  await deliver(world, 'im.message.receive_v1.p2p.text', { override: plain.flat })
+  const guided = world.outbound.filter(e => e.data.msg_type === 'text').at(-1)
+  assert.match(JSON.parse(guided.data.content).text, /活动会话/, 'unbound guidance instead of delivery')
+})
+
+test('/release refuses while the active session is mid-turn', async () => {
+  const world = globalThis.world0
+  const bind = fixture('im.message.receive_v1.p2p.text')
+  bind.flat.message.content = JSON.stringify({ text: '/ws use demo' })
+  bind.flat.message.message_id = 'om_rlsr_bind'
+  await deliver(world, 'im.message.receive_v1.p2p.text', { override: bind.flat })
+  const card = fixture('card.action.trigger.button')
+  card.flat.context.open_message_id = 'om_rlsr_card'
+  await deliver(world, 'card.action.trigger.button', { override: card.flat })
+  world.agents.set('session-1', { status: 'running', session: { id: 'session-1' } })
+  const rel = fixture('im.message.receive_v1.p2p.text')
+  rel.flat.message.content = JSON.stringify({ text: '/release' })
+  rel.flat.message.message_id = 'om_rlsr_1'
+  await deliver(world, 'im.message.receive_v1.p2p.text', { override: rel.flat })
+  const refused = world.outbound.filter(e => e.data.msg_type === 'text').at(-1)
+  assert.match(JSON.parse(refused.data.content).text, /\/stop/, 'guard hint names /stop')
+  world.agents.delete('session-1')
 })
