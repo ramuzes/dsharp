@@ -4,7 +4,7 @@
  * Pure logic: execution lives in the driver.
  */
 
-const COMMANDS = new Set(['ws', 'session', 'model', 'status', 'stop', 'doctor', 'help'])
+const COMMANDS = new Set(['ws', 'session', 'model', 'status', 'stop', 'release', 'doctor', 'help'])
 
 /** Commands that take a named subcommand (/ws, /session); the rest treat tokens as args. */
 const SUBCOMMANDS = new Set(['ws', 'session'])
@@ -62,7 +62,8 @@ export const HELP_TEXT = [
   '/session new — 在当前工作区开新会话',
   '/session resume — 从会话历史中恢复',
   '/session resume <sessionId|序号> — 直接恢复指定会话',
-  '/stop — 打断当前回合',
+  '/stop — 打断当前回合（不解绑会话）',
+  '/release — 释放当前会话：IM 不再投递消息，工作区绑定保留，/session 可再接回',
   '/model — 查看或选择模型',
   '/status — 显示当前状态卡',
   '/doctor — 网关自检（凭证/连接/事件/绑定）',

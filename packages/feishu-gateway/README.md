@@ -67,7 +67,8 @@ log line naming the missing ref).
 | `/session` | Session list (default behavior, same as `/session list`; newest first, 10/page, resume by button) |
 | `/session new` | New session in the current workspace (session must be idle) |
 | `/session resume [index\|sessionId prefix]` | Resume a session (idle required; pointer switch + echo of the last turn's output) |
-| `/stop` | Interrupt the active turn |
+| `/stop` | Interrupt the active turn (keeps the session bound) |
+| `/release` | Release the active session: IM stops delivering to it (workspace binding kept); `/session list` re-attaches later |
 | `/model` | Single-card model catalog picker (**selectable while running**, effective next turn) |
 | `/status` | Status card (model line reads the modelSelection projection; a pending switch is marked) |
 | `/doctor` | Gateway self-check (boot stage / recent events / binding / write lease / default model) |

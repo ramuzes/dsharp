@@ -52,7 +52,8 @@ dsh plugin --profile <name> add /path/to/dsharp/packages/feishu-gateway
 | `/session` | 会话列表（默认行为，同 `/session list`，时间倒序 10/页，按钮恢复） |
 | `/session new` | 当前工作区开新会话（需会话空闲） |
 | `/session resume [序号\|sessionId前缀]` | 恢复指定会话（需空闲；指针切换+回显上一轮输出） |
-| `/stop` | 打断当前回合 |
+| `/stop` | 打断当前回合（不解绑会话） |
+| `/release` | 释放当前会话：IM 不再投递消息（工作区绑定保留），/session list 随时可接回 |
 | `/model` | 模型目录单卡选择（**运行中可选**，下一轮生效） |
 | `/status` | 当前状态卡（模型行读 modelSelection 投影，待生效切换有标注） |
 | `/doctor` | 网关自检（启动阶段/最近事件/绑定/写锁/默认模型） |
