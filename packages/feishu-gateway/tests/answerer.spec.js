@@ -1,7 +1,7 @@
 // tests/answerer.spec.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GatewayAnswerer } from '../lib/answerer.js'
+import { GatewayAnswerer, chatForAgent } from '../lib/answerer.js'
 
 function makeAnswerer({ maxPending } = {}) {
   const sent = []
@@ -16,7 +16,9 @@ function makeAnswerer({ maxPending } = {}) {
     makeActionId: () => `act_${++n}`,
     // The load-bearing routing path: the host exposes no
     // session.lastUserSource(); our own router bindings map sessionId → chatId.
-    resolveChat: sessionId => (sessionId === 's1' ? 'oc_1' : undefined),
+    // Agent-shaped contract: routing sees the requesting agent, not a bare id
+    // (subagent ancestry lives in chatForAgent, tested below).
+    resolveChat: agent => (agent?.session?.id === 's1' ? 'oc_1' : undefined),
     ...(maxPending === undefined ? {} : { maxPending }),
   })
   return { answerer, sent, debug }
@@ -219,4 +221,42 @@ test('multi-question late click does not call userQuestions.answer and sends a f
 test('unknown action ids are ignored', async () => {
   const { answerer } = makeAnswerer()
   assert.equal(await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'nope', kind: 'answer', choice: 0 } }), undefined)
+})
+
+
+test('chatForAgent: a subagent approval routes to the chat bound to its root', () => {
+  const router = { chatForSession: id => (id === 'lead' ? 'oc_1' : undefined) }
+  const lead = { session: { id: 'lead' } }
+  const mid = { session: { id: 'mid' } }
+  const leaf = { session: { id: 'leaf' } }
+  const agents = {
+    list: () => [lead, mid, leaf],
+    isOwnedBy: (id, owner) => (id === 'mid' && owner === lead) || (id === 'leaf' && owner === mid),
+  }
+  assert.equal(chatForAgent(leaf, router, agents), 'oc_1', 'two hops up the ownership chain reaches the bound lead')
+  assert.equal(chatForAgent(mid, router, agents), 'oc_1')
+  assert.equal(chatForAgent(lead, router, agents), 'oc_1', 'direct match short-circuits')
+  assert.equal(chatForAgent({ session: { id: 'other' } }, router, agents), undefined, 'unrelated agent stays unrouted')
+  assert.equal(chatForAgent(undefined, router, agents), undefined)
+  assert.equal(chatForAgent(leaf, router, undefined), undefined, 'no registry: no ancestry walk')
+})
+
+test('approvals raised by a subagent reach the bound chat through the ancestry resolver', async () => {
+  const router = { chatForSession: id => (id === 'lead' ? 'oc_1' : undefined) }
+  const lead = { session: { id: 'lead' } }
+  const sub = { session: { id: 'sub' } }
+  const agents = { list: () => [lead, sub], isOwnedBy: (id, owner) => id === 'sub' && owner === lead }
+  const sent = []
+  let n = 0
+  const answerer = new GatewayAnswerer({
+    lark: { sendText: async () => {}, sendJson: async (c, mt, content) => sent.push(content) },
+    config: {}, logger: { debug: () => {}, warn: () => {} },
+    makeActionId: () => `act_${++n}`,
+    resolveChat: agent => chatForAgent(agent, router, agents),
+  })
+  const outcomePromise = answerer.handleApproval({ reason: 'rm -rf', agent: sub }, async () => { throw new Error('must not delegate') })
+  await Promise.resolve()
+  assert.ok(sent.length === 1, 'approval card sent to the lead-bound chat')
+  await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'approval', outcome: 'deny' } })
+  assert.equal(await outcomePromise, 'rejected')
 })

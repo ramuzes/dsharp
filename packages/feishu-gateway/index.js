@@ -14,7 +14,7 @@ import { LarkClient, readConfigString } from './lib/lark-client.js'
 import { startGatewayTransport } from './lib/transport.js'
 import { BindingRouter } from './lib/router.js'
 import { GatewayDriver } from './lib/driver.js'
-import { GatewayAnswerer } from './lib/answerer.js'
+import { GatewayAnswerer, chatForAgent } from './lib/answerer.js'
 import { createStatusWriter, createEventLog } from './lib/status.js'
 import { FeishuGatewayDiagnostics } from './lib/diagnostics.js'
 import { proxyUrlFor, createProxiedLarkHttpInstance, wsAgentFor } from './lib/proxy.js'
@@ -226,7 +226,9 @@ async function boot(scope, resolved, status) {
     lark, config: resolved, logger: scope.logger, makeActionId,
     // Feishu routing is decided by OUR durable state: the router's bindings
     // map activeSessionId → chatId (the host has no session source field).
-    resolveChat: sessionId => router.chatForSession(sessionId),
+    // Agent-aware routing: the bound Active Session itself, or any agent
+    // whose ownership chain roots at it (subagent approvals round-trip too).
+    resolveChat: agent => chatForAgent(agent, router, scope.agents),
   })
   // The late-answer channel: without the service, late card clicks after the
   // timed window closes cannot reach userQuestions.answer.
