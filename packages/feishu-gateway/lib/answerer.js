@@ -25,20 +25,56 @@ const OUTCOMES = new Set(Object.keys(CARD_TO_DSH))
 const MAX_PENDING = 200
 
 /**
- * The chat a request's session belongs to, or undefined when it is not ours.
+ * The chat a request's agent belongs to, or undefined when it is not ours.
  *
  * The ONLY routing source is our own durable state: the BindingRouter maps
  * activeSessionId → chatId. (An earlier fallback read
  * session.lastUserSource(); that method does not exist on the host Session —
  * dead code, removed in the audit pass.)
+ *
+ * SUBAGENTS: an approval or question raised by a spawned agent carries that
+ * agent's own session id, never the bound lead's. resolveChat therefore
+ * receives the whole request agent and may walk the runtime ownership chain
+ * (agents.list() + agents.isOwnedBy, core/agent/src/index.ts) up to the root
+ * — a subagent's approval reaches the chat bound to its lead session.
  */
 function feishuChatOf(request, resolveChat) {
-  const chatId = resolveChat?.(request.agent?.session?.id)
+  const chatId = resolveChat?.(request.agent)
   return typeof chatId === 'string' ? chatId : undefined
 }
 
+/**
+ * Resolve the chat for one requesting agent: the bound Active Session itself,
+ * else the nearest root/ancestor whose session is bound. The ownership walk
+ * is bounded by the live-agent set (no cycles possible, seen-set guards anyway).
+ * @param {any} agent - requesting Agent (has .session.id).
+ * @param {{ chatForSession: (id: string) => string | undefined }} router - binding lookup.
+ * @param {{ list: () => any[], isOwnedBy: (id: string, owner: any) => boolean } | undefined} agents - live registry.
+ * @returns {string | undefined} chat id, or undefined when unbound.
+ */
+export function chatForAgent(agent, router, agents) {
+  const sessionId = agent?.session?.id
+  if (typeof sessionId !== 'string') return undefined
+  const direct = router.chatForSession(sessionId)
+  if (direct !== undefined) return direct
+  if (agents?.list === undefined || typeof agents.isOwnedBy !== 'function') return undefined
+  const seen = new Set()
+  let current = agent
+  while (current !== undefined && !seen.has(current.session?.id)) {
+    seen.add(current.session?.id)
+    const parent = agents.list().find(candidate => {
+      try { return agents.isOwnedBy(current.session.id, candidate) } catch { return false }
+    })
+    if (parent === undefined) return undefined
+    const chat = router.chatForSession(parent.session?.id)
+    if (chat !== undefined) return chat
+    current = parent
+  }
+  return undefined
+}
+
 export class GatewayAnswerer {
-  /** @param {{ lark: any, config?: any, logger?: any, makeActionId: () => string, maxPending?: number, resolveChat?: (sessionId: string) => string | undefined }} options */
+  /** @param {{ lark: any, config?: any, logger?: any, makeActionId: () => string, maxPending?: number, resolveChat?: (agent: any) => string | undefined }} options */
   constructor({ lark, config = {}, logger, makeActionId, maxPending = MAX_PENDING, resolveChat }) {
     this.lark = lark
     this.config = config
