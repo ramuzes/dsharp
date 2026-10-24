@@ -223,7 +223,15 @@ async function boot(scope, resolved, status) {
   await router.load()
 
   const answerer = new GatewayAnswerer({
-    lark, config: resolved, logger: scope.logger, makeActionId,
+    lark, config: resolved, makeActionId,
+    // Dual sink for the routing-boundary logs (the rinfer incident): host log
+    // for whoever watches the terminal, status extras for doctor/scripts —
+    // a silent routing miss must never be invisible again.
+    logger: {
+      info: m => { scope.logger?.info?.(m); status.setExtra({ lastRoute: String(m).slice(0, 200), lastRouteAt: new Date().toISOString() }) },
+      warn: m => { scope.logger?.warn?.(m); status.setExtra({ lastRouteWarn: String(m).slice(0, 200), lastRouteAt: new Date().toISOString() }) },
+      debug: m => scope.logger?.debug?.(m),
+    },
     // Feishu routing is decided by OUR durable state: the router's bindings
     // map activeSessionId → chatId (the host has no session source field).
     // Agent-aware routing: the bound Active Session itself, or any agent

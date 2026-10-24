@@ -101,6 +101,10 @@ export class GatewayAnswerer {
   /** user-questions waterfall: route feishu sessions to cards, else next(). */
   async handleUserQuestions(request, next) {
     const chatId = feishuChatOf(request, this.resolveChat)
+    // Boundary observability (the rinfer incident: bound lead raised approvals
+    // and nothing reached the chat): every routing decision is logged, so a
+    // silent miss names its stage (listener reached? routing hit? send failed?)
+    this.logger?.info?.(`feishu-gateway: question route session=${request.agent?.session?.id ?? '?'} chat=${chatId ?? '-'}`)
     if (chatId === undefined) return next()
     // v1 cards answer EXACTLY ONE closed-choice question. A request with
     // several questions, or an open question without options, must be
@@ -123,6 +127,8 @@ export class GatewayAnswerer {
   /** approval waterfall: route feishu sessions to an allow/deny card, else next(). */
   async handleApproval(request, next) {
     const chatId = feishuChatOf(request, this.resolveChat)
+    // Boundary observability (the rinfer incident): see handleUserQuestions.
+    this.logger?.info?.(`feishu-gateway: approval route session=${request.agent?.session?.id ?? '?'} chat=${chatId ?? '-'}`)
     if (chatId === undefined) return next()
     const actionId = this.makeActionId()
     // ApprovalRequestEvent carries `reason` plus optional localized
