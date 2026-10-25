@@ -91,10 +91,22 @@ export class GatewayAnswerer {
   /** Test/apply seam for the ctx.userQuestions service. */
   setUserQuestionsService(service) { this.userQuestions = service }
 
-  /** Register the two global waterfall listeners; returns a disposer. */
+  /**
+   * Register the two waterfall listeners; returns a disposer.
+   *
+   * REGISTRATION MUST TARGET THE ROOT CONTEXT: both events are dispatched as
+   * SCOPED waterfalls (user-approval/user-questions pass
+   * scopeTarget(agent, agent)), and a scoped carrier never reaches listeners
+   * inside a plugin fiber — a {global: true} flag there is silently ignored
+   * (verified against vendor/cordis + dsh-scope in
+   * scripts/scope-propagation-test.mts; this exact miss is why approvals
+   * never reached the bound chat in production while unit fakes stayed
+   * green). Disposal stays owned by our fiber's effect.
+   */
   attach(ctx) {
-    const offQuestion = ctx.on('user-questions/request', (request, next) => this.handleUserQuestions(request, next), { global: true })
-    const offApproval = ctx.on('approval/request', (request, next) => this.handleApproval(request, next), { global: true })
+    const bus = ctx.root ?? ctx
+    const offQuestion = bus.on('user-questions/request', (request, next) => this.handleUserQuestions(request, next), { global: true })
+    const offApproval = bus.on('approval/request', (request, next) => this.handleApproval(request, next), { global: true })
     return () => { offQuestion(); offApproval() }
   }
 

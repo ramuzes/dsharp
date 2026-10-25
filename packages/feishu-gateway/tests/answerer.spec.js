@@ -260,3 +260,45 @@ test('approvals raised by a subagent reach the bound chat through the ancestry r
   await answerer.handleCardAction({ kind: 'card-action', chatId: 'oc_1', value: { actionId: 'act_1', kind: 'approval', outcome: 'deny' } })
   assert.equal(await outcomePromise, 'rejected')
 })
+
+test('REAL scoped waterfalls reach the answerer (the production miss regression)', async () => {
+  // The bug this pins: approval/request and user-questions/request dispatch
+  // as SCOPED waterfalls (scopeTarget(agent, agent)), and a {global: true}
+  // listener inside a plugin fiber is silently skipped. Fakes that call the
+  // handler directly can never catch this — so this test runs the REAL
+  // cordis + dsh-scope from the harness checkout, registers the answerer the
+  // way index.js does (inside a plugin fiber), and dispatches the way
+  // user-approval does (scoped waterfall from another fiber).
+  const { Context } = await import('/home/ramuz/deepseek-harness/vendor/cordis/lib/index.js')
+  const { scopeTarget } = await import('/home/ramuz/deepseek-harness/packages/core/scope/lib/index.js')
+
+  const root = new Context()
+  const agent = { session: { id: 's1' }, status: 'idle' }
+  const sent = []
+  let n = 0
+  let detach = undefined
+  root.plugin({
+    name: 'fake-gateway-fiber',
+    apply(ctx) {
+      const answerer = new GatewayAnswerer({
+        lark: { sendText: async () => {}, sendJson: async (c, mt, content) => sent.push(content) },
+        config: {}, logger: { debug: () => {}, warn: () => {} },
+        makeActionId: () => `act_${++n}`,
+        resolveChat: cand => (cand?.session?.id === 's1' ? 'oc_1' : undefined),
+      })
+      detach = answerer.attach(ctx)
+    },
+  })
+  root.plugin({
+    name: 'fake-user-approval-fiber',
+    apply: (ctx) => {
+      const carrier = scopeTarget(agent, agent)
+      ctx.waterfall(carrier, 'approval/request', { agent, reason: 'rm -rf' }, () => 'unavailable')
+        .then(outcome => { outcomeViaWaterfall = outcome })
+    },
+  })
+  let outcomeViaWaterfall = undefined
+  await new Promise(r => setImmediate(r))
+  assert.ok(sent.length === 1, `approval card sent through the REAL dispatch (sent=${sent.length})`)
+  detach?.()
+})
