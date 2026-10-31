@@ -1,11 +1,18 @@
 # dsh-airboard
 
-A read-only [AirBoard](http://ab.antaresy.cc/) viewer for the dsh web GUI. Adds
-an **AirBoard** tab to the right Sidebar — the surface where workspace files
-preview — that lists your AirBoard projects and their resources (ADR / PRD /
-SPEC / PLAN / ISSUE, grouped by kind, most recently updated first, dotted by
-lifecycle state) and renders the selected resource's markdown with the GUI's
-shared markdown renderer (GFM, KaTeX, code highlighting).
+A [AirBoard](http://ab.antaresy.cc/) integration for dsh with two surfaces:
+
+- an **AirBoard** tab in the right Sidebar (web GUI) — lists your AirBoard
+  projects and their resources (ADR / PRD / SPEC / PLAN / ISSUE, grouped by
+  kind, most recently updated first, dotted by lifecycle state) and renders
+  the selected resource's markdown with the GUI's shared markdown renderer
+  (GFM, KaTeX, code highlighting);
+- **agent tools** — `airboard_search`, `airboard_read_resource`,
+  `airboard_list_projects`, `airboard_create_resource`,
+  `airboard_update_resource`, registered for every agent in the profile with
+  a short system-prompt section explaining when to reach for them. Agents use
+  the configured token through the same Host-side resolution as the viewer;
+  the token itself never leaves the Host process or appears in a tool result.
 
 Plain JavaScript, no build step: the Host half is an ordinary cordis plugin, the
 browser half is one self-contained script in the client module system's factory
@@ -17,14 +24,23 @@ format.
 browser tab ──same-origin GET──▶ /airboard/api/… ──Host proxy──▶ AIRBOARD baseUrl/api/…
                                   (whitelisted read-only GETs,
                                    Bearer token attached host-side)
+agent tools ──airboard_* tool calls──▶ Host JSON client ──────▶ AIRBOARD baseUrl/api/…
 ```
 
 - AirBoard sends no CORS headers, so the browser never talks to it directly: the
   Host half (`index.js`) registers a `/airboard` prefix route on the web server
   and proxies a whitelist of read-only GET endpoints. Write and admin endpoints
   are refused with 404 in this process, before any upstream call.
+- The agent tools (`lib/agent-tools.js` + `lib/agent-api.js`) speak the
+  service's published read/write contract directly from the Host — search,
+  full reads, create (draft), and update/transition — registered independently
+  of the web server, so headless profiles get them too. Failures surface to the
+  model as text naming the failure code (`airboard/unreachable`,
+  `airboard/upstream-error`, …), never as raw stack traces.
 - The access token lives only in the Host process. The Plugins page form never
-  echoes it back (`role('secret')`), and the browser half has no way to read it.
+  echoes it back (`role('secret')`), the browser half has no way to read it,
+  and the tools attach it Host-side per request; a credential write re-resolves
+  it live for both surfaces.
 - AirBoard has no push channel, so the tab loads on open and re-navigation and
   refreshes through the tab's refresh command (the sidebar chrome's refresh
   control).
