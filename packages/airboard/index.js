@@ -15,6 +15,8 @@
  * bundle's patch layer; see README.md.
  */
 import Schema from '@deepseek-ai/schemastery'
+import { createAirboardClient } from './lib/agent-api.js'
+import { registerAgentTools } from './lib/agent-tools.js'
 
 /** The Web-server prefix this plugin owns. Absolute, no trailing slash. */
 export const PROXY_PREFIX = '/airboard'
@@ -205,12 +207,33 @@ export async function resolveAirboardToken(credentials, ref, legacyToken) {
  * the bundle stays inert in headless profiles; `credentials` is resolved when
  * present so the token follows the credential store (and the legacy config
  * value still works where the store is absent).
+ *
+ * The agent tools register INDEPENDENTLY of the web server: a headless
+ * profile still gets airboard_search / read / list / create / update over the
+ * same token resolution, so an agent can use the configured AirBoard token
+ * the moment the plugin is installed.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  * @param {{ baseUrl?: unknown, token?: unknown, tokenEnv?: unknown }} config - validated row config.
  */
 export function apply(ctx, config) {
+  const tokenEnv = readString(config.tokenEnv) || 'AIRBOARD_TOKEN'
+
+  // --- agent tools: registered whenever the core tool/prompt services run --
+  // 'tools' and 'systemPrompt' are in the inject list on purpose: accessing
+  // them on a scope that did not inject them throws in cordis ("cannot get
+  // property ... without inject") — the first live mount died exactly there.
+  ctx.inject(['tools', 'systemPrompt', 'credentials'], async (agentCtx) => {
+    let currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
+    const offTokenUpdates = agentCtx.on('credentials/reference-updated', async (ref) => {
+      if (ref === tokenEnv) currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
+    })
+    const client = createAirboardClient({ baseUrl: config.baseUrl, tokenProvider: () => currentToken })
+    const offTools = registerAgentTools(agentCtx, client)
+    return () => { offTools(); offTokenUpdates() }
+  })
+
+  // --- browser proxy -------------------------------------------------------
   ctx.inject(['webServer', 'credentials'], async (webCtx) => {
-    const tokenEnv = readString(config.tokenEnv) || 'AIRBOARD_TOKEN'
     const makeResolvedHandler = async () => makeProxyHandler({
       baseUrl: config.baseUrl,
       token: await resolveAirboardToken(webCtx.credentials, tokenEnv, config.token),
