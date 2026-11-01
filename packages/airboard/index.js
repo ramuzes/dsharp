@@ -15,6 +15,9 @@
  * bundle's patch layer; see README.md.
  */
 import Schema from '@deepseek-ai/schemastery'
+import { writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { createAirboardClient } from './lib/agent-api.js'
 import { registerAgentTools } from './lib/agent-tools.js'
 
@@ -218,18 +221,37 @@ export async function resolveAirboardToken(credentials, ref, legacyToken) {
 export function apply(ctx, config) {
   const tokenEnv = readString(config.tokenEnv) || 'AIRBOARD_TOKEN'
 
+  // Boot-stage observability (feishu-gateway pattern): the agent-tools mount
+  // died silently in a live host once; every stage now lands in
+  // ~/.dsh/airboard-status.json so the next incident names its stage.
+  const noteStage = (stage, detail) => {
+    try {
+      writeFileSync(join(homedir(), '.dsh', 'airboard-status.json'),
+        `${JSON.stringify({ stage, detail: detail ?? null, at: new Date().toISOString() }, null, 2)}\n`)
+    } catch { /* best effort */ }
+  }
+  noteStage('apply')
+
   // --- agent tools: registered whenever the core tool/prompt services run --
   // 'tools' and 'systemPrompt' are in the inject list on purpose: accessing
   // them on a scope that did not inject them throws in cordis ("cannot get
   // property ... without inject") — the first live mount died exactly there.
   ctx.inject(['tools', 'systemPrompt', 'credentials'], async (agentCtx) => {
-    let currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
-    const offTokenUpdates = agentCtx.on('credentials/reference-updated', async (ref) => {
-      if (ref === tokenEnv) currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
-    })
-    const client = createAirboardClient({ baseUrl: config.baseUrl, tokenProvider: () => currentToken })
-    const offTools = registerAgentTools(agentCtx, client)
-    return () => { offTools(); offTokenUpdates() }
+    noteStage('tools-inject')
+    let currentToken
+    try {
+      currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
+      const offTokenUpdates = agentCtx.on('credentials/reference-updated', async (ref) => {
+        if (ref === tokenEnv) currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
+      })
+      const client = createAirboardClient({ baseUrl: config.baseUrl, tokenProvider: () => currentToken })
+      const offTools = registerAgentTools(agentCtx, client)
+      noteStage('tools-registered', { baseUrl: config.baseUrl })
+      return () => { offTools(); offTokenUpdates() }
+    } catch (error) {
+      noteStage('tools-failed', String(error))
+      throw error
+    }
   })
 
   // --- browser proxy -------------------------------------------------------
