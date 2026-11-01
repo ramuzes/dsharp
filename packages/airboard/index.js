@@ -226,7 +226,11 @@ export function apply(ctx, config) {
   // ~/.dsh/airboard-status.json so the next incident names its stage.
   const noteStage = (stage, detail) => {
     try {
-      writeFileSync(join(homedir(), '.dsh', 'airboard-status.json'),
+      // Env-overridable so tests never touch the real file (the ab.example
+      // record that once masqueraded as host evidence).
+      const file = process.env.AIRBOARD_STATUS_FILE
+        ?? join(homedir(), '.dsh', 'airboard-status.json')
+      writeFileSync(file,
         `${JSON.stringify({ stage, detail: detail ?? null, at: new Date().toISOString() }, null, 2)}\n`)
     } catch { /* best effort */ }
   }
@@ -244,7 +248,11 @@ export function apply(ctx, config) {
       const offTokenUpdates = agentCtx.on('credentials/reference-updated', async (ref) => {
         if (ref === tokenEnv) currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
       })
-      const client = createAirboardClient({ baseUrl: config.baseUrl, tokenProvider: () => currentToken })
+      // Defensive read (the live mount once received a non-string baseUrl
+      // during an HMR remount): readString + row default keep the tools
+      // mounted instead of dying on an ill-composed config pass.
+      const baseUrl = readString(config.baseUrl) || 'http://ab.antaresy.cc'
+      const client = createAirboardClient({ baseUrl, tokenProvider: () => currentToken })
       const offTools = registerAgentTools(agentCtx, client)
       noteStage('tools-registered', { baseUrl: config.baseUrl })
       return () => { offTools(); offTokenUpdates() }
