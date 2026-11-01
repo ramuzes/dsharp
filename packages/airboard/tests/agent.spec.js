@@ -4,6 +4,13 @@
  * (tools + prompt section registered independently of the web server, token
  * hot-swap through credentials/reference-updated).
  */
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// Stage notes go to a scratch file, never the real ~/.dsh one.
+process.env.AIRBOARD_STATUS_FILE = join(mkdtempSync(join(tmpdir(), 'airboard-test-')), 'status.json')
+
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
