@@ -12,6 +12,8 @@
  * descriptions stay on the tools, the section only says what AirBoard IS and
  * when to reach for it.
  */
+// Resolution note: in-profile this resolves to the plugin's own node_modules copy
+// (installed for tests); the HOST supplies its own via the loader.
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 /** Plain-text tool output (session-query's TEXT_OUTPUT shape). */
