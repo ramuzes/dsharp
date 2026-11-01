@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
       'config.readOnlyToolsHint': '工具名以空格、逗号或换行分隔；留空恢复默认清单。sensitive 策略下清单内工具免确认',
       'config.toolCallTimeoutMs': '工具调用超时（毫秒）',
       'config.toolCallTimeoutMsHint': '不小于 1 的毫秒数；留空使用上游默认。结构字段，保存后重载插件生效',
-      'config.overridden': '已被上层覆盖',
+      'config.overridden': '已覆盖',
       'config.reset': '重置',
       'config.invalid': '无效值',
       'config.unavailable': '配置不可用',
@@ -66,7 +66,8 @@ window.__ModuleLoader__.load({
       'config.saveFailed': '保存失败',
       'config.save': '保存',
       'config.saving': '保存中…',
-      'status.title': '连接状态',
+      'status.title': '已挂载状态（插件重载前有效）',
+      'status.pendingReload': '有改动，待插件重载生效',
       'status.mode': '连接模式',
       'status.endpoint': '调试端点',
       'status.channel': 'Chrome 渠道',
@@ -94,7 +95,7 @@ window.__ModuleLoader__.load({
       'config.readOnlyToolsHint': 'Tool names separated by spaces, commas, or new lines; empty restores the default list. Under the sensitive policy these tools skip approval',
       'config.toolCallTimeoutMs': 'Tool call timeout (ms)',
       'config.toolCallTimeoutMsHint': 'Milliseconds, at least 1; empty uses the upstream default. Structural: takes effect after plugin reload',
-      'config.overridden': 'Overridden by a higher layer',
+      'config.overridden': 'Overridden',
       'config.reset': 'Reset',
       'config.invalid': 'Invalid value',
       'config.unavailable': 'Configuration unavailable',
@@ -102,7 +103,8 @@ window.__ModuleLoader__.load({
       'config.saveFailed': 'Save failed',
       'config.save': 'Save',
       'config.saving': 'Saving…',
-      'status.title': 'Connection status',
+      'status.title': 'Mounted state (effective until plugin reload)',
+      'status.pendingReload': 'Changes pending plugin reload',
       'status.mode': 'Mode',
       'status.endpoint': 'Endpoint',
       'status.channel': 'Channel',
@@ -241,19 +243,19 @@ window.__ModuleLoader__.load({
      * degrades to a single "unavailable" line when the namespace is missing
      * or the host reports { available: false }.
      */
-    function StatusSection({ t }) {
-      const [state, setState] = React.useState(undefined)
-      const refresh = React.useCallback(() => {
-        const ns = statusNs()
-        if (ns?.status === undefined) { setState(null); return }
-        Promise.resolve().then(() => ns.status())
-          .then(r => setState(unwrap(r) ?? {}), () => setState(null))
-      }, [])
-      React.useEffect(() => { refresh() }, [refresh])
+    function StatusSection({ t, status: state, refresh, form }) {
       const buttonStyle = { fontSize: 13, padding: '2px 10px', cursor: 'pointer' }
+      // Structural fields whose staged form text differs from the mounted
+      // snapshot: the mount keeps running the OLD values until plugin reload.
+      const pending = state !== null && state !== undefined && state.available !== false && form !== undefined
+        && ['mode', 'endpoint', 'channel'].some(f => {
+          const text = form[f]?.text
+          return text !== undefined && text !== '' && String(state[f] ?? '') !== String(text)
+        })
       return h('div', { style: { marginBottom: 16, padding: '10px 12px', border: '1px solid rgba(128,128,128,0.35)', borderRadius: 8 } },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 } },
           h('strong', { style: { fontSize: 13 } }, t('status.title')),
+          pending ? h('span', { style: { fontSize: 12, color: '#b8860b' } }, t('status.pendingReload')) : null,
           h('span', { style: { flex: 1 } }),
           h('button', { type: 'button', style: buttonStyle, onClick: refresh }, t('status.refresh'))),
         state === undefined
@@ -279,11 +281,20 @@ window.__ModuleLoader__.load({
     function ChromeCdpConfigCard(props) {
       const { view, t, useConfig, edit, resetField, save, discard } = props
       const state = useConfig(snapshot => snapshot)
+      const [status, setStatus] = React.useState(undefined)
+      const refreshStatus = React.useCallback(() => {
+        const ns = statusNs()
+        if (ns?.status === undefined) { setStatus(null); return }
+        Promise.resolve().then(() => ns.status())
+          .then(r => setStatus(unwrap(r) ?? {}), () => setStatus(null))
+      }, [])
+      React.useEffect(() => { refreshStatus() }, [refreshStatus])
       if (view === 'summary') return t('config.summary')
+      const saveAndRefresh = async (...args) => { try { return await save(...args) } finally { refreshStatus() } }
       const fieldProps = { t, state, edit, resetField }
       return h(React.Fragment, null,
-        h(StatusSection, { t }),
-        h(SettingsForm, { labels: formLabels(t), state, onSave: save, onDiscard: discard },
+        h(StatusSection, { t, status, refresh: refreshStatus, form: { mode: state.mode, endpoint: state.endpoint, channel: state.channel } }),
+        h(SettingsForm, { labels: formLabels(t), state, onSave: saveAndRefresh, onDiscard: discard },
           h(ModeField, { t, ...fieldProps }),
           h(EndpointField, { t, ...fieldProps }),
           h(ChannelField, { t, ...fieldProps }),

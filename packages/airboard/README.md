@@ -65,7 +65,7 @@ from `ui-primitives`) — edits stage until you press Save.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `baseUrl` | `http://ab.antaresy.cc` | AirBoard service origin |
+| `baseUrl` | *(none — must be set)* | AirBoard service origin; set `AIRBOARD_BASE_URL` in `~/.dsh/.env` or configure it on the Plugins page. No deployment address ships as a built-in default. |
 | token (secret control) | — | AirBoard access token (`abt_…`); type once — stored in the dsh **credential store** under `AIRBOARD_TOKEN`, shown only as Configured / Not set |
 
 The token never lands in a patch layer or a form response: the secret control

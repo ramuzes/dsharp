@@ -245,6 +245,9 @@ test('apply registers the dictionary, the bundle config card slot, and the chrom
     }
     assert.equal(typeof dict['status.refresh'], 'string')
     assert.equal(typeof dict['status.unavailable'], 'string')
+    assert.equal(typeof dict['status.pendingReload'], 'string')
+    // The override marker means "your user-layer value", not "a higher layer beat you".
+    assert.equal(dict['config.overridden'], key === 'zh' ? '已覆盖' : 'Overridden')
   }
 
   // The chromeCdp remote namespace mount (host half: lib/status.js ChromeCdpStatus).
@@ -317,7 +320,7 @@ test('the status section fetches remote.chromeCdp.status() on mount and degrades
     const element = card.component({ view: 'page', t: (key) => key, useConfig: (selector) => selector(face.hooks.config.getSnapshot()) })
     const section = element.children[0].type(element.children[0].props)
     const header = section.children[0]
-    const refresh = header.children.find((child) => child.type === 'button')
+    const refresh = header.children.filter(Boolean).find((child) => child.type === 'button')
     assert.ok(refresh, 'refresh button rendered')
     assert.equal(typeof refresh.props.onClick, 'function')
     assert.equal(refresh.children[0], 'status.refresh')
@@ -346,6 +349,22 @@ test('the status section fetches remote.chromeCdp.status() on mount and degrades
     element.children[0].type(element.children[0].props)
     await flush()
     assert.ok(stateSets.includes(null), 'a throwing status() degrades to unavailable, not an unhandled rejection')
+  }
+
+  // Pending-reload badge: staged structural form text differing from the
+  // mounted snapshot renders the badge; identical values do not.
+  {
+    const { react } = makeFakeReact()
+    const captured = applyWith(boot(react).plugin, { remoteChromeCdp: { status: async () => status } })
+    const card = captured.slots[0].entry
+    const face = card.declaration.inject()
+    const element = card.component({ view: 'page', t: (key) => key, useConfig: (selector) => selector(face.hooks.config.getSnapshot()) })
+    const renderSection = (form) => element.children[0].type({ t: (key) => key, status, refresh: () => {}, form })
+    const badge = (section) => section.children[0].children
+      .filter(Boolean)
+      .some((child) => child.type === 'span' && child.children?.[0] === 'status.pendingReload')
+    assert.ok(badge(renderSection({ mode: { text: 'auto' }, endpoint: { text: 'http://127.0.0.1:9223' }, channel: { text: 'stable' } })), 'badge shown when mode differs')
+    assert.ok(!badge(renderSection({ mode: { text: 'url' }, endpoint: { text: 'http://127.0.0.1:9223' }, channel: { text: 'stable' } })), 'no badge when values match')
   }
 })
 

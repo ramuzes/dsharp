@@ -1,6 +1,6 @@
 {
   "name": "dsh-airboard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AirBoard reader for the dsh web GUI: a right-Sidebar tab browsing ADR/PRD/SPEC/PLAN/ISSUE markdown over a Host-side read-only proxy",
   "type": "module",
   "main": "index.js",
