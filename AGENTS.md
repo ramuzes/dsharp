@@ -86,6 +86,44 @@ conformance rules.
   filter, inject-wait, fail-open), add your own assertion at the boundary —
   do not trust the framework to report your mistakes.
 
+## 3. Live-Mount Pitfalls (the airboard 0.2.0 incident)
+
+Three host behaviors that unit tests cannot see, each of which kept a
+correct-looking plugin completely dead in production while every suite
+stayed green.
+
+- **Config values arrive wrapped, never trust them as plain strings.** The
+  Loader hands plugin config fields as schemastery reactive wrappers —
+  objects with `.get()` — not `string`s. Raw use dies with
+  `TypeError: x.replace is not a function` at mount. EVERY config read goes
+  through the `readString` helper (`typeof value?.get === 'function' ?
+  value.get() : value`); never call string methods on a config field
+  directly, in any code path, including ones "only used at boot".
+- **Every service touched must be in the inject list.** Accessing a service
+  on a scope that did not inject it throws (`cannot get property ... without
+  inject`). If a callback touches `tools`/`systemPrompt`/anything, those
+  names belong in the `ctx.inject([...])` list of THAT callback. Test fakes
+  must model this strictness: build inject scopes that expose only the
+  injected services.
+- **Scoped waterfalls only reach ROOT-context listeners.** Events dispatched
+  with `scopeTarget(agent, agent)` (approval/request,
+  user-questions/request) never reach listeners registered inside a plugin
+  fiber — `{global: true}` there is silently ignored. Register waterfall
+  answerers on `ctx.root`, dispose from your own fiber. Verify dispatch
+  propagation against the REAL cordis + dsh-scope, not fakes.
+- **A remount can reuse the process's cached module.** Reinstalling or
+  hot-reloading a plugin re-runs `apply` from the module already in the ESM
+  cache — code edits made after the first load never execute until the
+  module cache is busted (`remove_bundle` + `install_bundle` does; a plain
+  enable/disable may not) or the host restarts. When a fix "doesn't take",
+  check this before re-debugging.
+- **A surviving old fiber masks a dead new mount.** Routes/services from a
+  previously mounted fiber keep working after a failed remount, so "the
+  proxy responds" proves nothing about the CURRENT code. Every mount writes
+  a stage record (apply → inject → registered/failed with the error text) to
+  a status file under `~/.dsh` — env-overridable so tests never overwrite
+  the real one — and the record is checked after every live change.
+
 ## Quick checklist before finishing any change
 
 1. The plugin's unit tests green, with strict fakes.
