@@ -4,6 +4,26 @@ DeepSeek Harness 插件 bundle 仓库：每个 `packages/` 子目录是一个可
 
 ## Language
 
+### Chrome CDP plugin (chrome-cdp)
+
+A provider bundle that brings the user's real, in-use Chrome into DSH over the Chrome DevTools Protocol: mounts chrome-devtools-mcp exclusively for each live session, layered with a per-action approval gate and a Plugins-page config card. It only attaches to an existing browser; it does not launch disposable browsers (already covered by the in-tree provider).
+_Avoid_: browser-use (the host subsystem name, means something else), WebBridge (a third-party product name).
+
+### Connection Mode
+
+How the plugin reaches the browser instance, one of three: `auto` (Chrome ≥144 approval mode, reads the default profile's DevToolsActivePort by channel); `url` (a debug endpoint http://host:port, covering cross-layer setups such as WSL port mappings); `ws` (a browser-level WebSocket endpoint). Endpoint reachability is the environment's responsibility; the plugin makes no network-topology assumptions.
+_Avoid_: remote debugging (ambiguous with the Chrome switches of the same name), attach (colloquial; do not use outside the config field).
+
+### Sensitive Action
+
+A browser tool call that the approval gate requires the user to Allow/Deny by default. Every tool outside the default read-only list is treated as sensitive: listing/reading/snapshot/screenshot/network and heap-snapshot analysis/waiting are read-only; navigation, interaction, input, evaluate, and page/extension management are sensitive. Three policy levels: sensitive (default) / all / none.
+_Avoid_: dangerous operation (semantically vague).
+
+### Approval Gate
+
+Per-action human approval returned as ask from `tools/pre-execute`, presented in the Web GUI by the host approval service and attached to that tool-call card; fail-closed per host semantics when no approval channel is available.
+_Avoid_: connect-level authorization (Kimi WebBridge-style one-shot authorization; different granularity, do not conflate).
+
 ### 飞书网关（Feishu Gateway）
 
 把一个飞书自建应用机器人的 p2p 消息接入 DSH、并把 DSH 的输出与提问送回飞书的 host 插件。一个 app_id 对应一个网关实例。

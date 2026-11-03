@@ -1,0 +1,6 @@
+# dsh-chrome-cdp loader row. The bundle's host half (index.js) mounts
+# chrome-devtools-mcp per live Session through the browser-use runtime;
+# config lives on this row (see README).
+- insert:
+    - id: chrome-cdp
+      name: './index.js'

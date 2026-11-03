@@ -186,7 +186,7 @@ export const Config = Schema.object({
   // (settings.mutate persists accepted edits into the profile patch — it is
   // not a persistence switch). An entry with no volatile field is dropped
   // from the settings document and its form shows "configuration unavailable".
-  baseUrl: Schema.string().default('http://ab.antaresy.cc').volatile(),
+  baseUrl: Schema.string().default('').volatile(),
   token: Schema.string().role('secret').default('').volatile(),
   tokenEnv: Schema.string().role('credential-ref').default('AIRBOARD_TOKEN').volatile(),
 })

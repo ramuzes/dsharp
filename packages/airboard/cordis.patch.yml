@@ -11,5 +11,5 @@
     - id: airboard
       name: dsh-airboard
       config:
-        baseUrl: !!js "process.env.AIRBOARD_BASE_URL ?? 'http://ab.antaresy.cc'"
+        baseUrl: !!js "process.env.AIRBOARD_BASE_URL ?? ''"
         token: !!js "process.env.AIRBOARD_TOKEN ?? ''"

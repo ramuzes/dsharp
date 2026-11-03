@@ -1,0 +1,29 @@
+{
+  "name": "dsh-chrome-cdp",
+  "version": "0.1.0",
+  "description": "Operate the user's real Chrome over CDP via chrome-devtools-mcp: per-Session exclusive attach, per-action approval gate, Plugins-page config card",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "lib", "cordis.patch.yml", "icon.svg", "README.md"],
+  "license": "MIT",
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-client-ui-settings"]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-experimental-browser-use-runtime": "0.2.1-alpha.5",
+    "chrome-devtools-mcp": "1.9.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/schemastery": "*"
+  }
+}
