@@ -233,7 +233,9 @@ test('Config declares the documented defaults', () => {
   const json = JSON.stringify(Config)
   assert.match(json, /baseUrl/)
   assert.match(json, /token/)
-  assert.match(json, /http:\/\/ab\.antaresy\.cc/)
+  // No deployment address ships as a built-in default (0.2.1): baseUrl
+  // defaults to empty and must come from AIRBOARD_BASE_URL or the Plugins form.
+  assert.doesNotMatch(json, /https?:\/\/[^"']+/)
   // The schema document carries the secret role on the token field.
   assert.match(json, /secret/)
 })
