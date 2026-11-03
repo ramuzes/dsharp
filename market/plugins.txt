@@ -1,0 +1,6 @@
+# Source list for the dsharp plugin-market index, consumed by dsh's
+# apps/plugin-market-generator. One source per line: npm package names or
+# https Git repository URLs. Regenerate market/index.json after plugin
+# changes are pushed to master — the exact command lives in README.md
+# ("Install via the plugin market").
+https://github.com/ramuzes/dsharp

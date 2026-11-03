@@ -29,6 +29,42 @@ dsh plugin --profile <name> add "github:<you>/<this-repo>#path:packages/workspac
 Or pack a tarball locally (`pnpm pack` inside the package, or `pnpm -r pack`
 at the root) and install that.
 
+## Install via the plugin market (Discover)
+
+dsh's **Custom plugin indexes** feature can browse and install every plugin in
+this repository from one URL. In the dsh Web GUI open
+**Plugins → Discover → Add index source** and paste:
+
+```
+https://raw.githubusercontent.com/ramuzes/dsharp/master/market/index.json
+```
+
+Each entry is pinned to the last commit that touched its package, so installs
+are reproducible; installation clones `github.com/ramuzes/dsharp` at that
+commit. Requires a dsh with the *Custom plugin indexes* experimental bundle
+turned on.
+
+### Regenerating the index
+
+`market/index.json` is generated with dsh's reference generator
+(`apps/plugin-market-generator`) from the pushed state of this repository.
+Regenerate after your plugin changes are on `master`, then commit the result
+(paths must be absolute — the generator resolves them against the directory
+where pnpm runs):
+
+```sh
+D=/path/to/dsharp        # this repository
+H=/path/to/deepseek-harness
+(cd "$H" && pnpm --filter @deepseek-ai/dsh-plugin-market-generator start \
+  --input "$D/market/plugins.txt" --output "$D/market/index.json" \
+  --cache "$D/.scratch/market-cache" --title "dsharp plugins")
+git -C "$D" add market/index.json && git -C "$D" commit -m "market: regenerate index"
+```
+
+Design notes: [ADR 0006](docs/adr/0006-plugin-market-index.md). Index format
+and hosting rules (with dsh source citations):
+[plugin-market research](docs/research/2026-11-03-dsh-plugin-market-index.md).
+
 ## Adding a new plugin
 
 1. `mkdir packages/<name> && cd packages/<name>`

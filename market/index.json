@@ -1,0 +1,71 @@
+{
+  "format": 1,
+  "title": "dsharp plugins",
+  "plugins": [
+    {
+      "name": "dsh-airboard",
+      "title": {
+        "en": "AirBoard",
+        "zh": "AirBoard"
+      },
+      "description": {
+        "en": "Read-only AirBoard viewer: browse project ADR / PRD / SPEC / PLAN / ISSUE markdown in a right-Sidebar tab, proxied host-side with your access token.",
+        "zh": "只读 AirBoard 阅读器：在右侧 Sidebar 标签页浏览项目的 ADR / PRD / SPEC / PLAN / ISSUE 文档，经宿主侧代理携带访问令牌。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1haXJib2FyZDogYSBib2FyZCB3aXRoIG9uZSBjYXJkIHB1bGxlZCBvdXQgZm9yIHJlYWRpbmcgLS0+CiAgPHJlY3QgeD0iOCIgeT0iMTQiIHdpZHRoPSI0MCIgaGVpZ2h0PSIzNiIgcng9IjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzI0N2JiZiIgc3Ryb2tlLXdpZHRoPSI0IiAvPgogIDxsaW5lIHgxPSIxNiIgeTE9IjI2IiB4Mj0iMzIiIHkyPSIyNiIgc3Ryb2tlPSIjMjQ3YmJmIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KICA8bGluZSB4MT0iMTYiIHkxPSIzNiIgeDI9IjI2IiB5Mj0iMzYiIHN0cm9rZT0iIzI0N2JiZiIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiIC8+CiAgPHJlY3QgeD0iMzYiIHk9IjMyIiB3aWR0aD0iMjAiIGhlaWdodD0iMjQiIHJ4PSI0IiBmaWxsPSIjMjQ3YmJmIiAvPgogIDxsaW5lIHgxPSI0MSIgeTE9IjQwIiB4Mj0iNTEiIHkyPSI0MCIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KICA8bGluZSB4MT0iNDEiIHkxPSI0NyIgeDI9IjUxIiB5Mj0iNDciIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIC8+Cjwvc3ZnPgo=",
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1793528578,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/ramuzes/dsharp",
+            "commit": "9654f253d70830efc8fdd1cb23ee954447163314",
+            "path": "packages/airboard"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dsh-feishu-gateway",
+      "title": {
+        "en": "Feishu Gateway",
+        "zh": "飞书网关"
+      },
+      "description": {
+        "en": "Drive bound workspace sessions from Feishu (Lark) p2p chat: slash commands, task delivery with turn feedback, model switching, and question/approval cards that round-trip to the chat.",
+        "zh": "在飞书（Lark）单聊中驱动已绑定工作区的会话：斜杠命令、任务投递与回合反馈、模型切换，提问/审批以卡片在聊天中往返。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1mZWlzaHUtZ2F0ZXdheSBpY29uOiBhIEZlaXNodS1ibHVlIGNoYXQgYnViYmxlIGNhcnJ5aW5nIGEgcGx1ZywKICAgICAgIGRyYXduIGFzIG9yaWdpbmFsIGFydHdvcmsgZm9yIHRoaXMgcGx1Z2luLiAtLT4KICA8cGF0aCBkPSJNMzIgOEMxOC43IDggOCAxNi45NSA4IDI4YzAgNi40IDMuNiAxMi4xIDkuMiAxNS43LS41IDIuOS0xLjkgNS41LTQgNy42LS42LjYtLjEgMS42LjcgMS41IDUtLjcgOS4zLTIuNyAxMi40LTUuMiAxLjguMyAzLjcuNCA1LjcuNCAxMy4zIDAgMjQtOC45NSAyNC0yMFM0NS4zIDggMzIgOHoiCiAgICAgICAgZmlsbD0iIzMzNzBmZiIvPgogIDxnIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIGZpbGw9Im5vbmUiPgogICAgPHBhdGggZD0iTTI0IDIydjEwTTQwIDIydjEwIi8+CiAgICA8cGF0aCBkPSJNMjAgMjdoOE0zNiAyN2g4TTI0IDM2YzIuNyAzLjUgNS4zIDUuMiA4IDUuMnM1LjMtMS43IDgtNS4yIi8+CiAgPC9nPgo8L3N2Zz4K",
+      "versions": [
+        {
+          "version": "0.1.1",
+          "publishTimestamp": 1793528578,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/ramuzes/dsharp",
+            "commit": "9654f253d70830efc8fdd1cb23ee954447163314",
+            "path": "packages/feishu-gateway"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dsh-workspace-env",
+      "title": "dsh-workspace-env",
+      "description": "Workspace-local toolchain state (uv, Go) for every confined bash call and PTY terminal — no sandbox holes",
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1793528578,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/ramuzes/dsharp",
+            "commit": "9654f253d70830efc8fdd1cb23ee954447163314",
+            "path": "packages/workspace-env"
+          }
+        }
+      ]
+    }
+  ]
+}
