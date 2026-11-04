@@ -124,6 +124,11 @@ window.__ModuleLoader__.load({
       'status.done': '完成',
       'status.cancelled': '已取消',
       rev: '第 {rev} 版',
+      revSelect: '选择修订版本',
+      revLatest: '（最新）',
+      bindings: '关联提交',
+      bindingsEmpty: '暂无关联提交',
+      commitAt: '提交于 {at}',
       'code.copy': '复制',
       'code.copied': '已复制',
       'code.title': '代码块',
@@ -168,6 +173,11 @@ window.__ModuleLoader__.load({
       'status.done': 'Done',
       'status.cancelled': 'Cancelled',
       rev: 'Revision {rev}',
+      revSelect: 'Select revision',
+      revLatest: ' (latest)',
+      bindings: 'Linked commits',
+      bindingsEmpty: 'No linked commits',
+      commitAt: 'committed {at}',
       'code.copy': 'Copy',
       'code.copied': 'Copied',
       'code.title': 'Code block',
@@ -277,6 +287,10 @@ window.__ModuleLoader__.load({
       const [projectKey, setProjectKey] = React.useState(null)
       const [resources, setResources] = React.useState({ phase: 'idle' })
       const [selectedId, setSelectedId] = React.useState(null)
+      // Selected-document detail: the revision roster + commit bindings, and
+      // the fetched markdown when viewing a non-latest revision (`content`
+      // null means "show the list's own content_markdown" = latest).
+      const [doc, setDoc] = React.useState({ phase: 'idle' })
 
       const refresh = React.useCallback(() => { setTick((count) => count + 1) }, [])
 
@@ -321,8 +335,54 @@ window.__ModuleLoader__.load({
         return actions.bindCommands({ refresh })
       }, [tab, refresh])
 
+      // Detail load for the selected doc: revision roster and commit
+      // bindings. Both are cheap read-only GETs through the proxy; failures
+      // degrade (no dropdown / no commit list) instead of breaking the doc.
+      React.useEffect(() => {
+        if (projectKey === null || selectedId === null) { setDoc({ phase: 'idle' }); return }
+        const controller = new AbortController()
+        let alive = true
+        setDoc({ phase: 'loading' })
+        const base = `/api/projects/${encodeURIComponent(projectKey)}/resources/${encodeURIComponent(selectedId)}`
+        Promise.all([
+          apiFetch(`${base}/revisions`, controller.signal).catch(() => []),
+          apiFetch(`${base}/bindings`, controller.signal).catch(() => []),
+        ]).then(([revisions, bindings]) => {
+          if (!alive) return
+          setDoc({
+            phase: 'ready',
+            revisions: Array.isArray(revisions) ? revisions : [],
+            bindings: Array.isArray(bindings) ? bindings : [],
+            rev: null,
+            content: null,
+          })
+        }).catch(() => { if (alive) setDoc({ phase: 'ready', revisions: [], bindings: [], rev: null, content: null }) })
+        return () => { alive = false; controller.abort() }
+      }, [projectKey, selectedId, tick, navRevision])
+
+
       const selected = resources.phase === 'ready' ? resources.list.find((item) => item.id === selectedId) : undefined
       const labels = markdownLabels(t)
+
+      // Switching to an older revision fetches that revision's markdown; the
+      // latest revision renders the list row's own content (no extra hop).
+      const latestRev = doc.phase === 'ready' && doc.revisions.length > 0
+        ? doc.revisions[doc.revisions.length - 1].rev
+        : selected?.rev
+      const onChangeRevision = (event) => {
+        const rev = Number(event.target.value)
+        if (doc.phase !== 'ready' || Number.isNaN(rev) || rev === latestRev) {
+          setDoc({ ...doc, rev: null, content: null })
+          return
+        }
+        const controller = new AbortController()
+        apiFetch(`/api/projects/${encodeURIComponent(projectKey)}/resources/${encodeURIComponent(selectedId)}/revisions/${String(rev)}`, controller.signal)
+          .then((detail) => { setDoc((current) => ({ ...current, rev, content: detail?.content_markdown ?? '' })) })
+          .catch(() => { setDoc((current) => ({ ...current, rev, content: null })) })
+        setDoc((current) => ({ ...current, rev, content: undefined }))
+      }
+      const currentRev = doc.phase === 'ready' && doc.rev !== null ? doc.rev : latestRev
+      const viewingLatest = doc.phase !== 'ready' || doc.rev === null
       const target = React.useMemo(
         () => parseAirboardAddress(tab?.navigation?.address),
         [tab?.navigation?.address],
@@ -400,8 +460,62 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'airboard-doc-id', 'data-airboard-doc-id': selected.id }, selected.id),
                 h('h1', { className: 'airboard-doc-title' }, selected.title ?? ''),
                 h('span', { className: 'airboard-doc-meta', 'data-airboard-doc-meta': selected.status ?? '' },
-                  `${t(`status.${selected.status}`)} · ${t('rev', { rev: selected.rev })}${selected.updated_at === undefined ? '' : ` · ${selected.updated_at}`}`)),
-              h(MarkdownText, { text: selected.content_markdown ?? '', labels }))))
+                  `${t(`status.${selected.status}`)}${selected.updated_at === undefined ? '' : ` · ${selected.updated_at}`}`),
+                doc.phase === 'ready' && doc.revisions.length > 1
+                  ? h('select', {
+                    className: 'airboard-revselect',
+                    'data-airboard-rev': String(currentRev ?? ''),
+                    value: String(currentRev ?? ''),
+                    'aria-label': t('revSelect'),
+                    onChange: onChangeRevision,
+                  }, [...doc.revisions].reverse().map((entry) => h('option', {
+                    key: entry.rev,
+                    value: String(entry.rev),
+                  }, `r${String(entry.rev)}${entry.rev === latestRev ? t('revLatest') : ''}`)))
+                  : null),
+              h(MarkdownText, { text: viewingLatest ? (selected.content_markdown ?? '') : (doc.content ?? ''), labels }),
+              doc.phase === 'ready' ? buildBindingsFooter(t, doc.bindings) : null)))
+    }
+
+    /**
+     * Short hash for a bound commit: AirBoard stores both full (40-char) and
+     * short shas; display at most 8 leading chars.
+     */
+    function shortSha(sha) {
+      const text = String(sha ?? '')
+      return text.length > 8 ? text.slice(0, 8) : text
+    }
+
+    /**
+     * The linked-commits footer (a plain builder invoked at render, so the
+     * vdom is concrete): one line per DISTINCT bound commit (webhook dedupe
+     * leaves near-duplicates for the same sha), each a plain link to the
+     * commit page when the binding carries an http(s) commit_url.
+     * @param {Function} t - translator.
+     * @param {ReadonlyArray<Record<string, unknown>>} bindings - raw binding rows.
+     */
+    function buildBindingsFooter(t, bindings) {
+      const seen = new Set()
+      const rows = []
+      for (const binding of Array.isArray(bindings) ? bindings : []) {
+        const key = String(binding?.sha ?? '')
+        if (key === '' || seen.has(key)) continue
+        seen.add(key)
+        rows.push(binding)
+      }
+      return h('footer', { className: 'airboard-bindings', 'data-airboard-bindings': String(rows.length) },
+        h('div', { className: 'airboard-bindings-head' }, t('bindings')),
+        rows.length === 0
+          ? h('div', { className: 'airboard-binding-empty' }, t('bindingsEmpty'))
+          : h('ul', { className: 'airboard-binding-list' }, rows.map((binding, index) => {
+            const url = typeof binding.commit_url === 'string' && /^https?:\/\//.test(binding.commit_url) ? binding.commit_url : null
+            const pushed = binding.pushed_at === null || binding.pushed_at === undefined ? '' : ` · ${t('commitAt', { at: String(binding.pushed_at).replace('T', ' ').slice(0, 16) })}`
+            const label = `${shortSha(binding.sha)}${pushed}`
+            return h('li', { className: 'airboard-binding', key: `${binding.sha}:${String(index)}` },
+              url === null
+                ? h('span', { className: 'airboard-binding-sha' }, label)
+                : h('a', { className: 'airboard-binding-link', href: url, target: '_blank', rel: 'noreferrer' }, label))
+          })))
     }
 
     /** Scoped sheet, appended once per activation and removed with the plugin. */
@@ -414,6 +528,15 @@ window.__ModuleLoader__.load({
 .airboard-iconbtn { display: inline-flex; flex: none; align-items: center; justify-content: center; padding: 4px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
 .airboard-iconbtn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .airboard-icon { width: 16px; height: 16px; }
+.airboard-revselect { flex: none; font: inherit; font-size: 11px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); padding: 2px 4px; }
+.airboard-bindings { margin: 16px 0 8px; padding-top: 8px; border-top: 1px dashed var(--dsw-alias-border-l2); }
+.airboard-bindings-head { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--dsw-alias-label-secondary); margin-bottom: 4px; }
+.airboard-binding-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.airboard-binding { font-size: 12px; }
+.airboard-binding-link { color: var(--dsw-alias-label-link, inherit); text-decoration: none; font-family: var(--dsw-alias-font-mono, monospace); }
+.airboard-binding-link:hover { text-decoration: underline; }
+.airboard-binding-sha { font-family: var(--dsw-alias-font-mono, monospace); color: var(--dsw-alias-label-secondary); }
+.airboard-binding-empty { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .airboard-scroll { flex: 1; min-height: 0; overflow: auto; padding: 6px 4px 16px; }
 .airboard-group { margin: 0 0 6px; }
 .airboard-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 8px 8px 2px; }

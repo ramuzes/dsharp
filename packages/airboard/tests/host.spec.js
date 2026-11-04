@@ -62,6 +62,7 @@ test('resolveProxyRequest allows the read-only GET surface', () => {
     '/airboard/api/projects/CORE/resources/ADR-1',
     '/airboard/api/projects/CORE/resources/ADR-1/revisions',
     '/airboard/api/projects/CORE/resources/ADR-1/revisions/3',
+    '/airboard/api/projects/CORE/resources/ADR-1/bindings',
     '/airboard/api/search',
   ]
   for (const url of allowed) {
@@ -87,7 +88,7 @@ test('resolveProxyRequest rejects writes, foreign paths, and extra segments', ()
     ['GET', '/airboard/api/users'],
     ['GET', '/airboard/api/me/tokens'],
     ['GET', '/airboard/api/plugins'],
-    ['GET', '/airboard/api/projects/CORE/resources/ADR-1/bindings'],
+    ['POST', '/airboard/api/projects/CORE/resources/ADR-1/bindings'],
     ['GET', '/airboard/api/projects/A/B'],
     ['GET', '/airboard/api/projects/CORE/resources/ADR-1/nope'],
     ['GET', '/airboard'],

@@ -274,6 +274,11 @@ async function renderBody(routes, { address } = {}) {
     signals.push({ url: text, signal: init?.signal })
     const route = routes[text]
     if (route === undefined) {
+      // Doc-detail routes (revisions/bindings) default to empty lists so the
+      // body degrades exactly as it does live when a route is missing.
+      if (/\/(revisions|bindings)$/.test(text)) {
+        return { ok: true, status: 200, json: async () => [] }
+      }
       return { ok: false, status: 404, json: async () => ({ error: { code: 'NOT_FOUND', message: text } }) }
     }
     if (route.throw !== undefined) throw route.throw
@@ -664,7 +669,12 @@ test('the body loads projects and resources through the same-origin proxy', asyn
     '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }, { key: 'OPS', name: 'Operations' }] },
     '/airboard/api/projects/CORE/resources': { body: RESOURCES },
   })
-  assert.deepEqual(view.calls, ['/airboard/api/projects', '/airboard/api/projects/CORE/resources'])
+  assert.deepEqual(view.calls, [
+    '/airboard/api/projects',
+    '/airboard/api/projects/CORE/resources',
+    '/airboard/api/projects/CORE/resources/ADR-2/revisions',
+    '/airboard/api/projects/CORE/resources/ADR-2/bindings',
+  ])
   // Project selector offers both projects; CORE selected by default.
   const select = find(view.vdom, (node) => node.props['data-airboard-project'] !== undefined)
   assert.equal(select.type, 'select')
@@ -703,7 +713,47 @@ test('selecting a row shows its markdown; the refresh command refetches', async 
   const meta = find(view.vdom, (node) => node.props['data-airboard-doc-meta'] !== undefined)
   assert.ok(texts(meta).join(' ').includes('t:status.cancelled'))
   await view.interact(() => { view.commands.refresh() })
-  assert.equal(view.calls.length, before + 2)
+  // Selection (2 detail calls) + refresh (projects, resources, 2 detail) = 6.
+  assert.equal(view.calls.length, before + 6)
+})
+
+test('a doc with several revisions shows the dropdown and switches content', async () => {
+  const view = await renderBody({
+    '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }] },
+    '/airboard/api/projects/CORE/resources': { body: RESOURCES },
+    '/airboard/api/projects/CORE/resources/ADR-2/revisions': { body: [
+      { rev: 1, title: 'Adopt SQLite', created_at: '2026-09-30 09:00:00' },
+      { rev: 2, title: 'Adopt SQLite (revised)', created_at: '2026-10-02 09:00:00' },
+      { rev: 3, title: 'Adopt SQLite (final)', created_at: '2026-10-04 09:00:00' },
+    ] },
+    '/airboard/api/projects/CORE/resources/ADR-2/bindings': { body: [
+      { sha: '0a7704f4fb6a9017bc781ee6859fbaf784dc5d06', commit_url: 'https://git.example/core/-/commit/0a7704f4fb6a9017bc781ee6859fbaf784dc5d06', pushed_at: '2026-11-04T15:02:02+08:00' },
+      { sha: 'a326b739', commit_url: 'git@git.example:core.git/-/commit/a326b739' },
+      { sha: '0a7704f4fb6a9017bc781ee6859fbaf784dc5d06', commit_url: 'https://git.example/core/-/commit/0a7704f4fb6a9017bc781ee6859fbaf784dc5d06' },
+    ] },
+    '/airboard/api/projects/CORE/resources/ADR-2/revisions/2': { body: { rev: 2, title: 'Adopt SQLite (revised)', content_markdown: '# ADR-2 r2\nOlder body.' } },
+  })
+  // ADR-2 auto-selected (first displayed). Dropdown lists revisions newest
+  // first, latest marked; default shows the list row's own content.
+  const revSelect = find(view.vdom, (node) => node.props['data-airboard-rev'] !== undefined)
+  assert.deepEqual(revSelect.children.map((o) => o.props.value), ['3', '2', '1'])
+  assert.match(revSelect.children[0].children[0], /revLatest/)
+  assert.equal(find(view.vdom, (n) => n.type === MarkdownText).props.text, '# ADR-2\nBecause one file is enough.')
+  // Bindings footer: deduped by sha, http links only, short hash labels.
+  const bindings = find(view.vdom, (node) => node.props['data-airboard-bindings'] !== undefined)
+  assert.equal(bindings.props['data-airboard-bindings'], '2')
+  const links = findAll(bindings, (n) => n.props?.href !== undefined).map((n) => n.props.href)
+  assert.deepEqual(links, ['https://git.example/core/-/commit/0a7704f4fb6a9017bc781ee6859fbaf784dc5d06'])
+  const shaTexts = texts(bindings).join(' ')
+  assert.match(shaTexts, /0a7704f4/)
+  assert.match(shaTexts, /a326b739/)
+  // Switching to r2 fetches that revision's markdown.
+  const after = await view.interact(() => { revSelect.props.onChange({ target: { value: '2' } }) })
+  assert.equal(find(after, (n) => n.type === MarkdownText).props.text, '# ADR-2 r2\nOlder body.')
+  assert.equal(find(after, (n) => n.props['data-airboard-rev'] !== undefined).props['data-airboard-rev'], '2')
+  // Back to latest: no fetch, the row's own content again.
+  const back = await view.interact(() => { find(after, (n) => n.props['data-airboard-rev'] !== undefined).props.onChange({ target: { value: '3' } }) })
+  assert.equal(find(back, (n) => n.type === MarkdownText).props.text, '# ADR-2\nBecause one file is enough.')
 })
 
 test('switching projects fetches the other project and resets selection', async () => {

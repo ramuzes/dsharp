@@ -38,6 +38,7 @@ const ALLOWED_SUBPATHS = [
   /^\/api\/projects\/[^/]+\/resources\/[^/]+$/,
   /^\/api\/projects\/[^/]+\/resources\/[^/]+\/revisions$/,
   /^\/api\/projects\/[^/]+\/resources\/[^/]+\/revisions\/[^/]+$/,
+  /^\/api\/projects\/[^/]+\/resources\/[^/]+\/bindings$/,
   /^\/api\/search$/,
 ]
 
