@@ -19,12 +19,15 @@ Each package is a standalone bundle, so point `dsh plugin add` at the
 subdirectory (not the repo root) — the pnpm `#path:` fragment selects it:
 
 ```sh
-# from a local checkout
-dsh plugin --profile <name> add /path/to/<this-repo>/packages/workspace-env
+# from a local checkout (run at the repo root)
+dsh plugin --profile <name> add ./packages/workspace-env
 
 # from git
-dsh plugin --profile <name> add "github:<you>/<this-repo>#path:packages/workspace-env"
+dsh plugin --profile <name> add "github:ramuzes/dsharp#path:packages/workspace-env"
 ```
+
+Swap the subdirectory (`packages/airboard`, `packages/feishu-gateway`,
+`packages/chrome-cdp`) to install another package.
 
 Or pack a tarball locally (`pnpm pack` inside the package, or `pnpm -r pack`
 at the root) and install that.
