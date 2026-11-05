@@ -30,11 +30,11 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-experimental-browser-use-runtime": "0.2.2-rc.1",
     "chrome-devtools-mcp": "1.9.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-experimental-browser-use-runtime": "*",
     "@deepseek-ai/dsh-typert-protocol": "*",
     "@deepseek-ai/schemastery": "*"
   },
