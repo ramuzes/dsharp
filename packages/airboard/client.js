@@ -599,9 +599,9 @@ window.__ModuleLoader__.load({
 .airboard-binding-empty { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .airboard-scroll { flex: 1; min-height: 0; overflow: auto; padding: 6px 4px 16px; }
 .airboard-group { margin: 0 0 6px; }
-.airboard-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 8px 2px; border: none; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.airboard-group-head { display: flex; align-items: baseline; justify-content: flex-start; gap: 8px; width: 100%; padding: 8px 8px 2px; border: none; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
 .airboard-group-head:hover .airboard-kind { color: var(--dsw-alias-label-primary); }
-.airboard-chevron { flex: none; font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
+.airboard-chevron { flex: none; font-size: 14px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 .airboard-more { display: block; width: 100%; padding: 4px 8px; border: none; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; cursor: pointer; text-align: center; }
 .airboard-more:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .airboard-kind { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--dsw-alias-label-secondary); }
