@@ -705,6 +705,12 @@ test('selecting a row shows its markdown; the refresh command refetches', async 
   assert.equal(typeof view.commands.refresh, 'function')
   const before = view.calls.length
   await view.interact(() => {
+    // ISSUE is folded shut by default (the selection sits in ADR): unfold
+    // via the group head, then pick the row.
+    const issueHead = find(view.vdom, (node) => node.props['data-airboard-head'] === 'ISSUE')
+    issueHead.props.onClick()
+  })
+  await view.interact(() => {
     const issueRow = find(view.vdom, (node) => node.props['data-airboard-row'] === 'ISSUE-9')
     issueRow.props.onClick()
   })
@@ -928,4 +934,42 @@ test('resolution keeps only exact-id search hits across projects', async () => {
     { id: 'ADR-54', project_key: 'OPS' },
     { id: 'ADR-54', project_key: 'CORE' },
   ])
+})
+
+test('kind groups fold; only the selected kind starts expanded', async () => {
+  const view = await renderBody({
+    '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }] },
+    '/airboard/api/projects/CORE/resources': { body: RESOURCES },
+  })
+  const state = (vdom) => findAll(vdom, (node) => node.props['data-airboard-collapsed'] !== undefined)
+    .map((node) => [node.props['data-airboard-kind'], node.props['data-airboard-collapsed']])
+  // Auto-selection lands on the ADR group's first row: ADR open, rest shut.
+  assert.deepEqual(state(view.vdom), [['ADR', 'false'], ['PRD', 'true'], ['ISSUE', 'true']])
+  // Collapsed groups render no rows.
+  assert.equal(find(view.vdom, (n) => n.props['data-airboard-row'] === 'PRD-1'), undefined)
+  // Clicking a folded head unfolds it and its rows appear.
+  const after = await view.interact(() => {
+    find(view.vdom, (n) => n.props['data-airboard-head'] === 'PRD').props.onClick()
+  })
+  assert.deepEqual(state(after), [['ADR', 'false'], ['PRD', 'false'], ['ISSUE', 'true']])
+  assert.notEqual(find(after, (n) => n.props['data-airboard-row'] === 'PRD-1'), undefined)
+})
+
+test('large groups render incrementally behind show-more', async () => {
+  const many = Array.from({ length: 55 }, (_, i) => ({
+    id: `ADR-${String(100 + i)}`, kind: 'ADR', number: 100 + i, project_key: 'CORE',
+    title: `t${i}`, status: 'active', content_markdown: 'x', rev: 1, updated_at: '2026-10-01 10:00:00',
+  }))
+  const view = await renderBody({
+    '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }] },
+    '/airboard/api/projects/CORE/resources': { body: many },
+  })
+  const rowCount = (vdom) => findAll(vdom, (n) => n.props['data-airboard-row'] !== undefined).length
+  // ADR holds the selection: expanded, but only the first 20 rows render.
+  assert.equal(rowCount(view.vdom), 20)
+  const after = await view.interact(() => { find(view.vdom, (n) => n.props['data-airboard-more'] === 'ADR').props.onClick() })
+  assert.equal(rowCount(after), 50, '+30 rows per press')
+  const after2 = await view.interact(() => { find(after, (n) => n.props['data-airboard-more'] === 'ADR').props.onClick() })
+  assert.equal(rowCount(after2), 55, 'all rows once the cap passes the list')
+  assert.equal(find(after2, (n) => n.props['data-airboard-more'] !== undefined), undefined, 'no button once everything shows')
 })

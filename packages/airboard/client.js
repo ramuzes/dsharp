@@ -128,6 +128,9 @@ window.__ModuleLoader__.load({
       revLatest: '（最新）',
       bindings: '关联提交',
       bindingsEmpty: '暂无关联提交',
+      collapseGroup: '折叠 {kind}',
+      expandGroup: '展开 {kind}（{count} 条）',
+      showMore: '显示更多（还有 {count} 条）',
       commitAt: '提交于 {at}',
       'code.copy': '复制',
       'code.copied': '已复制',
@@ -177,6 +180,9 @@ window.__ModuleLoader__.load({
       revLatest: ' (latest)',
       bindings: 'Linked commits',
       bindingsEmpty: 'No linked commits',
+      collapseGroup: 'Collapse {kind}',
+      expandGroup: 'Expand {kind} ({count})',
+      showMore: 'Show more ({count} more)',
       commitAt: 'committed {at}',
       'code.copy': 'Copy',
       'code.copied': 'Copied',
@@ -287,7 +293,14 @@ window.__ModuleLoader__.load({
       const [projectKey, setProjectKey] = React.useState(null)
       const [resources, setResources] = React.useState({ phase: 'idle' })
       const [selectedId, setSelectedId] = React.useState(null)
-      // Selected-document detail: the revision roster + commit bindings, and
+      // Kind groups fold (collapsed = the Set member) and grow on demand:
+      // INITIAL_ROWS render first in an expanded group, SHOW_MORE_ROWS join
+      // per press. 137 live resources rendered at once buried every kind
+      // under ADR's 70 rows; the fold defaults keep one kind visible.
+      const [collapsedKinds, setCollapsedKinds] = React.useState(null)
+      const [shownCounts, setShownCounts] = React.useState({})
+      const INITIAL_ROWS = 20
+      const SHOW_MORE_ROWS = 30
       // the fetched markdown when viewing a non-latest revision (`content`
       // null means "show the list's own content_markdown" = latest).
       const [doc, setDoc] = React.useState({ phase: 'idle' })
@@ -363,6 +376,25 @@ window.__ModuleLoader__.load({
 
       const selected = resources.phase === 'ready' ? resources.list.find((item) => item.id === selectedId) : undefined
       const labels = markdownLabels(t)
+      // Fold defaults: collapsed everywhere EXCEPT the kind holding the
+      // current selection (the auto-selected first row or a deep link).
+      const selectedKind = selected?.kind
+      const kindOf = (resource) => resource?.kind
+      const isCollapsed = (kind) => {
+        if (collapsedKinds !== null) return collapsedKinds.has(kind)
+        return kind !== selectedKind
+      }
+      const toggleKind = (kind) => {
+        setCollapsedKinds((current) => {
+          const base = current ?? new Set(groupByKind(resources.phase === 'ready' ? resources.list : [])
+            .map(([k]) => k).filter((k) => k !== selectedKind))
+          const next = new Set(base)
+          if (next.has(kind)) next.delete(kind)
+          else next.add(kind)
+          return next
+        })
+      }
+      const shownOf = (kind) => shownCounts[kind] ?? INITIAL_ROWS
 
       // Switching to an older revision fetches that revision's markdown; the
       // latest revision renders the list row's own content (no extra hop).
@@ -397,6 +429,15 @@ window.__ModuleLoader__.load({
         if (target === null || resources.phase !== 'ready') return
         if (resources.list.some((item) => item.id === target.docId)) {
           setSelectedId(target.docId)
+          // A deep link names a doc in a kind that may be folded shut: drop
+          // that kind from the fold so the reveal below can find its row.
+          setCollapsedKinds((current) => {
+            if (current === null) return current
+            const next = new Set(current)
+            const kind = resources.list.find((item) => item.id === target.docId)?.kind
+            if (kind !== undefined) next.delete(kind)
+            return next
+          })
           if (typeof document !== 'undefined') {
             document.querySelector(`[data-airboard-row="${CSS.escape(target.docId)}"]`)
               ?.scrollIntoView({ block: 'center' })
@@ -436,22 +477,41 @@ window.__ModuleLoader__.load({
             projects.phase === 'ready' && resources.phase === 'ready' && resources.list.length === 0
               ? h('div', { className: 'airboard-note', 'data-airboard-note': 'empty' }, t('empty.resources'))
               : null,
-            resources.phase === 'ready' ? groupByKind(resources.list).map(([kind, list]) => h('div', { className: 'airboard-group', key: kind },
-              h('div', { className: 'airboard-group-head', 'data-airboard-kind': kind },
+            resources.phase === 'ready' ? groupByKind(resources.list).map(([kind, list]) => {
+              const collapsed = isCollapsed(kind)
+              const shown = list.slice(0, shownOf(kind))
+              const hidden = list.length - shown.length
+              return h('div', { className: `airboard-group${collapsed ? ' airboard-group-collapsed' : ''}`, key: kind, 'data-airboard-kind': kind, 'data-airboard-collapsed': collapsed ? 'true' : 'false' },
+                h('button', {
+                  type: 'button',
+                  className: 'airboard-group-head',
+                  'data-airboard-head': kind,
+                  'aria-expanded': collapsed ? 'false' : 'true',
+                  'aria-label': collapsed ? t('expandGroup', { kind, count: list.length }) : t('collapseGroup', { kind }),
+                  onClick: () => { toggleKind(kind) },
+                },
+                h('span', { className: 'airboard-chevron', 'aria-hidden': 'true' }, collapsed ? '▸' : '▾'),
                 h('span', { className: 'airboard-kind' }, kind),
                 h('span', { className: 'airboard-count' }, String(list.length))),
-              list.map((resource) => h('button', {
-                type: 'button',
-                key: resource.id,
-                className: 'airboard-row',
-                'data-airboard-row': resource.id,
-                'aria-current': resource.id === selectedId ? 'true' : undefined,
-                title: `${resource.id} — ${resource.title ?? ''}`,
-                onClick: () => { setSelectedId(resource.id) },
-              },
-              h('span', { className: 'airboard-dot', 'data-status': resource.status, 'aria-hidden': 'true' }),
-              h('span', { className: 'airboard-id' }, resource.id),
-              h('span', { className: 'airboard-title' }, resource.title ?? ''))))) : null)),
+                collapsed ? null : shown.map((resource) => h('button', {
+                  type: 'button',
+                  key: resource.id,
+                  className: 'airboard-row',
+                  'data-airboard-row': resource.id,
+                  'aria-current': resource.id === selectedId ? 'true' : undefined,
+                  title: `${resource.id} — ${resource.title ?? ''}`,
+                  onClick: () => { setSelectedId(resource.id) },
+                },
+                h('span', { className: 'airboard-dot', 'data-status': resource.status, 'aria-hidden': 'true' }),
+                h('span', { className: 'airboard-id' }, resource.id),
+                h('span', { className: 'airboard-title' }, resource.title ?? ''))),
+                collapsed || hidden === 0 ? null : h('button', {
+                  type: 'button',
+                  className: 'airboard-more',
+                  'data-airboard-more': kind,
+                  onClick: () => { setShownCounts((current) => ({ ...current, [kind]: shownOf(kind) + SHOW_MORE_ROWS })) },
+                }, t('showMore', { count: hidden })))
+            }) : null)),
         h('div', { className: 'airboard-content', 'data-airboard-content': '' },
           selected === undefined
             ? h('div', { className: 'airboard-note' }, resources.phase === 'ready' ? t('select.hint') : null)
@@ -539,7 +599,11 @@ window.__ModuleLoader__.load({
 .airboard-binding-empty { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .airboard-scroll { flex: 1; min-height: 0; overflow: auto; padding: 6px 4px 16px; }
 .airboard-group { margin: 0 0 6px; }
-.airboard-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 8px 8px 2px; }
+.airboard-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 8px 2px; border: none; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.airboard-group-head:hover .airboard-kind { color: var(--dsw-alias-label-primary); }
+.airboard-chevron { flex: none; font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
+.airboard-more { display: block; width: 100%; padding: 4px 8px; border: none; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; cursor: pointer; text-align: center; }
+.airboard-more:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .airboard-kind { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--dsw-alias-label-secondary); }
 .airboard-count { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary); }
 .airboard-row { display: flex; width: 100%; align-items: center; gap: 6px; padding: 5px 8px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
