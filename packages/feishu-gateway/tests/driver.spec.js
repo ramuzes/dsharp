@@ -166,15 +166,19 @@ test('plain message with no binding asks the user to bind a workspace', async ()
   assert.match(JSON.stringify(sent), /\/ws/)
 })
 
-test('bare /ws and unknown subcommands default to the workspace list', async () => {
+test('bare /ws lists; /ws <名称> is use semantics; unknown names say so', async () => {
   const ctx = makeCtx()
   const { driver, sent } = makeDriver(ctx)
   await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_1', senderOpenId: 'ou_a', text: '/ws' })
   const post = sent.find(s => s.type === 'post')
   assert.ok(post, 'bare /ws renders the workspace list post')
   assert.match(JSON.stringify(post.content), /demo/, 'list content present')
-  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/ws xyz' })
-  assert.equal(sent.filter(s => s.type === 'post').length, 2, 'unknown subcommand still lists')
+  // /ws demo (no sub keyword) switches exactly like /ws use demo.
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_2', senderOpenId: 'ou_a', text: '/ws demo' })
+  assert.equal((await driver.router.get('oc_1')).workspaceTitle, 'demo', 'shorthand bound the workspace')
+  // An unknown name is the use-path miss, not a list.
+  await driver.handleInbound({ kind: 'message', chatId: 'oc_1', messageId: 'om_3', senderOpenId: 'ou_a', text: '/ws nosuch' })
+  assert.ok(sent.some(m => /没有叫/.test(m.text ?? '')), 'unknown name reports the miss')
   assert.equal(JSON.stringify(sent).includes('用法'), false, 'no usage line anymore')
 })
 

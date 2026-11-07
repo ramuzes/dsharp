@@ -133,15 +133,17 @@ export class GatewayDriver {
 
   async runWs(cmd, message) {
     const { chatId } = message
-    // Bare /ws (and unknown subcommands) falls through to the list — same
-    // default as /session: the list is the command's home screen.
-    if (cmd.sub !== 'use' && cmd.sub !== 'new') {
+    // Bare /ws falls through to the list — same default as /session: the
+    // list is the command's home screen.
+    if (cmd.sub === undefined) {
       const list = this.ctx.workspaceRegistry.list().map(w => `- **${w.title}**（\`${w.path}\`）`).join('\n')
       return void this.lark.sendJson(chatId, 'post', buildPostContent(`工作区：\n${list}`))
     }
-    if (cmd.sub === 'use') {
-      // Pointer switch only: no guard, any running session keeps running.
-      const title = cmd.args[0]
+    if (cmd.sub === 'use' || (cmd.sub !== 'new' && cmd.sub !== undefined)) {
+      // `/ws <名称>` IS `/ws use <名称>`: any token that is not the `new`
+      // subcommand names a workspace to switch to (pointer switch only: no
+      // guard, any running session keeps running).
+      const title = cmd.sub === 'use' ? cmd.args[0] : cmd.sub
       const ws = this.ctx.workspaceRegistry.list().find(w => w.title === title || w.id === title)
       if (ws === undefined) return void this.lark.sendText(chatId, `没有叫「${title ?? ''}」的工作区，/ws 看看。`)
       await this.router.bind(chatId, { workspaceId: ws.id, workspaceTitle: ws.title, workspacePath: ws.path })

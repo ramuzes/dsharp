@@ -56,7 +56,7 @@ export function translateGuardError(error) {
 
 export const HELP_TEXT = [
   '/ws — 工作区列表（默认行为）',
-  '/ws use <名称> — 切换绑定的工作区',
+  '/ws <名称>（或 /ws use <名称>）— 切换绑定的工作区',
   '/ws new <路径> [标题] — 注册新工作区并绑定',
   '/session [页码] — 会话列表（默认行为，同 /session list）',
   '/session new — 在当前工作区开新会话',

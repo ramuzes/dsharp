@@ -47,7 +47,7 @@ dsh plugin --profile <name> add /path/to/dsharp/packages/feishu-gateway
 | 命令 | 作用 |
 |---|---|
 | `/ws` | 工作区列表（默认行为，同 `/ws list`；未知子命令同样回落到列表） |
-| `/ws use <名称>` | 切换绑定的工作区（纯指针切换，不受运行限制） |
+| `/ws <名称>` / `/ws use <名称>` | 切换绑定的工作区（纯指针切换，不受运行限制） |
 | `/ws new <路径> [标题]` | 注册新工作区并绑定（需会话空闲） |
 | `/session` | 会话列表（默认行为，同 `/session list`，时间倒序 10/页，按钮恢复） |
 | `/session new` | 当前工作区开新会话（需会话空闲） |
