@@ -58,6 +58,10 @@ Reload semantics：以上字段全部 volatile，Plugins 页编辑实时生效�
 真实 host 上验证。挂载阶段记录在 `~/.dsh/gitlab-status.json`（`GITLAB_STATUS_FILE`
 可覆盖）：apply → tools-inject → tools-registered / tools-failed。
 
+含浏览器半件的改动（配置卡）额外验证 boot graph：`curl -N http://127.0.0.1:3080/plugins/events`
+的 `entries` 里必须出现 `dsh-gitlab`；缺失时用 plugin_manager 对该行 disable→enable
+强制 clientModules 重组（见 AGENTS.md §3 的 dsh-gitlab 0.1.1 事故记录），再刷新页面。
+
 ## Live-host verification (AGENTS.md loop)
 
 - 2026-11-11 · dsh-gitlab 0.1.0 · 专用测试 profile 安装 tgz，host 启动后
