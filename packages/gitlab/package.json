@@ -1,16 +1,18 @@
 {
   "name": "dsh-gitlab",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GitLab tools for dsh agents: REST API + token-injected git over HTTPS, so GitLab work needs no per-call sandbox approvals",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "locale",
     "icon.svg",
@@ -23,6 +25,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
   "peerDependencies": {
