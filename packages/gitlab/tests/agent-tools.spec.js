@@ -38,13 +38,14 @@ function makeApi(routes = {}) {
 }
 
 const ROOT = '/home/ramuz/ws'
+const SESSION_POLICY = { mode: 'workspace-write', workspaceRoot: ROOT }
 const defaultDeps = (api, gitRun) => ({
   api,
   baseUrl: 'https://gitlab.example.com',
   getToken: () => 'glpat-test',
-  getRoots: () => [ROOT],
+  getPolicy: () => SESSION_POLICY,
   gitTimeoutMs: () => 5000,
-  ...(gitRun === undefined ? {} : { gitRun }),
+  gitRun: gitRun ?? (async () => ({ stdout: '', stderr: '' })),
 })
 
 const byName = (registered, name) => registered.find((t) => t.name === name)
@@ -89,25 +90,24 @@ test('gitlab_repo_info encodes the project path once', async () => {
   assert.equal(parsed.default_branch, 'main')
 })
 
-test('gitlab_git_status runs local git inside the roots only', async () => {
+test('gitlab_git_status resolves repo paths against the session policy workspace root', async () => {
   const { ctx, registered } = makeCtx()
   const seen = []
-  const gitRun = async (args, opts) => { seen.push({ args, opts }); return { stdout: '## main', stderr: '' } }
+  const gitRun = async (args, cwd, exec, opts) => { seen.push({ args, cwd, exec, opts }); return { stdout: '## main', stderr: '' } }
   registerAgentTools(ctx, defaultDeps(makeApi(), gitRun))
   const status = byName(registered, 'gitlab_git_status')
-  const ok = await status.execute({ repo: '/home/ramuz/ws/proj' })
+  const ok = await status.execute({ repo: 'proj' }, { agent: { session: { id: 's1' } } })
   assert.equal(ok, '## main')
   assert.deepEqual(seen[0].args, ['status', '--porcelain=v1', '--branch'])
-  assert.equal(seen[0].opts.cwd, '/home/ramuz/ws/proj')
-  const denied = await status.execute({ repo: '/etc' })
-  assert.ok(denied.includes('gitlab/path-outside-workspace'), denied)
+  assert.equal(seen[0].cwd, '/home/ramuz/ws/proj')
+  assert.equal(seen[0].exec.agent.session.id, 's1')
 })
 
 test('gitlab_git_fetch with a proper https origin uses remote mode and token header', async () => {
   const { ctx, registered } = makeCtx()
   const seen = []
-  const gitRun = async (args, opts) => {
-    seen.push({ args, opts })
+  const gitRun = async (args, cwd, exec, opts) => {
+    seen.push({ args, cwd, exec, opts })
     if (args[0] === 'config') return { stdout: 'https://gitlab.example.com/group/repo.git\n', stderr: '' }
     return { stdout: '', stderr: '' }
   }
@@ -224,7 +224,7 @@ test('apply() mounts tools with reactive config wrappers and writes stages', asy
     workspaceRoots: reactive(['/home/ramuz/ws']),
   })
   assert.equal(injects.length, 1)
-  assert.deepEqual(injects[0].list, ['tools', 'systemPrompt', 'credentials'])
+  assert.deepEqual(injects[0].list, ['tools', 'systemPrompt', 'credentials', 'sandboxPolicy', 'sandbox'])
   const stage1 = JSON.parse(readFileSync(statusFile, 'utf8'))
   assert.equal(stage1.stage, 'apply')
 

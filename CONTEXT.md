@@ -9,10 +9,10 @@ DeepSeek Harness 插件 bundle 仓库：每个 `packages/` 子目录是一个可
 面向 agent 的 GitLab 操作工具集：REST API 加注入令牌的 HTTPS git，全部在 Host 进程内执行，令牌不进会话、不进工具输出。
 _Avoid_: glab 包装器（不是包装 CLI，是原生 HTTP + git）、凭据代理（token 保管走 dsh 凭据存储规范）。
 
-### 工作区根（Workspace Roots）
+### 会话沙箱跟随（Session-sandbox Confinement）
 
-git 本地操作允许的目录白名单（`workspaceRoots` 配置或 `GITLAB_WORKSPACE_ROOTS`）；仓库路径必须落在其中，路径逃逸一律拒绝（`gitlab/path-outside-workspace`）。
-_Avoid_: 沙箱（那是会话 bash 的机制；这里是插件自身的路径守卫）。
+gitlab 插件的 git 进程权限模型：每次调用经 `ctx.sandboxPolicy.resolve({ session })` 取发起会话自己的权限配置，非 `danger-full-access` 模式下由 `ctx.sandbox.confine` 以同一套沙箱执行——与该会话的 bash 完全同边界，插件不自设路径白名单。
+_Avoid_: 工作区根白名单（已被此模型取代）、插件自有权限。
 
 ### 仅已合并删除（Merged-only Delete）
 

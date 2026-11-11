@@ -9,10 +9,12 @@
  * first, GITLAB_TOKEN launch env as headless fallback), never rides a tool
  * result, and every captured git/API output is redacted against it.
  *
- * Git filesystem reach is restricted to the configured workspace roots
- * (workspaceRoots, or GITLAB_WORKSPACE_ROOTS, or the host process cwd); git
- * remote transport is HTTPS only, with the token injected per-invocation as
- * a Basic auth extraHeader (see lib/git-exec.js).
+ * Git processes follow the CALLING session's own sandbox policy — resolved
+ * per call through ctx.sandboxPolicy and enforced by ctx.sandbox.confine,
+ * the same confinement the bash tool runs under. The plugin keeps NO
+ * permission system of its own; remote transport is HTTPS only, with the
+ * token injected per-invocation as a Basic auth extraHeader via
+ * GIT_CONFIG_KEY_n environment entries (see lib/git-exec.js).
  *
  * Branch deletion is merged-only by design: local deletes go through
  * `git branch -d`, remote deletes verify via the compare API first.
@@ -26,6 +28,7 @@ import { writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createGitlabClient } from './lib/gitlab-api.js'
+import { makeGitRunner } from './lib/git-exec.js'
 import { registerAgentTools } from './lib/agent-tools.js'
 
 /**
@@ -37,13 +40,6 @@ import { registerAgentTools } from './lib/agent-tools.js'
 function readString(value) {
   const raw = typeof value?.get === 'function' ? value.get() : value
   return typeof raw === 'string' ? raw : ''
-}
-
-/** Read a volatile string-array field (same reactive-wrapper rule). */
-function readStringArray(value) {
-  const raw = typeof value?.get === 'function' ? value.get() : value
-  if (!Array.isArray(raw)) return []
-  return raw.filter((item) => typeof item === 'string' && item !== '')
 }
 
 /** Read a volatile number field (same reactive-wrapper rule). */
@@ -65,7 +61,6 @@ export const Config = Schema.object({
   tokenEnv: Schema.string().role('credential-ref').default('GITLAB_TOKEN').volatile(),
   apiTimeoutMs: Schema.number().min(1000).default(20_000).volatile(),
   gitTimeoutMs: Schema.number().min(1000).default(120_000).volatile(),
-  workspaceRoots: Schema.array(String).default([]).volatile(),
 })
 
 /**
@@ -86,7 +81,7 @@ export async function resolveGitlabToken(credentials, ref, envFallback) {
  * Mount the agent tools. Tools register whenever the core tool/prompt
  * services run; the plugin stays inert in headless profiles without them.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
- * @param {{ baseUrl?: unknown, tokenEnv?: unknown, apiTimeoutMs?: unknown, gitTimeoutMs?: unknown, workspaceRoots?: unknown }} config - validated row config.
+ * @param {{ baseUrl?: unknown, tokenEnv?: unknown, apiTimeoutMs?: unknown, gitTimeoutMs?: unknown }} config - validated row config.
  */
 export function apply(ctx, config) {
   const tokenEnv = readString(config.tokenEnv) || 'GITLAB_TOKEN'
@@ -106,8 +101,12 @@ export function apply(ctx, config) {
 
   // 'tools', 'systemPrompt' and 'credentials' are in the inject list on
   // purpose: accessing a service on a scope that did not inject it throws in
-  // cordis ("cannot get property ... without inject").
-  ctx.inject(['tools', 'systemPrompt', 'credentials'], async (agentCtx) => {
+  // cordis ("cannot get property ... without inject"). 'sandboxPolicy' +
+  // 'sandbox' (packages/sandbox/sandbox-policy, packages/sandbox/sandbox)
+  // put every git process under the CALLING session's own permission policy
+  // — the same confinement bash uses — so the tools work in any
+  // session/workspace with no static configuration of their own.
+  ctx.inject(['tools', 'systemPrompt', 'credentials', 'sandboxPolicy', 'sandbox'], async (agentCtx) => {
     noteStage('tools-inject')
     let currentToken = ''
     try {
@@ -123,11 +122,6 @@ export function apply(ctx, config) {
       const getBaseUrl = () => readString(config.baseUrl)
       const getApiTimeout = () => readNumber(config.apiTimeoutMs) || 20_000
       const getGitTimeout = () => readNumber(config.gitTimeoutMs) || 120_000
-      const getRoots = () => {
-        const roots = readStringArray(config.workspaceRoots)
-        if (roots.length > 0) return roots
-        return (process.env.GITLAB_WORKSPACE_ROOTS ?? '').split(':').filter(Boolean)
-      }
       const client = createGitlabClient({
         baseUrl: getBaseUrl(),
         tokenProvider: () => currentToken,
@@ -141,13 +135,15 @@ export function apply(ctx, config) {
         api: client,
         baseUrl: getBaseUrl(),
         getToken: () => currentToken,
-        getRoots,
         gitTimeoutMs: getGitTimeout,
+        // Per-call policy: the calling session's own sandbox configuration
+        // (mode + workspace root), resolved fresh for every git invocation.
+        getPolicy: (exec) => agentCtx.sandboxPolicy.resolve({ session: exec?.agent?.session }),
+        gitRun: makeGitRunner({ sandbox: agentCtx.sandbox, sandboxPolicy: agentCtx.sandboxPolicy }),
       })
       noteStage('tools-registered', {
         baseUrl: getBaseUrl(),
         tokenConfigured: currentToken !== '',
-        workspaceRoots: getRoots(),
       })
       return () => { offTools(); offTokenUpdates() }
     } catch (error) {

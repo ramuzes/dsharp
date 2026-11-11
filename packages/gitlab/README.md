@@ -25,7 +25,6 @@ dsh plugin --profile <name> add github:ramuzes/dsharp#path:packages/gitlab
 | `tokenEnv` | `GITLAB_TOKEN` | 凭据引用名。令牌本身写入 dsh 凭据存储（Plugins 页密钥控件），或由启动环境 `GITLAB_TOKEN` 提供；永不落入 patch 层。 |
 | `apiTimeoutMs` | 20000 | REST 请求超时。 |
 | `gitTimeoutMs` | 120000 | 单条 git 命令超时。 |
-| `workspaceRoots` | `GITLAB_WORKSPACE_ROOTS`（冒号分隔） | git 本地操作允许的根目录；空 = 全部拒绝。 |
 
 Reload semantics：以上字段全部 volatile，Plugins 页编辑实时生效（baseUrl 快照在下次
 重载后更新）。令牌热更新：凭据写入触发 `credentials/reference-updated` 即时重解析。
@@ -44,8 +43,10 @@ Reload semantics：以上字段全部 volatile，Plugins 页编辑实时生效�
 - 令牌只存在于 Host 进程：REST 走 `PRIVATE-TOKEN` 头，git 走每条命令注入的
   `http.extraHeader`（Basic auth），不落盘、不进仓库 remote、不进工具输出（输出对
   令牌原文与其 base64 形式做了统一消毒）。
-- git 文件系统范围限定在 `workspaceRoots` 内，路径逃逸直接拒绝
-  （`gitlab/path-outside-workspace`）。
+- **git 权限完全跟随会话**：每次调用经 `ctx.sandboxPolicy.resolve({ session })` 取
+  发起会话自己的权限配置（`workspace-write` / `read-only` / `danger-full-access`），
+  非全权限模式下 git 进程由 `ctx.sandbox.confine` 以同一套沙箱约束执行——与该会话的
+  bash 完全同边界，插件不自设任何路径白名单；沙箱拦截时会明确提示是会话策略所致。
 - git 远端传输仅 HTTPS；SSH remote 在 fetch 时即时改写为 HTTPS，push 需要仓库先配置
   https origin。
 - **分支删除只允许已合并**：本地 `git branch -d`（永不 -D），远端删除前经 compare API

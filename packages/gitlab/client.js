@@ -10,7 +10,7 @@
  * The plugin contributes exactly one thing: the bundle's own configuration
  * card on the Plugins page (the `plugins.bundle.config` slot, keyed by the
  * package name). The card edits baseUrl / tokenEnv / timeouts /
- * workspaceRoots through a SettingsFormModel over the shared ConfigForm of
+ * through a SettingsFormModel over the shared ConfigForm of
  * the `gitlab` row. The access token is the model's write-only control
  * (feishu-gateway card pattern): staged with the form, written on save
  * through the credentials Remote under the reference named by `tokenEnv`,
@@ -45,8 +45,6 @@ window.__ModuleLoader__.load({
       'config.secretUnset': '未配置（也可在启动环境 export GITLAB_TOKEN）',
       'config.apiTimeoutMs': 'REST 超时 (ms)',
       'config.gitTimeoutMs': 'git 命令超时 (ms)',
-      'config.workspaceRoots': '工作区根目录',
-      'config.workspaceRootsHint': 'git 本地操作允许的目录，逗号分隔（目录名可含空格）；留空则回退到启动环境 GITLAB_WORKSPACE_ROOTS。',
       'config.unavailable': '配置不可用',
       'config.readOnly': '只读',
       'config.saveFailed': '保存失败',
@@ -68,8 +66,6 @@ window.__ModuleLoader__.load({
       'config.secretUnset': 'Not set (or export GITLAB_TOKEN in the launch environment)',
       'config.apiTimeoutMs': 'REST timeout (ms)',
       'config.gitTimeoutMs': 'git timeout (ms)',
-      'config.workspaceRoots': 'Workspace roots',
-      'config.workspaceRootsHint': 'Directories git operations may touch, comma-separated (paths may contain spaces); empty falls back to GITLAB_WORKSPACE_ROOTS.',
       'config.unavailable': 'Configuration unavailable',
       'config.readOnly': 'read-only',
       'config.saveFailed': 'Save failed',
@@ -114,7 +110,6 @@ window.__ModuleLoader__.load({
     const TokenEnvField = textField('tokenEnv', 'gitlab-config-token-env')
     const ApiTimeoutField = textField('apiTimeoutMs', 'gitlab-config-api-timeout-ms', { numeric: true })
     const GitTimeoutField = textField('gitTimeoutMs', 'gitlab-config-git-timeout-ms', { numeric: true })
-    const WorkspaceRootsField = textField('workspaceRoots', 'gitlab-config-workspace-roots')
 
     /**
      * The config card: shared form chrome, the staged value fields, and the
@@ -139,8 +134,7 @@ window.__ModuleLoader__.load({
         }),
         h(TokenEnvField, { t, ...fieldProps }),
         h(ApiTimeoutField, { t, ...fieldProps }),
-        h(GitTimeoutField, { t, ...fieldProps }),
-        h(WorkspaceRootsField, { t, ...fieldProps }))
+        h(GitTimeoutField, { t, ...fieldProps }))
     }
 
     /**
@@ -206,16 +200,6 @@ window.__ModuleLoader__.load({
           },
         }
       }
-      const workspaceRootsSpec = {
-        field: 'workspaceRoots',
-        format: (value) => Array.isArray(value) ? value.join(', ') : '',
-        parse: (text) => {
-          // Paths may contain spaces; split only on commas and new lines.
-          const roots = text.split(/[,\n]+/).map((line) => line.trim()).filter((line) => line !== '')
-          return roots.length === 0 ? { kind: 'clear' } : { kind: 'set', value: roots }
-        },
-      }
-
       const model = new SettingsFormModel(
         configForm,
         [
@@ -223,7 +207,6 @@ window.__ModuleLoader__.load({
           settingsTextField('tokenEnv'),
           timeoutSpec('apiTimeoutMs'),
           timeoutSpec('gitTimeoutMs'),
-          workspaceRootsSpec,
         ],
         [{ field: 'token', write: writeToken }],
       )
@@ -234,7 +217,6 @@ window.__ModuleLoader__.load({
         tokenEnv: model.field('tokenEnv'),
         apiTimeoutMs: model.field('apiTimeoutMs'),
         gitTimeoutMs: model.field('gitTimeoutMs'),
-        workspaceRoots: model.field('workspaceRoots'),
         token: model.field('token'),
         tokenConfigured,
       })

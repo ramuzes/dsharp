@@ -4,21 +4,24 @@
  * Six groups, every operation an explicitly named tool with parameter
  * descriptions:
  *   - git remote ops (clone/fetch/push/pull) — token injected host-side
- *   - local branch/commit history ops — restricted to workspace roots
+ *   - local branch/commit history ops — confined by the session's sandbox
  *   - stale merged branch cleanup — delete only ever allowed for merged
  *   - pipelines & jobs (incl. scheduled pipelines)
  *   - merge requests (create/cancel/update/comment/review)
  *   - issues / milestones / releases
  *
  * The token stays Host-side (lib/gitlab-api.js, lib/git-exec.js); failures
- * surface as plain text naming the GitlabError code. Branch deletion is
- * merged-only by design: local deletes use `git branch -d` (never -D) and
- * remote deletes verify via the compare API that the branch contains no
- * commits absent from the target branch before calling DELETE.
+ * surface as plain text naming the GitlabError code. Git processes run under
+ * the CALLING session's own sandbox policy (sandboxPolicy.resolve +
+ * sandbox.confine — the same confinement bash uses), not a plugin-own
+ * permission list. Branch deletion is merged-only by design: local deletes
+ * use `git branch -d` (never -D) and remote deletes verify via the compare
+ * API that the branch contains no commits absent from the target branch
+ * before calling DELETE.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { GitlabError, projectIdSegment } from './gitlab-api.js'
-import { projectHttpUrl, resolveFetchTarget, resolveInsideRoots, runGit } from './git-exec.js'
+import { projectHttpUrl, resolveFetchTarget, resolveRepoPath } from './git-exec.js'
 
 /** Plain-text tool output (session-query's TEXT_OUTPUT shape). */
 const TEXT_OUTPUT = {
@@ -30,7 +33,7 @@ export const GITLAB_PROMPT_TEXT =
   'GitLab operations go through the gitlab_* tools instead of glab or raw git-over-network in bash: '
   + 'they run Host-side with the configured GitLab token, so no sandbox approval is needed and the token never appears in results. '
   + 'Use gitlab_repo_info to resolve a project (accepts namespace/path or numeric id) and learn its default branch. '
-  + 'git remote transport is HTTPS only; local paths are restricted to the session workspace. '
+  + 'git remote transport is HTTPS only; git processes run under the calling session\'s own sandbox policy (same confinement as its shell), so workspace paths follow the session permission mode. '
   + 'Branch deletion is merged-only: gitlab_stale_branches lists remote branches already merged, and gitlab_delete_branch refuses unmerged branches. '
   + 'Pipelines are triggered and watched with gitlab_pipeline_* / gitlab_job_get (job log tail), and scheduled pipelines with gitlab_schedule_*. '
   + 'Merge requests: gitlab_mr_create / gitlab_mr_update (state_event close cancels one) / gitlab_mr_comment (plain or line-position review) / gitlab_mr_get (include_changes reads the diff). '
@@ -52,16 +55,15 @@ function failure(error) {
  *   api: { get: Function, post: Function, put: Function, del: Function },
  *   baseUrl: string,
  *   getToken: () => string,
- *   getRoots: () => string[],
+ *   getPolicy: (exec?: { agent?: { session?: unknown } }) => { mode: string, workspaceRoot: string, additionalWritableRoots?: readonly string[] },
  *   gitTimeoutMs: () => number,
- *   gitRun?: typeof runGit,
+ *   gitRun: (args: string[], cwd: string, exec?: object, options?: { token?: string, timeoutMs?: number }) => Promise<{ stdout: string, stderr: string }>,
  * }} deps
  * @returns {() => void} disposer removing the section and all tools.
  */
 export function registerAgentTools(ctx, deps) {
   const { api, baseUrl } = deps
-  const gitRun = deps.gitRun ?? runGit
-  const roots = () => deps.getRoots()
+  const gitRun = deps.gitRun
   const gitTimeout = () => deps.gitTimeoutMs()
   const token = () => deps.getToken()
 
@@ -74,12 +76,12 @@ export function registerAgentTools(ctx, deps) {
 
   const register = (tool) => offs.push(ctx.tools.register(tool))
 
-  /** Resolve the repo dir argument against the workspace roots. */
-  const repoDir = (args) => resolveInsideRoots(args.repo ?? '.', roots())
+  /** Resolve the repo dir argument against the session policy's workspace root. */
+  const repoDir = (args, exec) => resolveRepoPath(args.repo ?? '.', deps.getPolicy(exec))
 
   /** Authenticated local git run bound to a repo dir. */
-  const gitAuthed = (args, gitArgs) => gitRun(gitArgs, { cwd: repoDir(args), token: token(), timeoutMs: gitTimeout() })
-  const gitLocal = (args, gitArgs) => gitRun(gitArgs, { cwd: repoDir(args), timeoutMs: gitTimeout() })
+  const gitAuthed = (args, gitArgs, exec) => gitRun(gitArgs, repoDir(args, exec), exec, { token: token(), timeoutMs: gitTimeout() })
+  const gitLocal = (args, gitArgs, exec) => gitRun(gitArgs, repoDir(args, exec), exec, { timeoutMs: gitTimeout() })
 
   const pid = (project) => projectIdSegment(project)
 
@@ -115,12 +117,12 @@ export function registerAgentTools(ctx, deps) {
       depth: { type: 'integer', description: 'Shallow clone depth in commits (omit for a full clone).' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
-        const dir = resolveInsideRoots(args.dir, roots())
+        const dir = resolveRepoPath(args.dir, deps.getPolicy())
         const info = await api.get(`/projects/${pid(args.project)}`)
         const gitArgs = ['clone', ...(args.branch ? ['-b', args.branch] : []), ...(args.depth ? ['--depth', String(args.depth)] : []), projectHttpUrl(baseUrl, info.path_with_namespace), dir]
-        const { stdout, stderr } = await gitRun(gitArgs, { token: token(), timeoutMs: gitTimeout() })
+        const { stdout, stderr } = await gitRun(gitArgs, undefined, undefined, { token: token(), timeoutMs: gitTimeout() })
         return `Cloned ${info.path_with_namespace} into ${dir}${stdout ? `\n${stdout}` : ''}${stderr ? `\n${stderr}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -135,14 +137,14 @@ export function registerAgentTools(ctx, deps) {
       prune: { type: 'boolean', description: 'Prune deleted remote branches (default true).' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
         const dir = repoDir(args)
-        const target = await resolveFetchTarget({ run: (a, c) => gitRun(a, { cwd: c, timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, token: token() })
+        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, exec })
         const gitArgs = target.mode === 'remote'
           ? ['fetch', ...(args.prune === false ? [] : ['--prune']), '--tags', 'origin']
           : ['fetch', ...(args.prune === false ? [] : ['--prune']), '--tags', target.url, '+refs/heads/*:refs/remotes/origin/*']
-        const { stdout, stderr } = await gitRun(gitArgs, { cwd: dir, token: token(), timeoutMs: gitTimeout() })
+        const { stdout, stderr } = await gitRun(gitArgs, dir, exec, { token: token(), timeoutMs: gitTimeout() })
         return `Fetched.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -158,14 +160,14 @@ export function registerAgentTools(ctx, deps) {
       project: { type: 'string', description: 'Project path/id; needed when the clone has no origin remote.' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
         const dir = repoDir(args)
         if (args.to === '') return 'Refusing an empty remote ref (that deletes the remote branch). Use gitlab_delete_branch for merged-branch cleanup.'
-        const target = await resolveFetchTarget({ run: (a, c) => gitRun(a, { cwd: c, timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, token: token() })
+        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, exec })
         if (target.mode === 'url') throw new GitlabError('gitlab/git-failed', 'Pushing needs an https origin remote in the clone. Set it with `git remote add origin <project https url>` first.')
         const refspec = `${args.from}:${args.to ?? args.from}`
-        const { stdout, stderr } = await gitRun(['push', 'origin', refspec], { cwd: dir, token: token(), timeoutMs: gitTimeout() })
+        const { stdout, stderr } = await gitRun(['push', 'origin', refspec], dir, exec, { token: token(), timeoutMs: gitTimeout() })
         return `Pushed ${refspec}.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -181,19 +183,19 @@ export function registerAgentTools(ctx, deps) {
       branch: { type: 'string', description: 'Remote branch to integrate (default: the current branch\'s upstream).' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
         const dir = repoDir(args)
-        const target = await resolveFetchTarget({ run: (a, c) => gitRun(a, { cwd: c, timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, token: token() })
+        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, exec })
         const fetchArgs = target.mode === 'remote'
           ? ['fetch', '--prune', '--tags', 'origin']
           : ['fetch', '--prune', '--tags', target.url, '+refs/heads/*:refs/remotes/origin/*']
-        await gitRun(fetchArgs, { cwd: dir, token: token(), timeoutMs: gitTimeout() })
+        await gitRun(fetchArgs, dir, exec, { token: token(), timeoutMs: gitTimeout() })
         const upstream = args.branch ? `origin/${args.branch}` : '@{upstream}'
         const integrate = args.strategy === 'merge'
           ? ['merge', '--ff-only', upstream]
           : ['rebase', upstream]
-        const { stdout, stderr } = await gitRun(integrate, { cwd: dir, timeoutMs: gitTimeout() })
+        const { stdout, stderr } = await gitRun(integrate, dir, exec, { timeoutMs: gitTimeout() })
         return `Pulled (${args.strategy ?? 'rebase'}).${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -208,9 +210,9 @@ export function registerAgentTools(ctx, deps) {
     },
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
-        const { stdout } = await gitLocal(args, ['status', '--porcelain=v1', '--branch'])
+        const { stdout } = await gitLocal(args, ['status', '--porcelain=v1', '--branch'], exec)
         return stdout
       } catch (error) { return failure(error) }
     },
@@ -226,9 +228,9 @@ export function registerAgentTools(ctx, deps) {
     },
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
-        const { stdout } = await gitLocal(args, ['log', '--oneline', `-${Math.max(1, Math.min(Number(args.max) || 20, 200))}`, args.ref ?? 'HEAD'])
+        const { stdout } = await gitLocal(args, ['log', '--oneline', `-${Math.max(1, Math.min(Number(args.max) || 20, 200))}`, args.ref ?? 'HEAD'], exec)
         return stdout
       } catch (error) { return failure(error) }
     },
@@ -243,10 +245,10 @@ export function registerAgentTools(ctx, deps) {
       create: { type: 'string', description: 'New branch name to create and check out.' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
         if (!args.create && !args.ref) return 'Provide ref (switch) or create (new branch).'
-        const { stdout, stderr } = await gitLocal(args, args.create ? ['checkout', '-b', args.create] : ['checkout', args.ref])
+        const { stdout, stderr } = await gitLocal(args, args.create ? ['checkout', '-b', args.create] : ['checkout', args.ref], exec)
         return `Switched.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -262,13 +264,13 @@ export function registerAgentTools(ctx, deps) {
       start_point: { type: 'string', description: 'Start point for create (default: current HEAD).' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
         if (args.action !== 'list' && !args.name) return 'name is required for create/delete.'
         const gitArgs = args.action === 'list' ? ['branch', '-vv']
           : args.action === 'create' ? ['branch', args.name, ...(args.start_point ? [args.start_point] : [])]
             : ['branch', '-d', args.name]
-        const { stdout, stderr } = await gitLocal(args, gitArgs)
+        const { stdout, stderr } = await gitLocal(args, gitArgs, exec)
         return `${args.action} done.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -283,10 +285,10 @@ export function registerAgentTools(ctx, deps) {
       branch: { type: 'string', description: 'Branch to rebase (default: current branch).' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
-        if (args.branch) await gitLocal(args, ['checkout', args.branch])
-        const { stdout, stderr } = await gitLocal(args, ['rebase', args.onto])
+        if (args.branch) await gitLocal(args, ['checkout', args.branch], exec)
+        const { stdout, stderr } = await gitLocal(args, ['rebase', args.onto], exec)
         return `Rebased onto ${args.onto}.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -300,9 +302,9 @@ export function registerAgentTools(ctx, deps) {
       commits: { type: 'string', required: true, description: 'Commit hash or range expression to cherry-pick.' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
-        const { stdout, stderr } = await gitLocal(args, ['cherry-pick', args.commits])
+        const { stdout, stderr } = await gitLocal(args, ['cherry-pick', args.commits], exec)
         return `Cherry-picked ${args.commits}.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -317,9 +319,9 @@ export function registerAgentTools(ctx, deps) {
       no_ff: { type: 'boolean', description: 'Create a merge commit even when a fast-forward is possible.' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
-        const { stdout, stderr } = await gitLocal(args, ['merge', ...(args.no_ff ? ['--no-ff'] : []), args.branch])
+        const { stdout, stderr } = await gitLocal(args, ['merge', ...(args.no_ff ? ['--no-ff'] : []), args.branch], exec)
         return `Merged ${args.branch}.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -336,7 +338,7 @@ export function registerAgentTools(ctx, deps) {
       message: { type: 'string', description: 'Annotated-tag message (omit for a lightweight tag).' },
     },
     output: TEXT_OUTPUT,
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
         if (args.action !== 'list' && !args.name) return 'name is required for create/delete.'
         const gitArgs = args.action === 'list' ? ['tag', '--list']
@@ -344,7 +346,7 @@ export function registerAgentTools(ctx, deps) {
             ? args.message ? ['tag', '-a', args.name, '-m', args.message, ...(args.target ? [args.target] : [])]
               : ['tag', args.name, ...(args.target ? [args.target] : [])]
             : ['tag', '-d', args.name]
-        const { stdout, stderr } = await gitLocal(args, gitArgs)
+        const { stdout, stderr } = await gitLocal(args, gitArgs, exec)
         return `${args.action} done.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
