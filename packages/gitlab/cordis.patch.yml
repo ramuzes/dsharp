@@ -1,0 +1,15 @@
+# dsh-gitlab bundle layer: one row mounting the Host half (agent tools over
+# the GitLab REST API + token-injected git over HTTPS).
+#
+# Config defaults come from the environment so ~/.dsh/.env or the invocation
+# .env can set GITLAB_URL / GITLAB_TOKEN / GITLAB_WORKSPACE_ROOTS; anything
+# saved through the Plugins page form lands in a later layer (the profile's
+# cordis.patch.yml) and wins, per the usual layer order. The token itself
+# never lives here: tokenEnv is a credential-ref resolved through
+# ctx.credentials at mount and on every credentials/reference-updated.
+- insert:
+    - id: gitlab
+      name: dsh-gitlab
+      config:
+        baseUrl: !!js "process.env.GITLAB_URL ?? ''"
+        workspaceRoots: !!js "(process.env.GITLAB_WORKSPACE_ROOTS ?? '').split(':').filter(Boolean)"

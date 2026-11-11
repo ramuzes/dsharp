@@ -4,6 +4,21 @@ DeepSeek Harness 插件 bundle 仓库：每个 `packages/` 子目录是一个可
 
 ## Language
 
+### GitLab 工具插件（dsh-gitlab）
+
+面向 agent 的 GitLab 操作工具集：REST API 加注入令牌的 HTTPS git，全部在 Host 进程内执行，令牌不进会话、不进工具输出。
+_Avoid_: glab 包装器（不是包装 CLI，是原生 HTTP + git）、凭据代理（token 保管走 dsh 凭据存储规范）。
+
+### 工作区根（Workspace Roots）
+
+git 本地操作允许的目录白名单（`workspaceRoots` 配置或 `GITLAB_WORKSPACE_ROOTS`）；仓库路径必须落在其中，路径逃逸一律拒绝（`gitlab/path-outside-workspace`）。
+_Avoid_: 沙箱（那是会话 bash 的机制；这里是插件自身的路径守卫）。
+
+### 仅已合并删除（Merged-only Delete）
+
+分支删除的硬性契约：本地 `git branch -d`（永不 -D），远端删除前经 compare API 验证无未合并提交；默认分支与受保护分支一律拒绝，push 无 force。
+_Avoid_: 强制删除、-D（不提供，属设计决策）。
+
 ### Chrome CDP plugin (chrome-cdp)
 
 A provider bundle that brings the user's real, in-use Chrome into DSH over the Chrome DevTools Protocol: mounts chrome-devtools-mcp exclusively for each live session, layered with a per-action approval gate and a Plugins-page config card. It only attaches to an existing browser; it does not launch disposable browsers (already covered by the in-tree provider).

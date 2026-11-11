@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- dsh-gitlab: a stylized fox-tail branch node over a repo card -->
+  <rect x="8" y="12" width="48" height="40" rx="6" fill="none" stroke="#e24329" stroke-width="4" />
+  <path d="M22 44 L22 32 Q22 24 30 24 L38 24" fill="none" stroke="#fc6d26" stroke-width="4" stroke-linecap="round" />
+  <circle cx="22" cy="44" r="4" fill="#e24329" />
+  <circle cx="38" cy="24" r="4" fill="#fca326" />
+  <path d="M46 32 L46 38 L40 41" fill="none" stroke="#fca326" stroke-width="3" stroke-linecap="round" />
+  <circle cx="46" cy="32" r="3" fill="#e24329" />
+</svg>

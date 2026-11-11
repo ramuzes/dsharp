@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "GitLab 工具",
+    "description": "面向 agent 的 GitLab 操作工具集：REST API（MR、Issue、里程碑、版本、流水线与定时流水线）与注入令牌的 HTTPS git（clone/fetch/push/pull、分支管理、已合并陈旧分支清理）。令牌只存在于宿主进程内。"
+  }
+}
