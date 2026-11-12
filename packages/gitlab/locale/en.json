@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "GitLab tools",
+    "description": "Agent-facing GitLab operations: REST API (MRs, issues, milestones, releases, pipelines & schedules) plus token-injected git over HTTPS (clone/fetch/push/pull, branch management, merged stale-branch cleanup). The token stays host-side."
+  }
+}

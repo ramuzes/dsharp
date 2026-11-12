@@ -124,6 +124,18 @@ stayed green.
   a status file under `~/.dsh` — env-overridable so tests never overwrite
   the real one — and the record is checked after every live change.
 
+- **A failed install batch can leave the client boot graph stale (dsh-gitlab
+  0.1.1 incident).** The client-modules registry recomposes only on loader
+  `internal/plugin` fiber events; an install whose `application` stage failed
+  (e.g. another bundle's import error) can consume the event without
+  recomposing, so a bundle's browser half stays absent from
+  `window.__DSH_BOOT__` — Host half healthy, Plugins-page config card
+  silently missing. Verify the SERVED graph, not the page:
+  `curl -N http://<host>/plugins/events` prints the live `entries` (open
+  endpoint, no auth). Fix by forcing a fiber event (`plugin_manager
+  set_plugin` disable → enable the row); confirm the entry and its combo URL
+  (`plugins/??<pkg>/client.js&rev=…`) appear, then reload the page.
+
 ## Quick checklist before finishing any change
 
 1. The plugin's unit tests green, with strict fakes.
