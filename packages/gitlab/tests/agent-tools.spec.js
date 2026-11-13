@@ -41,7 +41,7 @@ const ROOT = '/home/ramuz/ws'
 const SESSION_POLICY = { mode: 'workspace-write', workspaceRoot: ROOT }
 const defaultDeps = (api, gitRun) => ({
   api,
-  baseUrl: 'https://gitlab.example.com',
+  getBaseUrl: () => 'https://gitlab.example.com',
   getToken: () => 'glpat-test',
   getPolicy: () => SESSION_POLICY,
   gitTimeoutMs: () => 5000,

@@ -53,7 +53,7 @@ function failure(error) {
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context with tools+systemPrompt injected.
  * @param {{
  *   api: { get: Function, post: Function, put: Function, del: Function },
- *   baseUrl: string,
+ *   getBaseUrl: () => string,
  *   getToken: () => string,
  *   getPolicy: (exec?: { agent?: { session?: unknown } }) => { mode: string, workspaceRoot: string, additionalWritableRoots?: readonly string[] },
  *   gitTimeoutMs: () => number,
@@ -62,7 +62,10 @@ function failure(error) {
  * @returns {() => void} disposer removing the section and all tools.
  */
 export function registerAgentTools(ctx, deps) {
-  const { api, baseUrl } = deps
+  const { api } = deps
+  // Per-call baseUrl: reads the volatile config on every use, so Plugins-page
+  // edits apply live (same contract as the token).
+  const baseUrl = () => deps.getBaseUrl()
   const gitRun = deps.gitRun
   const gitTimeout = () => deps.gitTimeoutMs()
   const token = () => deps.getToken()
@@ -121,7 +124,7 @@ export function registerAgentTools(ctx, deps) {
       try {
         const dir = resolveRepoPath(args.dir, deps.getPolicy())
         const info = await api.get(`/projects/${pid(args.project)}`)
-        const gitArgs = ['clone', ...(args.branch ? ['-b', args.branch] : []), ...(args.depth ? ['--depth', String(args.depth)] : []), projectHttpUrl(baseUrl, info.path_with_namespace), dir]
+        const gitArgs = ['clone', ...(args.branch ? ['-b', args.branch] : []), ...(args.depth ? ['--depth', String(args.depth)] : []), projectHttpUrl(baseUrl(), info.path_with_namespace), dir]
         const { stdout, stderr } = await gitRun(gitArgs, undefined, undefined, { token: token(), timeoutMs: gitTimeout() })
         return `Cloned ${info.path_with_namespace} into ${dir}${stdout ? `\n${stdout}` : ''}${stderr ? `\n${stderr}` : ''}`
       } catch (error) { return failure(error) }
@@ -140,7 +143,7 @@ export function registerAgentTools(ctx, deps) {
     execute: async (args, exec) => {
       try {
         const dir = repoDir(args)
-        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, exec })
+        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
         const gitArgs = target.mode === 'remote'
           ? ['fetch', ...(args.prune === false ? [] : ['--prune']), '--tags', 'origin']
           : ['fetch', ...(args.prune === false ? [] : ['--prune']), '--tags', target.url, '+refs/heads/*:refs/remotes/origin/*']
@@ -164,7 +167,7 @@ export function registerAgentTools(ctx, deps) {
       try {
         const dir = repoDir(args)
         if (args.to === '') return 'Refusing an empty remote ref (that deletes the remote branch). Use gitlab_delete_branch for merged-branch cleanup.'
-        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, exec })
+        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
         if (target.mode === 'url') throw new GitlabError('gitlab/git-failed', 'Pushing needs an https origin remote in the clone. Set it with `git remote add origin <project https url>` first.')
         const refspec = `${args.from}:${args.to ?? args.from}`
         const { stdout, stderr } = await gitRun(['push', 'origin', refspec], dir, exec, { token: token(), timeoutMs: gitTimeout() })
@@ -186,7 +189,7 @@ export function registerAgentTools(ctx, deps) {
     execute: async (args, exec) => {
       try {
         const dir = repoDir(args)
-        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl, project: args.project, exec })
+        const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
         const fetchArgs = target.mode === 'remote'
           ? ['fetch', '--prune', '--tags', 'origin']
           : ['fetch', '--prune', '--tags', target.url, '+refs/heads/*:refs/remotes/origin/*']

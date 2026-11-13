@@ -122,18 +122,16 @@ export function apply(ctx, config) {
       const getBaseUrl = () => readString(config.baseUrl)
       const getApiTimeout = () => readNumber(config.apiTimeoutMs) || 20_000
       const getGitTimeout = () => readNumber(config.gitTimeoutMs) || 120_000
+      // Everything volatile resolves per call (baseUrl/timeout providers and
+      // the token), so Plugins-page edits apply live with no reload.
       const client = createGitlabClient({
-        baseUrl: getBaseUrl(),
+        baseUrlProvider: getBaseUrl,
         tokenProvider: () => currentToken,
-        timeoutMs: getApiTimeout(),
+        timeoutProvider: getApiTimeout,
       })
-      // Re-point the client's baseUrl/timeout lazily: createGitlabClient
-      // snapshots baseUrl, so rebuild on live config reads is not needed for
-      // the token (provider), but a changed baseUrl takes effect after the
-      // next plugin reload (documented in README "Reload semantics").
       const offTools = registerAgentTools(agentCtx, {
         api: client,
-        baseUrl: getBaseUrl(),
+        getBaseUrl,
         getToken: () => currentToken,
         gitTimeoutMs: getGitTimeout,
         // Per-call policy: the calling session's own sandbox configuration

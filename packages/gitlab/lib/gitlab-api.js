@@ -52,22 +52,27 @@ export function projectIdSegment(project) {
 /**
  * @param {{
  *   baseUrl: string,
+ *   baseUrlProvider?: () => string,
  *   tokenProvider: () => string,
  *   timeoutMs?: number,
+ *   timeoutProvider?: () => number,
  *   fetchImpl?: typeof fetch,
  * }} options
  * @returns {{ get, post, put, del }} JSON-request helpers; each resolves the
  * parsed upstream JSON body (or raw text when text=true), and rejects with
- * GitlabError on failure.
+ * GitlabError on failure. baseUrl and timeout resolve PER REQUEST via their
+ * providers (falling back to the mount-time values), so Plugins-page edits
+ * apply live without a plugin reload — the same contract the token has.
  */
-export function createGitlabClient({ baseUrl, tokenProvider, timeoutMs = 20_000, fetchImpl = fetch }) {
-  const origin = baseUrl.replace(/\/+$/, '')
-  const api = `${origin}/api/v4`
+export function createGitlabClient({ baseUrl, baseUrlProvider = () => baseUrl, tokenProvider, timeoutMs = 20_000, timeoutProvider = () => timeoutMs, fetchImpl = fetch }) {
+  const originOf = () => String(baseUrlProvider() ?? '').replace(/\/+$/, '')
 
   const request = async (method, path, { query, body, signal, text } = {}) => {
+    const origin = originOf()
     if (origin === '') throw new GitlabError('gitlab/not-configured', 'GitLab baseUrl is not set; configure it on the Plugins page (or GITLAB_URL).')
     const token = tokenProvider()
-    const url = new URL(`${api}${path}`)
+    const timeout = timeoutProvider()
+    const url = new URL(`${origin}/api/v4${path}`)
     if (query !== undefined) {
       for (const [name, value] of Object.entries(query)) {
         if (value !== undefined && value !== null && value !== '') url.searchParams.set(name, String(value))
@@ -83,7 +88,7 @@ export function createGitlabClient({ baseUrl, tokenProvider, timeoutMs = 20_000,
           ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: signal ?? AbortSignal.timeout(timeoutMs),
+        signal: signal ?? AbortSignal.timeout(timeout),
       })
     } catch (error) {
       if (error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error

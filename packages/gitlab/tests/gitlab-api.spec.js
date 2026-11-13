@@ -85,3 +85,24 @@ test('text mode returns raw redacted text (job trace)', async () => {
   assert.equal(trace, 'step failed ***')
   assert.equal(cap.init.headers.accept, 'text/plain')
 })
+
+test('client follows a live baseUrl/timeout change via providers (Plugins-page edit)', async () => {
+  let base = 'https://gl-one.example'
+  let timeout = 20_000
+  const cap = {}
+  const client = createGitlabClient({
+    baseUrl: base,
+    baseUrlProvider: () => base,
+    timeoutProvider: () => timeout,
+    tokenProvider: () => 't',
+    fetchImpl: fakeFetch(cap, okJson([])),
+  })
+  await client.get('/projects')
+  assert.equal(cap.url, 'https://gl-one.example/api/v4/projects')
+  base = 'https://gl-two.example/'
+  timeout = 5000
+  await client.get('/projects')
+  assert.equal(cap.url, 'https://gl-two.example/api/v4/projects', 'baseUrl must resolve per request')
+  base = ''
+  await assert.rejects(client.get('/projects'), (e) => e.code === 'gitlab/not-configured')
+})
