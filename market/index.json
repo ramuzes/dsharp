@@ -16,11 +16,11 @@
       "versions": [
         {
           "version": "0.2.2",
-          "publishTimestamp": 1794475477,
+          "publishTimestamp": 1794557996,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "b668212f40e550bc42f33dbbb910946d301c3fe1",
+            "commit": "b4dfaef7a85c96b41945f97758f1afb5e6959d80",
             "path": "packages/airboard"
           }
         }
@@ -34,11 +34,11 @@
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1794475477,
+          "publishTimestamp": 1794557996,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "b668212f40e550bc42f33dbbb910946d301c3fe1",
+            "commit": "b4dfaef7a85c96b41945f97758f1afb5e6959d80",
             "path": "packages/chrome-cdp"
           }
         }
@@ -58,11 +58,11 @@
       "versions": [
         {
           "version": "0.1.2",
-          "publishTimestamp": 1794475477,
+          "publishTimestamp": 1794557996,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "b668212f40e550bc42f33dbbb910946d301c3fe1",
+            "commit": "b4dfaef7a85c96b41945f97758f1afb5e6959d80",
             "path": "packages/feishu-gateway"
           }
         }
@@ -81,12 +81,12 @@
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1naXRsYWI6IGEgc3R5bGl6ZWQgZm94LXRhaWwgYnJhbmNoIG5vZGUgb3ZlciBhIHJlcG8gY2FyZCAtLT4KICA8cmVjdCB4PSI4IiB5PSIxMiIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQwIiByeD0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZTI0MzI5IiBzdHJva2Utd2lkdGg9IjQiIC8+CiAgPHBhdGggZD0iTTIyIDQ0IEwyMiAzMiBRMjIgMjQgMzAgMjQgTDM4IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmYzZkMjYiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjIyIiBjeT0iNDQiIHI9IjQiIGZpbGw9IiNlMjQzMjkiIC8+CiAgPGNpcmNsZSBjeD0iMzgiIGN5PSIyNCIgcj0iNCIgZmlsbD0iI2ZjYTMyNiIgLz4KICA8cGF0aCBkPSJNNDYgMzIgTDQ2IDM4IEw0MCA0MSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmNhMzI2IiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KICA8Y2lyY2xlIGN4PSI0NiIgY3k9IjMyIiByPSIzIiBmaWxsPSIjZTI0MzI5IiAvPgo8L3N2Zz4K",
       "versions": [
         {
-          "version": "0.2.1",
-          "publishTimestamp": 1794475477,
+          "version": "0.2.2",
+          "publishTimestamp": 1794557996,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "b668212f40e550bc42f33dbbb910946d301c3fe1",
+            "commit": "b4dfaef7a85c96b41945f97758f1afb5e6959d80",
             "path": "packages/gitlab"
           }
         }
@@ -99,11 +99,11 @@
       "versions": [
         {
           "version": "0.2.0",
-          "publishTimestamp": 1794475477,
+          "publishTimestamp": 1794557996,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "b668212f40e550bc42f33dbbb910946d301c3fe1",
+            "commit": "b4dfaef7a85c96b41945f97758f1afb5e6959d80",
             "path": "packages/workspace-env"
           }
         }
