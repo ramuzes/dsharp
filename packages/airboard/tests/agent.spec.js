@@ -150,10 +150,15 @@ test('create and update use the documented write contract; update maps markdown 
     .execute({ project_key: 'QUEMINI', id: 'SPEC-7', markdown: 'M2', status: 'active' }, RUN)
   assert.match(updated, /Updated SPEC-7 \(status active\)/)
   assert.deepEqual(client.calls[1].body, { content_markdown: 'M2', status: 'active' }, 'markdown mapped, untouched fields omitted')
+  // close_message rides the PATCH body for PRD/ISSUE closes (server-side
+  // requirement CLOSE_MESSAGE_REQUIRED).
+  await ctx.registered.tools.get('airboard_update_resource')
+    .execute({ project_key: 'QUEMINI', id: 'ISSUE-9', status: 'done', close_message: 'shipped in v1.2' }, RUN)
+  assert.deepEqual(client.calls[2].body, { status: 'done', close_message: 'shipped in v1.2' })
 
   const noop = await ctx.registered.tools.get('airboard_update_resource').execute({ project_key: 'P', id: 'X-1' }, RUN)
   assert.match(noop, /Nothing to update/)
-  assert.equal(client.calls.length, 2, 'no upstream call without fields')
+  assert.equal(client.calls.length, 3, 'no upstream call without fields (2 writes + 1 close)')
 })
 
 test('tool failures render as text naming the error code — never rethrow', async () => {

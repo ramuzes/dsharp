@@ -63,6 +63,7 @@ test('resolveProxyRequest allows the read-only GET surface', () => {
     '/airboard/api/projects/CORE/resources/ADR-1/revisions',
     '/airboard/api/projects/CORE/resources/ADR-1/revisions/3',
     '/airboard/api/projects/CORE/resources/ADR-1/bindings',
+    '/airboard/api/projects/CORE/resources/ADR-1/mr-bindings',
     '/airboard/api/search',
   ]
   for (const url of allowed) {

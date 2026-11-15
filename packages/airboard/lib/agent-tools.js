@@ -152,6 +152,7 @@ export function registerAgentTools(ctx, client) {
       title: { type: 'string', description: 'New title (omit to keep).' },
       markdown: { type: 'string', description: 'Replacement markdown body (omit to keep; updating appends a revision).' },
       status: { type: 'string', enum: STATUSES, description: 'Lifecycle transition to apply.' },
+      close_message: { type: 'string', description: 'Reason recorded with the close action. REQUIRED when transitioning a PRD or ISSUE to done/cancelled (the server rejects without it).' },
     },
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
@@ -159,6 +160,7 @@ export function registerAgentTools(ctx, client) {
       if (args.title !== undefined) body.title = args.title
       if (args.markdown !== undefined) body.content_markdown = args.markdown
       if (args.status !== undefined) body.status = args.status
+      if (args.close_message !== undefined) body.close_message = args.close_message
       if (Object.keys(body).length === 0) {
         return 'Nothing to update: provide at least one of title, markdown, status.'
       }

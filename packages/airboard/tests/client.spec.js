@@ -276,7 +276,7 @@ async function renderBody(routes, { address } = {}) {
     if (route === undefined) {
       // Doc-detail routes (revisions/bindings) default to empty lists so the
       // body degrades exactly as it does live when a route is missing.
-      if (/\/(revisions|bindings)$/.test(text)) {
+      if (/\/(revisions|bindings|mr-bindings)$/.test(text)) {
         return { ok: true, status: 200, json: async () => [] }
       }
       return { ok: false, status: 404, json: async () => ({ error: { code: 'NOT_FOUND', message: text } }) }
@@ -674,6 +674,7 @@ test('the body loads projects and resources through the same-origin proxy', asyn
     '/airboard/api/projects/CORE/resources',
     '/airboard/api/projects/CORE/resources/ADR-2/revisions',
     '/airboard/api/projects/CORE/resources/ADR-2/bindings',
+    '/airboard/api/projects/CORE/resources/ADR-2/mr-bindings',
   ])
   // Project selector offers both projects; CORE selected by default.
   const select = find(view.vdom, (node) => node.props['data-airboard-project'] !== undefined)
@@ -719,8 +720,8 @@ test('selecting a row shows its markdown; the refresh command refetches', async 
   const meta = find(view.vdom, (node) => node.props['data-airboard-doc-meta'] !== undefined)
   assert.ok(texts(meta).join(' ').includes('t:status.cancelled'))
   await view.interact(() => { view.commands.refresh() })
-  // Selection (2 detail calls) + refresh (projects, resources, 2 detail) = 6.
-  assert.equal(view.calls.length, before + 6)
+  // Selection (3 detail calls) + refresh (projects, resources, 3 detail) = 8.
+  assert.equal(view.calls.length, before + 8)
 })
 
 test('a doc with several revisions shows the dropdown and switches content', async () => {
@@ -972,4 +973,36 @@ test('large groups render incrementally behind show-more', async () => {
   const after2 = await view.interact(() => { find(after, (n) => n.props['data-airboard-more'] === 'ADR').props.onClick() })
   assert.equal(rowCount(after2), 55, 'all rows once the cap passes the list')
   assert.equal(find(after2, (n) => n.props['data-airboard-more'] !== undefined), undefined, 'no button once everything shows')
+})
+
+
+test('linked MRs render beside commits; absent MR data hides the section', async () => {
+  const view = await renderBody({
+    '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }] },
+    '/airboard/api/projects/CORE/resources': { body: RESOURCES },
+    '/airboard/api/projects/CORE/resources/ADR-2/bindings': { body: [
+      { sha: '0a7704f4fb6a9017bc781ee6859fbaf784dc5d06', commit_url: 'https://git.example/core/-/commit/0a7704f4fb6a9017bc781ee6859fbaf784dc5d06' },
+    ] },
+    // Defensive shape (contract omits the row): iid-ish ref + *url key.
+    '/airboard/api/projects/CORE/resources/ADR-2/mr-bindings': { body: [
+      { mr_iid: 42, mr_url: 'https://git.example/core/-/merge_requests/42', mr_title: 'Implement ADR-2' },
+      { mr_iid: 42, mr_url: 'https://git.example/core/-/merge_requests/42' },
+      { mr_iid: 7, web_url: 'https://git.example/core/-/merge_requests/7' },
+    ] },
+  })
+  const mrFooter = find(view.vdom, (node) => node.props['data-airboard-mr-bindings'] !== undefined)
+  assert.equal(mrFooter.props['data-airboard-mr-bindings'], '2', 'deduped by ref+url')
+  const links = findAll(mrFooter, (n) => n.props?.href !== undefined).map((n) => n.props.href)
+  assert.deepEqual(links, ['https://git.example/core/-/merge_requests/42', 'https://git.example/core/-/merge_requests/7'],
+    'first http(s) *url key wins (mr_url then web_url)')
+  assert.match(texts(mrFooter).join(' '), /!42/)
+  // The commits footer still renders independently.
+  assert.notEqual(find(view.vdom, (n) => n.props['data-airboard-bindings'] !== undefined), undefined)
+  // Without MR data the whole section stays hidden (no empty noise).
+  const noMr = await renderBody({
+    '/airboard/api/projects': { body: [{ key: 'CORE', name: 'Core' }] },
+    '/airboard/api/projects/CORE/resources': { body: RESOURCES },
+    '/airboard/api/projects/CORE/resources/ADR-2/bindings': { body: [] },
+  })
+  assert.equal(find(noMr.vdom, (n) => n.props['data-airboard-mr-bindings'] !== undefined), undefined)
 })

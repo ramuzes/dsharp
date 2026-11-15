@@ -127,6 +127,7 @@ window.__ModuleLoader__.load({
       revSelect: '选择修订版本',
       revLatest: '（最新）',
       bindings: '关联提交',
+      mrBindings: '关联 MR',
       bindingsEmpty: '暂无关联提交',
       collapseGroup: '折叠 {kind}',
       expandGroup: '展开 {kind}（{count} 条）',
@@ -179,6 +180,7 @@ window.__ModuleLoader__.load({
       revSelect: 'Select revision',
       revLatest: ' (latest)',
       bindings: 'Linked commits',
+      mrBindings: 'Linked MRs',
       bindingsEmpty: 'No linked commits',
       collapseGroup: 'Collapse {kind}',
       expandGroup: 'Expand {kind} ({count})',
@@ -360,16 +362,18 @@ window.__ModuleLoader__.load({
         Promise.all([
           apiFetch(`${base}/revisions`, controller.signal).catch(() => []),
           apiFetch(`${base}/bindings`, controller.signal).catch(() => []),
-        ]).then(([revisions, bindings]) => {
+          apiFetch(`${base}/mr-bindings`, controller.signal).catch(() => []),
+        ]).then(([revisions, bindings, mrBindings]) => {
           if (!alive) return
           setDoc({
             phase: 'ready',
             revisions: Array.isArray(revisions) ? revisions : [],
             bindings: Array.isArray(bindings) ? bindings : [],
+            mrBindings: Array.isArray(mrBindings) ? mrBindings : [],
             rev: null,
             content: null,
           })
-        }).catch(() => { if (alive) setDoc({ phase: 'ready', revisions: [], bindings: [], rev: null, content: null }) })
+        }).catch(() => { if (alive) setDoc({ phase: 'ready', revisions: [], bindings: [], mrBindings: [], rev: null, content: null }) })
         return () => { alive = false; controller.abort() }
       }, [projectKey, selectedId, tick, navRevision])
 
@@ -534,7 +538,8 @@ window.__ModuleLoader__.load({
                   }, `r${String(entry.rev)}${entry.rev === latestRev ? t('revLatest') : ''}`)))
                   : null),
               h(MarkdownText, { text: viewingLatest ? (selected.content_markdown ?? '') : (doc.content ?? ''), labels }),
-              doc.phase === 'ready' ? buildBindingsFooter(t, doc.bindings) : null)))
+              doc.phase === 'ready' ? buildBindingsFooter(t, doc.bindings) : null,
+              doc.phase === 'ready' ? buildMrFooter(t, doc.mrBindings) : null)))
     }
 
     /**
@@ -544,6 +549,26 @@ window.__ModuleLoader__.load({
     function shortSha(sha) {
       const text = String(sha ?? '')
       return text.length > 8 ? text.slice(0, 8) : text
+    }
+
+    /**
+     * Defensive projection of one MR binding. The service contract
+     * (2026-09-27.1) names the mr-bindings endpoint but not its row shape —
+     * pick the first http(s) value under a *url-ish key* for the link and
+     * prefer an explicit iid/title for the label. Re-pin against a real
+     * payload once one exists.
+     * @param {Record<string, unknown>} row
+     * @returns {{ ref: string, url: string | null } | null}
+     */
+    function mrEntryOf(row) {
+      if (row === null || typeof row !== 'object') return null
+      let url = null
+      for (const [key, value] of Object.entries(row)) {
+        if (/url$/i.test(key) && typeof value === 'string' && /^https?:\/\//.test(value)) { url = value; break }
+      }
+      const ref = row.mr_iid ?? row.iid ?? row.mr_title ?? row.title ?? row.id
+      if (ref === undefined && url === null) return null
+      return { ref: ref === undefined ? '' : `!${String(ref)}`, url }
     }
 
     /**
@@ -576,6 +601,35 @@ window.__ModuleLoader__.load({
                 ? h('span', { className: 'airboard-binding-sha' }, label)
                 : h('a', { className: 'airboard-binding-link', href: url, target: '_blank', rel: 'noreferrer' }, label))
           })))
+    }
+
+    /**
+     * The linked-MRs footer: same shape as the commits footer, defensive row
+     * projection (see mrEntryOf). Distinct by ref+url.
+     * @param {Function} t - translator.
+     * @param {ReadonlyArray<Record<string, unknown>>} rows - raw mr-binding rows.
+     */
+    function buildMrFooter(t, rows) {
+      const seen = new Set()
+      const entries = []
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const entry = mrEntryOf(row)
+        if (entry === null) continue
+        const key = `${entry.ref}|${entry.url ?? ''}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        entries.push(entry)
+      }
+      if (entries.length === 0 && (rows === undefined || rows.length === 0)) return null
+      return h('footer', { className: 'airboard-bindings', 'data-airboard-mr-bindings': String(entries.length) },
+        h('div', { className: 'airboard-bindings-head' }, t('mrBindings')),
+        entries.length === 0
+          ? h('div', { className: 'airboard-binding-empty' }, t('bindingsEmpty'))
+          : h('ul', { className: 'airboard-binding-list' }, entries.map((entry, index) =>
+            h('li', { className: 'airboard-binding', key: `${entry.ref}:${String(index)}` },
+              entry.url === null
+                ? h('span', { className: 'airboard-binding-sha' }, entry.ref)
+                : h('a', { className: 'airboard-binding-link', href: entry.url, target: '_blank', rel: 'noreferrer' }, entry.ref)))))
     }
 
     /** Scoped sheet, appended once per activation and removed with the plugin. */
