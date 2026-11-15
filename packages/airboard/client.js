@@ -538,8 +538,8 @@ window.__ModuleLoader__.load({
                   }, `r${String(entry.rev)}${entry.rev === latestRev ? t('revLatest') : ''}`)))
                   : null),
               h(MarkdownText, { text: viewingLatest ? (selected.content_markdown ?? '') : (doc.content ?? ''), labels }),
-              doc.phase === 'ready' ? buildBindingsFooter(t, doc.bindings) : null,
-              doc.phase === 'ready' ? buildMrFooter(t, doc.mrBindings) : null)))
+              doc.phase === 'ready' ? buildMrFooter(t, doc.mrBindings) : null,
+              doc.phase === 'ready' ? buildBindingsFooter(t, doc.bindings) : null)))
     }
 
     /**
