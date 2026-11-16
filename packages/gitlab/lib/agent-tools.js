@@ -142,7 +142,7 @@ export function registerAgentTools(ctx, deps) {
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
       try {
-        const dir = repoDir(args)
+        const dir = repoDir(args, exec)
         const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
         const gitArgs = target.mode === 'remote'
           ? ['fetch', ...(args.prune === false ? [] : ['--prune']), '--tags', 'origin']
@@ -165,12 +165,16 @@ export function registerAgentTools(ctx, deps) {
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
       try {
-        const dir = repoDir(args)
+        const dir = repoDir(args, exec)
         if (args.to === '') return 'Refusing an empty remote ref (that deletes the remote branch). Use gitlab_delete_branch for merged-branch cleanup.'
         const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
-        if (target.mode === 'url') throw new GitlabError('gitlab/git-failed', 'Pushing needs an https origin remote in the clone. Set it with `git remote add origin <project https url>` first.')
+        // ssh-origin or remoteless clones: push to the EXPLICIT https URL — the
+        // token rides the env-injected http.extraHeader for any https target.
+        // The stored origin remote is never rewritten (an ssh origin stays ssh
+        // for the user's own tooling).
         const refspec = `${args.from}:${args.to ?? args.from}`
-        const { stdout, stderr } = await gitRun(['push', 'origin', refspec], dir, exec, { token: token(), timeoutMs: gitTimeout() })
+        const pushTarget = target.mode === 'remote' ? 'origin' : target.url
+        const { stdout, stderr } = await gitRun(['push', pushTarget, refspec], dir, exec, { token: token(), timeoutMs: gitTimeout() })
         return `Pushed ${refspec}.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -188,7 +192,7 @@ export function registerAgentTools(ctx, deps) {
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
       try {
-        const dir = repoDir(args)
+        const dir = repoDir(args, exec)
         const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
         const fetchArgs = target.mode === 'remote'
           ? ['fetch', '--prune', '--tags', 'origin']

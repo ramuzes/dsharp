@@ -21,8 +21,10 @@ host-side, so no per-call sandbox approvals are needed.
   (`sandboxPolicy.resolve` + `sandbox.confine` — the same confinement bash
   uses); the plugin keeps no permission system of its own. Repo paths resolve
   against the session workspace root.
-- Remote transport is HTTPS only (Basic-auth extraHeader via env, never in
-  argv or on-disk config); ssh origins are rewritten on the fly for fetch.
+- Local clones with **ssh origins work as-is**: fetch and push rewrite to the
+  https URL on the fly (token injected host-side via env); the stored origin
+  remote is never modified. Remote transport to GitLab is HTTPS only
+  (Basic-auth extraHeader via env, never in argv or on-disk config).
 - Branch deletion is merged-only: local `git branch -d` (never -D), remote
   deletes verified via the compare API first; no force-push.
 - All output is redacted against the token and its base64 forms.

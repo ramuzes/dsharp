@@ -18,8 +18,9 @@
 
 - git 进程**完全跟随发起会话的沙箱策略**（与该会话的 bash 同边界），插件不自设
   权限；仓库路径基于会话工作区根解析。
-- 远端仅 HTTPS（Basic 认证头经环境变量注入，不进 argv 与磁盘配置）；SSH origin
-  在 fetch 时即时改写。
+- 本地仓库的 **SSH origin 原样可用**：fetch/push 即时改写为 https URL（令牌经
+  宿主环境变量注入），**绝不修改仓库的 origin 远端配置**。对 GitLab 的传输本身
+  仅 HTTPS（Basic 认证头经环境变量注入，不进 argv 与磁盘配置）。
 - 分支删除仅限已合并：本地 `git branch -d`（永不 -D），远端删除先经 compare API
   验证；无 force push。
 - 所有输出对令牌及其 base64 形式统一消毒。

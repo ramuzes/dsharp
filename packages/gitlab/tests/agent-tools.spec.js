@@ -244,3 +244,31 @@ test('apply() mounts tools with reactive config wrappers and writes stages', asy
   rmSync(join(statusFile, '..'), { recursive: true, force: true })
   delete process.env.GITLAB_STATUS_FILE
 })
+
+test('gitlab_git_push with an ssh origin pushes to the explicit https URL without touching the remote', async () => {
+  const { ctx, registered } = makeCtx()
+  const seen = []
+  registerAgentTools(ctx, defaultDeps(makeApi(), async (args) => {
+    if (args[0] === 'config') return { stdout: 'git@gitlab.example.com:group/repo.git\n', stderr: '' }
+    seen.push(args)
+    return { stdout: '', stderr: '' }
+  }))
+  const out = await byName(registered, 'gitlab_git_push').execute({ repo: ROOT, from: 'main' })
+  assert.ok(out.includes('Pushed main:main.'), out)
+  // pushes to the explicit https URL, and never rewrites the remote config
+  assert.deepEqual(seen[0], ['push', 'https://gitlab.example.com/group/repo.git', 'main:main'])
+  const writes = seen.filter((a) => a[0] === 'remote')
+  assert.equal(writes.length, 0, 'must not modify the origin remote')
+})
+
+test('gitlab_git_push with an https origin pushes via origin', async () => {
+  const { ctx, registered } = makeCtx()
+  const seen = []
+  registerAgentTools(ctx, defaultDeps(makeApi(), async (args) => {
+    if (args[0] === 'config') return { stdout: 'https://gitlab.example.com/group/repo.git\n', stderr: '' }
+    seen.push(args)
+    return { stdout: '', stderr: '' }
+  }))
+  await byName(registered, 'gitlab_git_push').execute({ repo: ROOT, from: 'main' })
+  assert.deepEqual(seen[0], ['push', 'origin', 'main:main'])
+})
