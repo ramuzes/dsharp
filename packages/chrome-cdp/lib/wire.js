@@ -44,6 +44,7 @@ export function wireChromeCdp(ctx, config, deps = {}) {
     channel: readVolatile(config.channel, undefined),
     headless: readVolatile(config.headless, false),
     browser: readVolatile(config.browser, undefined),
+    env: readVolatile(config.env, undefined),
     toolCallTimeoutMs: readVolatile(config.toolCallTimeoutMs, undefined),
   }
   const spawn = buildSpawn(structural.server, {
@@ -63,6 +64,10 @@ export function wireChromeCdp(ctx, config, deps = {}) {
     name: 'chrome-cdp',
     command: spawn.command,
     args: spawn.args,
+    // Volatile dict fields wrap their VALUES as references too - JSON shows
+    // strings while schemastery sees objects (deep-wrapped env rejected the
+    // mcp-client Config once already). Unwrap per entry.
+    ...(structural.env === undefined ? {} : { env: Object.fromEntries(Object.entries(structural.env).map(([k, v]) => [k, typeof v?.get === 'function' ? v.get() : v])) }),
     ...structural.toolCallTimeoutMs === undefined ? {} : { toolCallTimeoutMs: structural.toolCallTimeoutMs },
   }
   const mount = deps.mountPerSession ?? mountPerSession

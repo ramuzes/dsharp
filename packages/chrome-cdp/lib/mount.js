@@ -30,7 +30,8 @@ export function mountPerSession(ctx, options, deps = {}) {
         // down by the holder Session's own fiber.
         if (holder && holder.agent === agent) holder = null
       }, options.name + '.holder')
-    } catch {
+    } catch (error) {
+      console.error('chrome-cdp mount failed:', error && (error.stack || error.message))
       // Contained: a failed mount leaves this Session without browser tools;
       // the next agent/created retries. Never destabilize the host.
     }

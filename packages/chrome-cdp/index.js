@@ -17,7 +17,8 @@
  */
 import Schema from '@deepseek-ai/schemastery'
 import { wireChromeCdp } from './lib/wire.js'
-import { APPROVAL_POLICIES, SERVERS } from './lib/servers.js'
+import { APPROVAL_POLICIES } from './lib/gate.js'
+import { SERVERS } from './lib/servers.js'
 
 export const name = 'chrome-cdp'
 // Self-contained mount: no browser-use subsystem required (desktop parity).
@@ -33,6 +34,9 @@ export const Config = Schema.object({
   channel: Schema.string().pattern(/^[a-z][a-z0-9-]*$/).default('stable').volatile(),
   headless: Schema.boolean().default(false).volatile(),
   browser: Schema.string().pattern(/^[a-z][a-z0-9-]*$/).default('chrome').volatile(),
+  // Extra env merged into the MCP child's scrubbed environment (e.g.
+  // PLAYWRIGHT_BROWSERS_PATH for non-default browser installs).
+  env: Schema.dict(String).default({}).volatile(),
   approvalPolicy: Schema.union(APPROVAL_POLICIES.map((p) => Schema.const(p))).default('sensitive').volatile(),
   // Empty = the configured server's documented read-only defaults; a
   // non-empty list replaces them wholesale (see lib/servers.js).

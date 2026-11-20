@@ -68,6 +68,14 @@ test('gate reads policy and per-server list live from the config', async () => {
   assert.deepEqual(await gate({ name: TOOL_PREFIX + 'navigate_page' }, next), { kind: 'allow' })
 })
 
+test('env dict values arrive deep-unwrapped at the mount', () => {
+  const { ctx, calls } = makeCtx()
+  const mounts = []
+  const wrapped = { get: () => '/w/pw-cache' }
+  wireChromeCdp(ctx, { ...baseConfig, env: { PLAYWRIGHT_BROWSERS_PATH: wrapped } }, { mountPerSession: (c, o) => mounts.push(o) })
+  assert.deepEqual(mounts[0].env, { PLAYWRIGHT_BROWSERS_PATH: '/w/pw-cache' })
+})
+
 test('status effect is registered through the plugin fiber (I1 regression)', () => {
   const { ctx, calls } = makeCtx()
   wireChromeCdp(ctx, baseConfig, { mountPerSession: () => {} })
