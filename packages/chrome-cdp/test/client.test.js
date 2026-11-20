@@ -239,7 +239,7 @@ test('apply registers the dictionary, the bundle config card slot, and the chrom
     const dict = captured.locale[0].dicts[key]
     assert.ok(dict, key)
     assert.equal(typeof dict['config.summary'], 'string')
-    for (const field of ['mode', 'endpoint', 'channel', 'approvalPolicy', 'readOnlyTools', 'toolCallTimeoutMs']) {
+    for (const field of ['server', 'mode', 'endpoint', 'channel', 'approvalPolicy', 'readOnlyTools', 'toolCallTimeoutMs']) {
       assert.equal(typeof dict[`config.${field}`], 'string', `${key} config.${field}`)
       assert.equal(typeof dict[`config.${field}Hint`], 'string', `${key} config.${field}Hint`)
     }
@@ -264,7 +264,7 @@ test('apply registers the dictionary, the bundle config card slot, and the chrom
   assert.equal(FakeFormModel.instances.at(-1).disposed, true)
 })
 
-test('the config card renders six staged chrome-cdp-config fields and no secret control', () => {
+test('the config card renders seven staged chrome-cdp-config fields and no secret control', () => {
   const loaded = boot(makeFakeReact().react)
   const captured = applyWith(loaded.plugin)
   const card = captured.slots[0].entry
@@ -280,10 +280,11 @@ test('the config card renders six staged chrome-cdp-config fields and no secret 
   const form = element.children[1]
   assert.equal(form.type, SettingsForm)
   const fields = form.children.filter((child) => typeof child.type === 'function')
-  assert.equal(fields.length, 6)
+  assert.equal(fields.length, 7)
   const rendered = fields.map((child) => child.type(child.props))
   assert.ok(rendered.every((f) => f.type === SettingsValueField), 'no primitive outside the feishu precedent set')
   assert.deepEqual(rendered.map((f) => f.props.id), [
+    'chrome-cdp-config-server',
     'chrome-cdp-config-mode',
     'chrome-cdp-config-endpoint',
     'chrome-cdp-config-channel',
@@ -297,8 +298,10 @@ test('the config card renders six staged chrome-cdp-config fields and no secret 
   // test subscribes first too — cache invalidation rides the subscription.
   const off = face.hooks.config.subscribe(() => {})
   rendered[0].props.onEdit('bogus')
-  assert.equal(face.hooks.config.getSnapshot().mode.invalid, true, 'illegal mode blocks the save')
-  rendered[0].props.onEdit('ws')
+  assert.equal(face.hooks.config.getSnapshot().server.invalid, true, 'illegal server blocks the save')
+  rendered[0].props.onEdit('playwright')
+  assert.equal(face.hooks.config.getSnapshot().server.invalid, false)
+  rendered[1].props.onEdit('ws')
   const next = face.hooks.config.getSnapshot()
   assert.equal(next.mode.text, 'ws')
   assert.equal(next.mode.invalid, false)
@@ -383,7 +386,7 @@ test('field specs mirror the host Config schema', () => {
   assert.equal(mode.format('ws'), 'ws')
   assert.deepEqual(mode.parse(' auto '), { kind: 'set', value: 'auto' })
   assert.equal(mode.parse('bogus'), undefined, 'illegal mode blocks the save')
-  assert.equal(mode.parse(''), undefined, 'required mode never stages a clear')
+  assert.deepEqual(mode.parse(''), { kind: 'clear' }, 'blank mode re-inherits (server legality enforced host-side)')
 
   // endpoint: plain string, clearable (auto mode carries none).
   const endpoint = specOf('endpoint')

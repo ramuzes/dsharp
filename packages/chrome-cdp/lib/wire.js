@@ -1,42 +1,32 @@
 /**
  * Host-half wiring: exclusive per-Session MCP mount + approval gate + status.
- * mountSessionMcp owns browserUse.register, per-Agent scopes, exclusivity,
- * busy-session masking, and creation-time discovery
- * (packages/experimental/browser-use-runtime/src/mcp.ts:102-194).
+ * Since the 2026-11-20 revision (ADR-0004) the mount is self-contained
+ * (lib/mount.js) - the desktop distribution does not carry the browser-use
+ * subsystem - and the MCP server engine is selectable (lib/servers.js).
  * deps is injectable so tests never spawn real processes.
  *
- * Volatile wiring: the Loader parses `.volatile()` fields as stable reference
- * objects read via `.get()` — NOT plain values (docs/cordis-tutorial/
+ * Volatile wiring: the Loader parses .volatile() fields as stable reference
+ * objects read via .get() - NOT plain values (docs/cordis-tutorial/
  * 05-config.md "Volatile fields"; @deepseek-ai/schemastery src/index.ts:521-526).
  * A volatile-only edit is committed INTO those same references without a
- * remount — the config object is never swapped (vendor/loader/src/config/
- * entry.ts:146-197 `_commitVolatile`, which calls cosmokit src/volatile.ts:84-85
- * `updateVolatile` on the running fiber's refs), and the emitted
+ * remount - the config object is never swapped (vendor/loader/src/config/
+ * entry.ts:146-197 _commitVolatile, which calls cosmokit src/volatile.ts:84-85
+ * updateVolatile on the running fiber's refs), and the emitted
  * 'loader/volatile-update' event is notification-only. So readVolatile()
  * re-reads each reference on every call and approvalPolicy/readOnlyTools
- * edits apply live with NO subscription. Structural fields (mode/endpoint/
- * channel/toolCallTimeoutMs) are bound at activation — mount args are static
- * (mcp.ts:102-107) — and apply after plugin reload.
+ * edits apply live with NO subscription. Structural fields (server/mode/
+ * endpoint/channel/headless/browser/toolCallTimeoutMs) are bound at
+ * activation and apply after plugin reload.
  */
-import { buildSpawn } from './args.js'
-import { registerApprovalGate, DEFAULT_READ_ONLY_TOOLS } from './gate.js'
+import { buildSpawn, READ_ONLY_BY_SERVER, DEFAULT_SERVER, serverVersion } from './servers.js'
+import { registerApprovalGate } from './gate.js'
 import { registerStatus } from './status.js'
-
-/**
- * Cached lazy runtime import (controller ruling; the feishu-gateway loadSdk
- * pattern, packages/feishu-gateway/index.js:48-50). Fires only when
- * deps.mountSessionMcp is not injected, so unit tests never load it.
- */
-let runtimePromise
-function loadRuntime() {
-  runtimePromise ??= import('@deepseek-ai/dsh-experimental-browser-use-runtime/mcp')
-  return runtimePromise
-}
+import { mountPerSession } from './mount.js'
 
 /**
  * Read a config field that is a plain value (unit tests, non-volatile fields)
  * or a Volatile reference (volatile fields on the host). Returns the current
- * snapshot — never retains it across operations (05-config.md:91).
+ * snapshot - never retains it across operations (05-config.md:91).
  */
 function readVolatile(value, fallback) {
   if (value === undefined || value === null) return fallback
@@ -48,31 +38,38 @@ export function wireChromeCdp(ctx, config, deps = {}) {
   // ("Bad config fails the load with a precise error", docs/cordis-tutorial/05-config.md).
   // Unwrap BEFORE buildSpawn: on the host these arrive as Volatile references.
   const structural = {
+    server: readVolatile(config.server, DEFAULT_SERVER),
     mode: readVolatile(config.mode, undefined),
     endpoint: readVolatile(config.endpoint, undefined),
     channel: readVolatile(config.channel, undefined),
+    headless: readVolatile(config.headless, false),
+    browser: readVolatile(config.browser, undefined),
     toolCallTimeoutMs: readVolatile(config.toolCallTimeoutMs, undefined),
   }
-  const spawn = buildSpawn({ mode: structural.mode, endpoint: structural.endpoint, channel: structural.channel })
+  const spawn = buildSpawn(structural.server, {
+    mode: structural.mode,
+    endpoint: structural.endpoint,
+    channel: structural.channel,
+    headless: structural.headless,
+    browser: structural.browser,
+  })
+  // An empty readOnlyTools list means "the server's documented defaults";
+  // a non-empty list replaces them wholesale.
+  const resolveList = () => {
+    const list = readVolatile(config.readOnlyTools, undefined)
+    return Array.isArray(list) && list.length > 0 ? list : [...READ_ONLY_BY_SERVER[structural.server]]
+  }
   const mountOptions = {
     name: 'chrome-cdp',
-    exclusive: true,
     command: spawn.command,
     args: spawn.args,
     ...structural.toolCallTimeoutMs === undefined ? {} : { toolCallTimeoutMs: structural.toolCallTimeoutMs },
   }
-  if (deps.mountSessionMcp !== undefined) {
-    deps.mountSessionMcp(ctx, mountOptions)
-  } else {
-    // Contained: a failed runtime import or mount must never leave a dangling
-    // rejection that kills the host (AGENTS.md fatal-load-failure rule).
-    loadRuntime()
-      .then((Runtime) => Runtime.mountSessionMcp(ctx, mountOptions))
-      .catch((error) => { ctx.logger?.error?.(`chrome-cdp: session MCP mount failed: ${String(error)}`) })
-  }
+  const mount = deps.mountPerSession ?? mountPerSession
+  mount(ctx, mountOptions, deps)
   const getSettings = () => ({
     policy: readVolatile(config.approvalPolicy, 'sensitive'),
-    readOnlyTools: readVolatile(config.readOnlyTools, DEFAULT_READ_ONLY_TOOLS),
+    readOnlyTools: resolveList(),
   })
   registerApprovalGate(ctx, getSettings)
   const getState = () => {
@@ -80,28 +77,22 @@ export function wireChromeCdp(ctx, config, deps = {}) {
     return {
       // Structural truth of what is actually mounted (bound at wiring time;
       // edits take effect after plugin reload).
+      server: structural.server,
       mode: structural.mode,
       ...structural.endpoint === undefined ? {} : { endpoint: structural.endpoint },
-      channel: structural.channel ?? 'stable',
+      ...(structural.server === 'chrome-devtools' ? { channel: structural.channel ?? 'stable' } : {}),
       approvalPolicy: settings.policy,
       readOnlyToolCount: settings.readOnlyTools.length,
-      // Spec Status bullet lists the upstream version; pinned exactly in
-      // package.json (chrome-devtools-mcp 1.9.0 — a stable tool-name surface
-      // is the precondition for the approval lists).
-      upstreamVersion: '1.9.0',
+      serverVersion: serverVersion(structural.server),
       serverEntry: spawn.args[0],
       exclusive: true,
     }
   }
   // The commands runtime owns register()'s effect on ITS OWN ctx
-  // (packages/interaction/commands/src/index.ts:285-292
-  // 'this.layers.effect(this.ctx, …)'), so an unwrapped /cdc registration
-  // SURVIVES plugin unload; on re-load the duplicate name throws in the
-  // global layer (index.ts:96-104) and status.js's contained catch swallows
-  // it — leaving the old registration serving a stale getState forever
-  // (final review I1). Route the disposer through the plugin's own fiber
-  // (cordis fiber.effect, node_modules/@deepseek-ai/cordis/lib/types/
-  // fiber.d.ts:145-157; feishu-gateway pattern packages/feishu-gateway/
-  // client.js:353) so unload unregisters it.
+  // (packages/interaction/commands/src/index.ts:285-292), so an unwrapped
+  // /cdc registration SURVIVES plugin unload and the re-load throws a
+  // duplicate-name error that status.js would swallow - stale /cdc forever
+  // (final review I1). Route the disposer through the plugin's own fiber so
+  // unload unregisters it.
   ctx.effect(() => registerStatus(ctx, getState), 'chrome-cdp: status')
 }

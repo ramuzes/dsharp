@@ -45,9 +45,11 @@ window.__ModuleLoader__.load({
     const NS = 'chromeCdp'
 
     const zh = {
-      'config.summary': '通过 chrome-devtools-mcp 操作本机真实 Chrome：连接模式、调试端点、审批策略与只读工具清单。',
+      'config.summary': '操作真实 Chrome：可选 MCP 引擎（playwright / chrome-devtools），连接模式、调试端点、审批策略与只读工具清单。',
+      'config.server': 'MCP 引擎',
+      'config.serverHint': 'playwright（默认，launch/url/ws/extension）或 chrome-devtools（auto/url/ws；auto 为 Chrome ≥144 授权模式）',
       'config.mode': '连接模式',
-      'config.modeHint': 'auto / url / ws 三选一：auto（Chrome ≥144 授权模式）、url（http(s) 调试地址）、ws（ws(s) 端点）',
+      'config.modeHint': 'playwright：launch / url / ws / extension（extension 需装 Playwright Extension 扩展）；chrome-devtools：auto / url / ws',
       'config.endpoint': '调试端点',
       'config.endpointHint': 'mode=url 填 http://…，mode=ws 填 ws://…；mode=auto 必须留空。结构字段，保存后重载插件生效',
       'config.channel': 'Chrome 渠道',
@@ -82,9 +84,11 @@ window.__ModuleLoader__.load({
     }
 
     const en = {
-      'config.summary': 'Drive the user\u2019s real Chrome over CDP via chrome-devtools-mcp: connection mode, debug endpoint, approval policy, and the read-only tool list.',
+      'config.summary': 'Drive a real Chrome over CDP: selectable MCP engine (playwright / chrome-devtools), connection mode, debug endpoint, approval policy, and the read-only tool list.',
+      'config.server': 'MCP engine',
+      'config.serverHint': 'playwright (default; launch/url/ws/extension) or chrome-devtools (auto/url/ws; auto is the Chrome ≥144 approval mode)',
       'config.mode': 'Connection mode',
-      'config.modeHint': 'One of auto / url / ws — auto (Chrome ≥144 approval mode), url (an http(s) debug address), ws (a ws(s) endpoint)',
+      'config.modeHint': 'playwright: launch / url / ws / extension (extension needs the Playwright Extension); chrome-devtools: auto / url / ws',
       'config.endpoint': 'Debug endpoint',
       'config.endpointHint': 'http://… for mode url, ws://… for mode ws; must stay empty in auto mode. Structural: takes effect after plugin reload',
       'config.channel': 'Chrome channel',
@@ -154,6 +158,7 @@ window.__ModuleLoader__.load({
       }
     }
 
+    const ServerField = textField('server', 'chrome-cdp-config-server')
     const ModeField = textField('mode', 'chrome-cdp-config-mode')
     const EndpointField = textField('endpoint', 'chrome-cdp-config-endpoint')
     const ChannelField = textField('channel', 'chrome-cdp-config-channel')
@@ -168,7 +173,8 @@ window.__ModuleLoader__.load({
      * re-inherits the schema default. mode is required with no default, so
      * an empty mode draft is invalid rather than a doomed clear.
      */
-    const MODES = ['auto', 'url', 'ws'] // index.js Schema.union([...]).required()
+    const SERVERS = ['playwright', 'chrome-devtools'] // index.js Schema.union(...).default('playwright')
+    const MODES = ['auto', 'url', 'ws', 'launch', 'extension'] // union of both servers' modes; legality enforced host-side
     const APPROVAL_POLICIES = ['sensitive', 'all', 'none'] // lib/gate.js (host truth)
     const CHANNEL_PATTERN = /^[a-z][a-z0-9-]*$/ // index.js Schema.string().pattern(...)
     const enumField = (field, legal, emptyIsClear) => ({
@@ -180,7 +186,8 @@ window.__ModuleLoader__.load({
         return legal.includes(trimmed) ? { kind: 'set', value: trimmed } : undefined
       },
     })
-    const modeField = enumField('mode', MODES, false)
+    const serverField = enumField('server', SERVERS, true)
+    const modeField = enumField('mode', MODES, true)
     const approvalPolicyField = enumField('approvalPolicy', APPROVAL_POLICIES, true)
     const channelField = {
       field: 'channel',
@@ -248,7 +255,7 @@ window.__ModuleLoader__.load({
       // Structural fields whose staged form text differs from the mounted
       // snapshot: the mount keeps running the OLD values until plugin reload.
       const pending = state !== null && state !== undefined && state.available !== false && form !== undefined
-        && ['mode', 'endpoint', 'channel'].some(f => {
+        && ['server', 'mode', 'endpoint', 'channel'].some(f => {
           const text = form[f]?.text
           return text !== undefined && text !== '' && String(state[f] ?? '') !== String(text)
         })
@@ -293,9 +300,10 @@ window.__ModuleLoader__.load({
       const saveAndRefresh = async (...args) => { try { return await save(...args) } finally { refreshStatus() } }
       const fieldProps = { t, state, edit, resetField }
       return h(React.Fragment, null,
-        h(StatusSection, { t, status, refresh: refreshStatus, form: { mode: state.mode, endpoint: state.endpoint, channel: state.channel } }),
+        h(StatusSection, { t, status, refresh: refreshStatus, form: { server: state.server, mode: state.mode, endpoint: state.endpoint, channel: state.channel } }),
         h(SettingsForm, { labels: formLabels(t), state, onSave: saveAndRefresh, onDiscard: discard },
-          h(ModeField, { t, ...fieldProps }),
+          h(ServerField, { t, ...fieldProps }),
+        h(ModeField, { t, ...fieldProps }),
           h(EndpointField, { t, ...fieldProps }),
           h(ChannelField, { t, ...fieldProps }),
           h(ApprovalPolicyField, { t, ...fieldProps }),
@@ -317,6 +325,7 @@ window.__ModuleLoader__.load({
       const configForm = ctx.configForms.get(ROW)
 
       const model = new SettingsFormModel(configForm, [
+        serverField,
         modeField,
         settingsTextField('endpoint'),
         channelField,
@@ -327,6 +336,7 @@ window.__ModuleLoader__.load({
       const formStore = model.bind(() => ({}))
       const computeSnapshot = () => ({
         ...model.shell(),
+        server: model.field('server'),
         mode: model.field('mode'),
         endpoint: model.field('endpoint'),
         channel: model.field('channel'),

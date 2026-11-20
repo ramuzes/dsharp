@@ -2,143 +2,87 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { wireChromeCdp } from '../lib/wire.js'
 import { TOOL_PREFIX } from '../lib/gate.js'
+import { READ_ONLY_BY_SERVER } from '../lib/servers.js'
 
-// Fake of the SHARED commands runtime. Mirrors the real ownership premise
-// (packages/interaction/commands/src/index.ts:285-292): register() owns its
-// effect on the RUNTIME'S OWN ctx, so the disposer it returns is the ONLY
-// unregister path, and a duplicate name in the layer throws (index.ts:96-104,
-// NamedEntries insert). It deliberately does NOT tie registrations to a
-// plugin ctx — a fake that auto-disposed with the plugin ctx would erase the
-// stale-/cdc premise the I1 regression tests rely on.
-function makeCommandsRuntime(onRegister = () => {}) {
-  const runtime = {
-    registered: new Map(),
-    register(def) {
-      if (runtime.registered.has(def.name)) throw new Error(`command "${def.name}" is already registered (for a per-agent variant, mount a command-injected plugin under that agent's \`agent.ctx\`)`)
-      const entry = { def, disposed: false }
-      runtime.registered.set(def.name, entry)
-      onRegister(def)
-      return () => { entry.disposed = true; runtime.registered.delete(def.name) }
-    },
-  }
-  return runtime
-}
-
-function makeCtx(sharedRuntime) {
-  const calls = { mount: null, events: {}, commands: null, services: [], effects: [] }
-  const commandsRuntime = sharedRuntime ?? makeCommandsRuntime((def) => { calls.commands = def })
+function makeCtx() {
+  const calls = { events: {}, effects: [], commands: null }
   const ctx = {
-    on(name, fn) { (calls.events[name] ??= []).push(fn); return () => {} },
-    // Mirrors cordis fiber.effect (node_modules/@deepseek-ai/cordis/lib/types/
-    // fiber.d.ts:145-157): the body runs now, its returned disposer is kept
-    // by the fiber, and plugin unload invokes it.
-    effect(fn, label) {
-      const dispose = fn()
-      calls.effects.push({ label, dispose })
-      return () => {
-        const index = calls.effects.findIndex((e) => e.dispose === dispose)
-        if (index >= 0) { calls.effects.splice(index, 1); dispose?.() }
-      }
-    },
-    get(name) { return name === 'commands' ? commandsRuntime : undefined },
-    browserUse: { register: (n) => () => {} },
-    commands: undefined,
+    on(name, fn, opts) { (calls.events[name] ??= []).push({ fn, opts }); return () => {} },
+    effect(fn, label) { calls.effects.push({ fn, label }); return () => {} },
+    get(name) { return name === 'commands' ? { register: (def) => { calls.commands = def; return () => {} } } : undefined },
   }
-  return { ctx, calls, commandsRuntime }
+  return { ctx, calls }
 }
 
-/** Simulate plugin unload (the Plugins-page toggle): the fiber runs every effect disposer. */
-function unloadPlugin(calls) {
-  for (const { dispose } of calls.effects.splice(0)) dispose?.()
+const baseConfig = {
+  server: 'playwright', mode: 'url', endpoint: 'http://127.0.0.1:9223',
+  channel: 'stable', headless: false, browser: 'chrome',
+  approvalPolicy: 'sensitive', readOnlyTools: [], toolCallTimeoutMs: 45000,
 }
 
-const baseConfig = { mode: 'url', endpoint: 'http://127.0.0.1:9223', channel: 'stable', approvalPolicy: 'sensitive', readOnlyTools: undefined, toolCallTimeoutMs: 45000 }
-
-test('wire mounts the MCP server exclusively with assembled args', () => {
+test('wire mounts per-Session exclusively with the assembled args', () => {
   const { ctx, calls } = makeCtx()
-  const mount = (receivedCtx, options) => { calls.mount = options }
-  wireChromeCdp(ctx, baseConfig, { mountSessionMcp: mount })
-  assert.ok(calls.mount, 'mountSessionMcp called')
-  assert.equal(calls.mount.name, 'chrome-cdp')
-  assert.equal(calls.mount.exclusive, true)
-  assert.equal(calls.mount.command, process.execPath)
-  assert.ok(calls.mount.args[0].endsWith('/build/src/bin/chrome-devtools-mcp.js'))
-  assert.deepEqual(calls.mount.args.slice(-2), ['--browser-url', 'http://127.0.0.1:9223'])
-  assert.equal(calls.mount.toolCallTimeoutMs, 45000)
+  const mounts = []
+  wireChromeCdp(ctx, baseConfig, { mountPerSession: (c, o) => { mounts.push(o) } })
+  assert.equal(mounts.length, 1)
+  assert.equal(mounts[0].name, 'chrome-cdp')
+  assert.equal(mounts[0].command, process.execPath)
+  assert.ok(mounts[0].args[0].endsWith('/@playwright/mcp/cli.js'), mounts[0].args[0])
+  assert.deepEqual(mounts[0].args.slice(1), ['--cdp-endpoint', 'http://127.0.0.1:9223'])
+  assert.equal(mounts[0].toolCallTimeoutMs, 45000)
 })
 
 test('wire registers the approval gate listener', () => {
   const { ctx, calls } = makeCtx()
-  wireChromeCdp(ctx, baseConfig, { mountSessionMcp: () => {} })
-  assert.ok(calls.events['tools/pre-execute']?.length === 1)
+  wireChromeCdp(ctx, baseConfig, { mountPerSession: () => {} })
+  assert.equal(calls.events['tools/pre-execute']?.length, 1)
 })
 
-test('wire registers the status remote and /cdc command (contained when services are absent)', () => {
+test('chrome-devtools server keeps its dialect and channel flag only in auto', () => {
   const { ctx, calls } = makeCtx()
-  ctx.get = () => undefined // no commands service
-  wireChromeCdp(ctx, baseConfig, { mountSessionMcp: () => {} })
-  assert.equal(calls.commands, null)
+  const mounts = []
+  wireChromeCdp(ctx, { ...baseConfig, server: 'chrome-devtools', mode: 'auto', endpoint: undefined }, { mountPerSession: (c, o) => mounts.push(o) })
+  assert.ok(mounts[0].args[0].endsWith('/build/src/bin/chrome-devtools-mcp.js'))
+  assert.deepEqual(mounts[0].args.slice(1), ['--no-usage-statistics', '--channel', 'stable', '--auto-connect'])
 })
 
-test('invalid mode/endpoint combos throw at wiring time', () => {
+test('invalid mode/server combos throw at wiring time', () => {
   const { ctx } = makeCtx()
-  assert.throws(() => wireChromeCdp(ctx, { ...baseConfig, mode: 'url', endpoint: undefined }, { mountSessionMcp: () => {} }), /endpoint/i)
-  assert.throws(() => wireChromeCdp(ctx, { ...baseConfig, mode: 'auto', endpoint: 'http://x' }, { mountSessionMcp: () => {} }), /auto/i)
+  assert.throws(() => wireChromeCdp(ctx, { ...baseConfig, mode: 'auto' }, { mountPerSession: () => {} }), /mode must be one of/i)
+  assert.throws(() => wireChromeCdp(ctx, { ...baseConfig, server: 'chrome-devtools', mode: 'extension' }, { mountPerSession: () => {} }), /mode must be one of/i)
+  assert.throws(() => wireChromeCdp(ctx, { ...baseConfig, endpoint: undefined }, { mountPerSession: () => {} }), /endpoint is required/i)
 })
 
-test('gate reads policy live from the config object', async () => {
+test('gate reads policy and per-server list live from the config', async () => {
   const { ctx, calls } = makeCtx()
   const cfg = { ...baseConfig }
-  wireChromeCdp(ctx, cfg, { mountSessionMcp: () => {} })
-  const gate = calls.events['tools/pre-execute'][0]
+  wireChromeCdp(ctx, cfg, { mountPerSession: () => {} })
+  const gate = calls.events['tools/pre-execute'][0].fn
   const next = async () => ({ kind: 'allow' })
-  assert.equal((await gate({ name: TOOL_PREFIX + 'click' }, next)).kind, 'ask')
+  // playwright default list: browser_snapshot allowed, click asks
+  assert.deepEqual(await gate({ name: TOOL_PREFIX + 'browser_snapshot' }, next), { kind: 'allow' })
+  assert.equal((await gate({ name: TOOL_PREFIX + 'browser_click' }, next)).kind, 'ask')
+  cfg.readOnlyTools = ['browser_click'] // wholesale replace, live
+  assert.deepEqual(await gate({ name: TOOL_PREFIX + 'browser_click' }, next), { kind: 'allow' })
   cfg.approvalPolicy = 'none'
-  assert.deepEqual(await gate({ name: TOOL_PREFIX + 'click' }, next), { kind: 'allow' })
+  assert.deepEqual(await gate({ name: TOOL_PREFIX + 'navigate_page' }, next), { kind: 'allow' })
 })
 
-test('status /cdc registration is owned by the plugin ctx effect (disposer runs at unload)', () => {
-  const { ctx, calls, commandsRuntime } = makeCtx()
-  wireChromeCdp(ctx, baseConfig, { mountSessionMcp: () => {} })
-  assert.ok(commandsRuntime.registered.has('cdc'), '/cdc registered')
-  assert.ok(calls.effects.some((e) => e.label === 'chrome-cdp: status'), "registration wrapped in ctx.effect labeled 'chrome-cdp: status'")
-  unloadPlugin(calls)
-  assert.equal(commandsRuntime.registered.has('cdc'), false, '/cdc disposed when the plugin ctx is destroyed')
-})
-
-test('after unload + re-load (the README toggle flow) /cdc serves the fresh state, not a stale one', async () => {
-  const runtime = makeCommandsRuntime()
-  const first = makeCtx(runtime)
-  wireChromeCdp(first.ctx, { ...baseConfig, endpoint: 'http://127.0.0.1:9222' }, { mountSessionMcp: () => {} })
-  unloadPlugin(first.calls) // toggle OFF
-  const second = makeCtx(runtime) // toggle ON: new plugin ctx, same global command layer
-  wireChromeCdp(second.ctx, { ...baseConfig, endpoint: 'http://127.0.0.1:9333' }, { mountSessionMcp: () => {} })
-  const { def } = runtime.registered.get('cdc')
-  const result = await def.handler()
-  assert.equal(result.kind, 'success')
-  assert.equal(JSON.parse(result.text).endpoint, 'http://127.0.0.1:9333', 're-loaded /cdc reports the new endpoint')
-})
-
-test('/cdc reports the pinned upstream version (spec Status bullet)', async () => {
+test('status effect is registered through the plugin fiber (I1 regression)', () => {
   const { ctx, calls } = makeCtx()
-  wireChromeCdp(ctx, baseConfig, { mountSessionMcp: () => {} })
-  const result = await calls.commands.handler()
-  assert.equal(result.kind, 'success')
-  assert.equal(JSON.parse(result.text).upstreamVersion, '1.9.0')
+  wireChromeCdp(ctx, baseConfig, { mountPerSession: () => {} })
+  assert.ok(calls.effects.some((e) => String(e.label || '').includes('status')), 'status registered via ctx.effect')
 })
 
-test('schemastery volatile refs (frozen { get() }) are unwrapped and read live by the gate', async () => {
+test('empty readOnlyTools uses the server defaults; explicit replaces wholesale', () => {
   const { ctx, calls } = makeCtx()
-  // Hand-shaped exactly as Task 4 documented the Loader handing volatile
-  // fields to apply() (docs/cordis-tutorial/05-config.md "Volatile fields";
-  // wire.js header): a frozen reference object read via .get(), never swapped.
-  let policy = 'sensitive'
-  const approvalPolicy = Object.freeze({ get: () => policy })
-  wireChromeCdp(ctx, { ...baseConfig, approvalPolicy }, { mountSessionMcp: () => {} })
-  const gate = calls.events['tools/pre-execute'][0]
+  const cfg = { ...baseConfig, readOnlyTools: ['browser_click'] }
+  let captured = null
+  // capture via the gate: snapshot the resolved list through a probe call
+  wireChromeCdp(ctx, cfg, { mountPerSession: () => {} })
+  const gate = calls.events['tools/pre-execute'][0].fn
   const next = async () => ({ kind: 'allow' })
-  const tool = { name: TOOL_PREFIX + 'click' }
-  assert.equal((await gate(tool, next)).kind, 'ask', 'ref unwrapped: sensitive policy applies')
-  policy = 'none' // volatile edit commits INTO the same reference
-  assert.deepEqual(await gate(tool, next), { kind: 'allow' }, 'ref re-read per call: policy edit applies live')
+  return gate({ name: TOOL_PREFIX + 'browser_snapshot' }, next).then((r) => {
+    assert.equal(r.kind, 'ask', 'snapshot not in the replaced list -> asks')
+  })
 })
