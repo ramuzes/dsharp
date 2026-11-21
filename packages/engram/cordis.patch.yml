@@ -1,0 +1,13 @@
+# dsh-engram bundle layer: one row mounting the Host half (Task 8 wires
+# apply(); the row exists from Task 1 so the manifest matches the plan).
+#
+# Per ADR-0005 nothing secret or deployment-specific lives here. The only
+# env fallback is the generic, non-secret `port` field (empty = engram's
+# protocol default); everything else defaults from the schema and is edited
+# on the Plugins page (later layers win, per the usual layer order). Tokens
+# arrive only as credential-ref names, resolved through ctx.credentials.
+- insert:
+    - id: engram
+      name: dsh-engram
+      config:
+        port: !!js "process.env.DSH_ENGRAM_PORT ?? ''"

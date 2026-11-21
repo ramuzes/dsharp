@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "engram memory",
+    "description": "Durable agent memory backed by a local engram daemon: six curated memory tools (search, save, context, timeline, stats, projects), DSH↔engram session bridging, optional prompt injection, and cloud-sync status. Daemon stewardship is host-side; secrets stay in the credential store."
+  }
+}
