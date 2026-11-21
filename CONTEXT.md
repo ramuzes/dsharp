@@ -73,3 +73,33 @@ _Avoid_: handler、回调
 
 出站消息的格式回退顺序：markdown → post 富文本（md tag）→ 纯文本；超长分片多条发送。任何格式失败都沿链降级，保证必达。
 _Avoid_: 重试、兼容模式
+
+### Memory plugin (dsh-engram / 记忆插件)
+
+A host plugin embedding engram persistent memory into DSH: an HTTP client of the local engram daemon registering curated memory tools, with the project resolved per session and the store shared across workspaces.
+_Avoid_: engram MCP wrapper, memory MCP (those name the rejected integration shapes)
+
+### Daemon stewardship (守护进程托管)
+
+The plugin's responsibility model for the `engram run -d` daemon: health probing first, spawning on demand per config or connecting to an existing instance, never racing a user-started one.
+_Avoid_: resident studio (engram has no "studio" concept), hosting (as a generic term)
+
+### Project resolution (项目解析)
+
+Mapping a session's working directory to an engram project: the server probe (`GET /project/current?cwd=`) first, explicit per-workspace config overriding, ambiguous results passed through structurally to the model.
+_Avoid_: cwd binding (cwd is only a resolution input, not a process property)
+
+### Session bridge (会话桥)
+
+The lifecycle mapping between DSH sessions and engram sessions: register the engram session on agent creation (lease renewed by activity), finalize on agent end.
+_Avoid_: session sync, session mirroring
+
+### Proactive context injection (主动记忆注入)
+
+A configurable behavior that injects a bounded engram context summary into the prompt at assembly time, distinct from retrieval tools the model calls.
+_Avoid_: auto-memory (confusable with engram autosync)
+
+### Save-worthiness policy (保存价值判断)
+
+The explicit criteria, stated in the tool description and prompt section, for what the agent should persist: durable decisions, preferences, discovered constraints, and conclusions — never transient, re-derivable, secret, or duplicate content. Saving is always the agent's own judgment; the plugin never bulk-captures conversation content.
+_Avoid_: auto-save, capture-all
