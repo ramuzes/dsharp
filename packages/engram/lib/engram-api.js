@@ -3,10 +3,13 @@
  *
  * Error mapping is exact per the engram contract:
  *   network failure      -> engram/unreachable
+ *   timeout              -> engram/timeout (NOT a daemon-death signal)
+ *   caller cancellation  -> engram/aborted (NOT a daemon-death signal)
  *   non-2xx response     -> engram/http     (status + info = parsed JSON body)
  *   non-JSON 2xx body    -> engram/bad-response
  * Every failure path throws a typed EngramError, never a raw exception,
- * and abort/timeout surfaces as engram/unreachable instead of hanging.
+ * Cancellation and timeout surface as their own codes so readiness logic can
+ * ignore them; only connection-class failures mean the daemon may be dead.
  */
 export class EngramError extends Error {
   /**
@@ -95,8 +98,18 @@ export function createEngramClient({
         signal: timeoutSignal,
       })
     } catch (err) {
-      // fetch failure, external abort, and timeout all land here as
-      // TypeError/AbortError — surface as one typed unreachable error.
+      // Distinguish caller cancellation / timeout from connection-class
+      // failure: only the latter may mean the daemon is dead. Conflating
+      // them let one cancelled or slow call poison the readiness memo and
+      // force a full re-ensure (audit #5).
+      if (err?.name === 'TimeoutError' || (err?.name === 'AbortError' && signal?.aborted !== true)) {
+        throw new EngramError('engram/timeout',
+          `engram/timeout: ${method} ${path} did not answer within the budget (${err?.message ?? err})`)
+      }
+      if (err?.name === 'AbortError') {
+        throw new EngramError('engram/aborted',
+          `engram/aborted: ${method} ${path} was cancelled by the caller`)
+      }
       throw new EngramError('engram/unreachable',
         `engram/unreachable: request to ${path} failed (${err?.message ?? err})`)
     }

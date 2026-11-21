@@ -120,7 +120,7 @@ test('network failure maps to engram/unreachable', async () => {
   )
 })
 
-test('external signal abort maps to engram/unreachable, not a hang', async () => {
+test('external signal abort maps to engram/aborted — not a daemon-death signal (audit #5)', async () => {
   const controller = new AbortController()
   const fetchImpl = makeFetch((_url, init) =>
     new Promise((_resolve, reject) => {
@@ -128,17 +128,19 @@ test('external signal abort maps to engram/unreachable, not a hang', async () =>
         reject(Object.assign(new TypeError('fetch failed'), { name: 'AbortError' })))
     }))
   const client = createEngramClient({ ...baseDeps, fetchImpl })
+  const later = client.get('/health', undefined, controller.signal)
+  controller.abort()
   await assert.rejects(
-    client.get('/health', undefined, controller.signal),
-    (err) => err instanceof EngramError && err.code === 'engram/unreachable',
+    later,
+    (err) => err instanceof EngramError && err.code === 'engram/aborted',
   )
 })
 
-test('timeout abort maps to engram/unreachable', async () => {
+test('timeout maps to engram/timeout — never engram/unreachable (audit #5)', async () => {
   const fetchImpl = makeFetch((_url, init) =>
     new Promise((_resolve, reject) => {
       init.signal.addEventListener('abort', () =>
-        reject(Object.assign(new TypeError('fetch failed'), { name: 'AbortError' })))
+        reject(Object.assign(new TypeError('fetch failed'), { name: 'TimeoutError' })))
     }))
   const client = createEngramClient({
     ...baseDeps,
@@ -147,7 +149,7 @@ test('timeout abort maps to engram/unreachable', async () => {
   })
   await assert.rejects(
     client.get('/health'),
-    (err) => err instanceof EngramError && err.code === 'engram/unreachable',
+    (err) => err instanceof EngramError && err.code === 'engram/timeout',
   )
 })
 
