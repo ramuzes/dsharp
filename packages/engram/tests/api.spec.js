@@ -175,3 +175,16 @@ test('isSupportedVersion accepts 3.7+ and rejects older/other', () => {
   assert.equal(isSupportedVersion('garbage'), false)
   assert.equal(isSupportedVersion(undefined), false)
 })
+
+test('malformed baseUrl surfaces as EngramError engram/unreachable, not a raw TypeError', async () => {
+  const client = createEngramClient({
+    baseUrlProvider: () => 'not a url at all',
+    tokenProvider: () => '',
+    timeoutMsProvider: () => 1000,
+    fetchImpl: async () => { throw new Error('fetch must never run for a malformed base URL') },
+  })
+  await assert.rejects(
+    client.get('/health'),
+    (err) => err instanceof EngramError && err.code === 'engram/unreachable',
+  )
+})

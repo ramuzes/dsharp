@@ -39,7 +39,15 @@ async function readJson(response) {
  * @param {Record<string, unknown>|undefined} [query]
  */
 function buildUrl(baseUrl, path, query) {
-  const url = new URL(path, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)
+  // A malformed baseUrl (bad volatile config edit) must surface as the typed
+  // unreachable envelope, never escape as a raw TypeError (parked minor).
+  let url
+  try {
+    url = new URL(path, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)
+  } catch (err) {
+    throw new EngramError('engram/unreachable',
+      `engram/unreachable: invalid base URL "${baseUrl}" (${err?.message ?? err})`)
+  }
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value))
   }
