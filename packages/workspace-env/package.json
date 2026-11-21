@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-env",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Workspace-local toolchain state (uv, Go) for every confined bash call and PTY terminal — no sandbox holes",
   "type": "module",
   "main": "index.js",
