@@ -19,4 +19,9 @@ export const Config = Schema.object({
   domain: Schema.string().default('https://open.feishu.cn').volatile(),
   commandPrefix: Schema.string().default('/').volatile(),
   messageChunkLimit: Schema.number().default(8000).volatile(),
+  // Turn watchdog: after this many ms of a still-running turn, the chat gets
+  // a "still running" notice (useful when a turn stalls on an approval or a
+  // hung request). 0 disables it (the default — matches the pre-schema
+  // behavior, when the driver's watchdog was dead code).
+  watchdogMs: Schema.number().default(0).volatile(),
 })

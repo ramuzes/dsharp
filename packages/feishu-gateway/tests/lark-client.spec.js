@@ -83,3 +83,19 @@ test('send failures log instead of rejecting (host must not crash)', async () =>
   assert.match(String(errors[0]), /send create → oc_1 failed: Error: boom/)
   assert.equal(calls, 2)
 })
+
+test('readConfigNumber unwraps volatile wrappers and rejects junk', async () => {
+  const { readConfigNumber } = await import('../lib/lark-client.js')
+  assert.equal(readConfigNumber(5000), 5000)
+  assert.equal(readConfigNumber({ get: () => 5000 }), 5000, 'volatile wrapper must unwrap (audit #3: Number(wrapper) is NaN)')
+  assert.ok(Number.isNaN(readConfigNumber({ get: () => 'x' })))
+  assert.ok(Number.isNaN(readConfigNumber(undefined)))
+})
+
+test('Config declares the turn watchdog field the driver reads (audit #4)', async () => {
+  const { Config } = await import('../lib/config.js')
+  const parsed = Config({})
+  const unwrap = (v) => (typeof v?.get === 'function' ? v.get() : v)
+  assert.equal(unwrap(parsed.watchdogMs), 0, 'default off — matches the pre-schema behavior')
+  assert.equal(unwrap(Config({ watchdogMs: 900000 }).watchdogMs), 900000)
+})

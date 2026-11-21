@@ -10,7 +10,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { Config as RowConfig } from './lib/config.js'
-import { LarkClient, readConfigString } from './lib/lark-client.js'
+import { LarkClient, readConfigString, readConfigNumber } from './lib/lark-client.js'
 import { startGatewayTransport } from './lib/transport.js'
 import { BindingRouter } from './lib/router.js'
 import { GatewayDriver } from './lib/driver.js'
@@ -118,16 +118,26 @@ export const Config = RowConfig
  * Plugins-page secret control into the credential store, or supplied by the
  * launch environment. It never lands in a patch layer.
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ appId?: unknown, appSecretEnv?: unknown, domain?: unknown, commandPrefix?: unknown, messageChunkLimit?: unknown }} config
+ * @param {{ appId?: unknown, appSecretEnv?: unknown, domain?: unknown, commandPrefix?: unknown, messageChunkLimit?: unknown, watchdogMs?: unknown }} config
  */
 export function apply(ctx, config) {
   const appId = readConfigString(config.appId)
   const appSecretEnv = readConfigString(config.appSecretEnv) || 'FEISHU_APP_SECRET'
+  // Numeric fields must go through the wrapper-unwrapping reader: the Loader
+  // hands volatile fields as schemastery reference objects, and
+  // Number(wrapper) is NaN — which silently killed user edits (audit #3).
+  const chunkLimit = readConfigNumber(config.messageChunkLimit)
+  const watchdogMs = readConfigNumber(config.watchdogMs)
   const resolved = {
     appId,
     domain: readConfigString(config.domain) || 'https://open.feishu.cn',
     commandPrefix: readConfigString(config.commandPrefix) || '/',
-    messageChunkLimit: Number(config.messageChunkLimit) > 0 ? Number(config.messageChunkLimit) : 8000,
+    messageChunkLimit: chunkLimit > 0 ? chunkLimit : 8000,
+    // 0 (or absent/invalid) disables the turn watchdog — the driver's own
+    // contract. Previously the field existed nowhere: the schema never
+    // declared it and apply never plumbed it, so the safety notice could
+    // never fire (audit #4).
+    watchdogMs: watchdogMs > 0 ? watchdogMs : 0,
   }
 
   // Staged status reporting: every boot stage lands in ~/.dsh/feishu-gateway-status.json

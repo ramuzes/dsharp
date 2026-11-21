@@ -10,6 +10,12 @@ export function readConfigString(value) {
   return typeof raw === 'string' ? raw : ''
 }
 
+/** Read a numeric Config field the Loader may hand as a volatile wrapper. */
+export function readConfigNumber(value) {
+  const raw = typeof value?.get === 'function' ? value.get() : value
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : NaN
+}
+
 /** Outbound uuid counter + random suffix; ids stay far under Feishu's 50-char cap. */
 let autoUuidSeq = 0
 function nextUuid() {
