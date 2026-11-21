@@ -164,10 +164,17 @@ export function registerAgentTools(ctx, deps) {
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
       try {
+        // Pre-call guard: without a session id the observation cannot be
+        // associated with a session — fail fast with model-readable text
+        // instead of relying on the daemon's 400.
+        const sessionId = sessionIdOf(exec?.agent)
+        if (!sessionId) {
+          return 'engram_save: no session context available; cannot associate the observation with a session. Retry from within an agent session.'
+        }
         const { project } = await resolve(exec, args.project)
         await registerSessionWithRetry(exec)
         const body = {
-          session_id: sessionIdOf(exec?.agent),
+          session_id: sessionId,
           title: args.title,
           content: args.content,
           type: args.type,

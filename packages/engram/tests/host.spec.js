@@ -124,7 +124,9 @@ async function startDaemon() {
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(body))
     }
-    if (path === '/health') return send({ version: '3.7.2', capabilities: {} })
+    // Real >=3.7 daemons advertise capability flags (spec decision 3 gates
+    // on a non-empty capabilities object); the fake must not be looser.
+    if (path === '/health') return send({ version: '3.7.2', capabilities: { observations: true } })
     if (path === '/search') return send({ items: [{ id: 'o1' }] })
     if (path === '/project/current') return send({ project: 'proj-live', project_source: 'server' })
     if (path === '/context') return send({ context: 'sum' })

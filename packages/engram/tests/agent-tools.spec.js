@@ -216,3 +216,15 @@ test('search limit defaults to 20 and clamps to max 50', async () => {
   await toolOf(ctx, 'engram_search').execute({ q: 'x', limit: 7 }, EXEC)
   assert.equal(client.calls.get[2].query.limit, 7)
 })
+
+test('engram_save with no session context fails fast with a model-readable message and no POST', async () => {
+  const client = makeClient()
+  const ctx = makeCtx()
+  registerAgentTools(ctx, { ...makeDeps(client), sessionIdOf: () => '' })
+  const result = await toolOf(ctx, 'engram_save').execute(
+    { title: 'T', content: 'C' }, { callId: 'c2', agent: undefined })
+  assert.ok(typeof result === 'string')
+  assert.ok(result.includes('no session context available'), result)
+  assert.ok(result.includes('cannot associate the observation'), result)
+  assert.equal(client.calls.post.length, 0, 'guard fires before any POST')
+})

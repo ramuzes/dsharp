@@ -173,13 +173,18 @@ export function registerContextInjection(rootCtx, deps) {
   const offCreated = rootCtx.on('agent/created', onAgentCreated)
 
   /**
-   * Plugin teardown: unregister the listener and drop our references.
-   * (Effect disposers belong to their fibers — cordis runs each agent's
-   * combined disposer on agent disposal; clearing the map here only drops
-   * the plugin's retained references.)
+   * Plugin teardown: unregister the listener, invoke every retained combined
+   * disposer (idempotent — the agent's fiber may already have run it), and
+   * drop our references so prompt sections never outlive the plugin on
+   * still-live agents. Effect disposers belong to their fibers (cordis runs
+   * them on agent disposal); invoking them here is safe because they are
+   * idempotent (the section disposer no-ops on a second call).
    */
   function dispose() {
     offCreated()
+    for (const dispose of agentDisposers.values()) {
+      try { dispose() } catch { /* already torn down with its fiber */ }
+    }
     agentDisposers.clear()
     cache.clear()
   }

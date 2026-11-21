@@ -320,3 +320,34 @@ test('registerContextInjection returns a disposer that unregisters the agent/cre
   plugin()
   assert.equal(rootCtx.listeners.get('agent/created').length, 0, 'listener removed')
 })
+
+// Final-review fix: plugin dispose must invoke the retained combined
+// disposers, so a STILL-LIVE agent's prompt section does not outlive the
+// plugin. Fake effect returns a real disposer running the inner (section)
+// disposer, mirroring cordis's effect-disposal semantics.
+test('plugin dispose invokes retained disposers: a live agent\'s section is removed', async () => {
+  const rootCtx = fakeRootCtx()
+  const plugin = registerContextInjection(rootCtx, baseDeps())
+  const sections = []
+  const disposals = []
+  const ctx = {
+    // Real cordis effect: returns a disposer that runs the body's disposer.
+    effect(fn) {
+      const inner = fn()
+      return () => { if (typeof inner === 'function') inner() }
+    },
+    systemPrompt: {
+      section(def) {
+        sections.push(def)
+        return () => disposals.push(def.name)
+      },
+    },
+  }
+  const agent = { ctx, session: { id: 's-live' } }
+  rootCtx.emit('agent/created', { agent, source: 'startup' })
+  await flush()
+
+  plugin() // plugin unload while the agent is still alive
+  assert.deepEqual(disposals, ['engram:memory'], 'live agent section disposer ran on plugin dispose')
+  assert.equal(rootCtx.listeners.get('agent/created').length, 0, 'listener also removed')
+})

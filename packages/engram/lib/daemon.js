@@ -29,7 +29,7 @@ const DEFAULT_RETRY = { attempts: 5, delayMs: 300 }
  *   collected?: { stderr?: { readFrom(fromByte: number): {text: string, nextOffset: number, lossy: boolean} } } } }} subprocess
  * @param {() => Record<string, string>} buildEnv
  */
-async function spawnDaemon(subprocess, buildEnv) {
+async function spawnDaemon(subprocess, buildEnv, note) {
   try {
     // Spec members mirror SubprocessSpawnSpec exactly: argv, cwd, stdio
     // (all three streams explicit — the seam applies no defaults), env.
@@ -58,12 +58,20 @@ async function spawnDaemon(subprocess, buildEnv) {
         `or set daemonMode to 'connect-only' to stop spawning entirely.`)
     }
   } catch (err) {
-    if (err instanceof EngramError) throw err
+    if (err instanceof EngramError) {
+      // Every stage lands in the status file (spec decision 3) — record the
+      // spawn failure with its guidance before it propagates. `note` is the
+      // contained sink; best-effort, never throws (see lib/status.js).
+      if (note) note('daemon-spawn-failed', err.message)
+      throw err
+    }
     // Provider/spawn-level failure (e.g. done rejected) — classify, never rethrow raw.
-    throw new EngramError('engram/daemon-spawn-failed',
+    const failure = new EngramError('engram/daemon-spawn-failed',
       `engram/daemon-spawn-failed: could not start 'engram run -d' (${err?.message ?? err}). ` +
       `Check the daemon.port config option for a collision, or set daemonMode to ` +
       `'connect-only' to run without spawning.`)
+    if (note) note('daemon-spawn-failed', failure.message)
+    throw failure
   }
 }
 
@@ -71,7 +79,7 @@ async function spawnDaemon(subprocess, buildEnv) {
  * Ensure a healthy, supported engram daemon; spawn one when allowed.
  * @param {{ client: object, probe?: typeof probeHealth, subprocess: object,
  *   spawnEnabled: boolean, buildEnv: () => Record<string, string>,
- *   note?: (tag: string) => void,
+ *   note?: (stage: string, detail?: string) => void,
  *   retry?: { attempts: number, delayMs: number },
  *   signal?: AbortSignal }} deps
  * @returns {Promise<{ version: string, capabilities: object }>}
@@ -102,17 +110,19 @@ export async function ensureDaemon({
         : new EngramError('engram/daemon-unreachable',
           `engram/daemon-unreachable: health probe failed (${err?.message ?? err})`)
 
-      // Nothing spawning can fix — surface immediately.
+      // Nothing spawning can fix — surface immediately (status file too).
       if (!spawnEnabled) {
-        throw new EngramError('engram/daemon-unreachable',
+        const unreachable = new EngramError('engram/daemon-unreachable',
           `engram/daemon-unreachable: cannot reach the engram daemon on the configured port ` +
           `(${probeError.message}). Start it yourself or set the daemon.port config option ` +
           `to match, or switch daemonMode to 'connect-only' to keep the plugin from spawning.`)
+        if (note) note('daemon-unreachable', unreachable.message)
+        throw unreachable
       }
 
       if (!spawned) {
         spawned = true
-        await spawnDaemon(subprocess, buildEnv)
+        await spawnDaemon(subprocess, buildEnv, note)
       }
       if (attempt < attempts) await sleep(delayMs)
       continue
@@ -120,18 +130,36 @@ export async function ensureDaemon({
 
     if (!isSupportedVersion(health.version)) {
       // Spawning cannot fix a version mismatch — fail fast and loud.
-      throw new EngramError('engram/unsupported-version',
+      const unsupported = new EngramError('engram/unsupported-version',
         `engram/unsupported-version: daemon reports version ${health.version}; ` +
         `this plugin requires >=3.7.`)
+      if (note) note('daemon-unsupported-version', unsupported.message)
+      throw unsupported
+    }
+
+    // Capability gate (spec decision 3: validate version >= 3.7 AND
+    // capability flags): /health must carry a non-empty `capabilities`
+    // object; a missing/empty one is treated as unsupported.
+    if (typeof health.capabilities !== 'object' || health.capabilities === null
+      || Array.isArray(health.capabilities)
+      || Object.keys(health.capabilities).length === 0) {
+      const unsupported = new EngramError('engram/unsupported-version',
+        `engram/unsupported-version: daemon reports version ${health.version} but no ` +
+        `capability flags (missing or empty \`capabilities\` in /health); this plugin ` +
+        `requires a >=3.7 daemon that advertises its capabilities.`)
+      if (note) note('daemon-unsupported-version', unsupported.message)
+      throw unsupported
     }
 
     if (spawned && note) note('daemon-spawned')
     return health
   }
 
-  throw new EngramError('engram/daemon-unreachable',
+  const terminal = new EngramError('engram/daemon-unreachable',
     `engram/daemon-unreachable: the engram daemon did not become reachable within ` +
     `${attempts} attempts after spawning. Check the daemon.port config option ` +
     `(is a daemon already listening on the configured port?) or switch daemonMode ` +
     `to 'connect-only' to stop spawning and probe only.`)
+  if (note) note('daemon-unreachable', terminal.message)
+  throw terminal
 }

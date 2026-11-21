@@ -50,6 +50,12 @@ const oldHealth = () => ({ version: '3.6.1', capabilities: {} })
 
 const noopNote = () => {}
 
+/** Notes fake capturing (stage, detail) pairs — mirrors status.js `note(stage, detail?)`. */
+function makeNotes() {
+  const entries = []
+  return { entries, note: (stage, detail) => entries.push({ stage, detail }) }
+}
+
 const baseRetry = { attempts: 2, delayMs: 0 }
 
 /** Probe fake returning the listed values in order (last one repeats). */
@@ -260,4 +266,149 @@ test('spawn whose done rejects (provider failure) -> engram/daemon-spawn-failed,
     }),
     (err) => err instanceof EngramError && err.code === 'engram/daemon-spawn-failed',
   )
+})
+
+// ---- final-review: every failure stage lands in the status file -----------
+
+test('h: spawn failure (port collision) notes daemon-spawn-failed with the guidance', async () => {
+  const notes = makeNotes()
+  await assert.rejects(
+    ensureDaemon({
+      client: {},
+      probe: probeSequence([new EngramError('engram/unreachable', 'engram/unreachable: request to /health failed')]),
+      subprocess: makeSubprocess(() => makeHandle({
+        exitCode: 1,
+        stderrText: 'Error: listen EADDRINUSE: address already in use 127.0.0.1:7437',
+      })),
+      spawnEnabled: true,
+      buildEnv: () => ({}),
+      note: notes.note,
+      retry: baseRetry,
+    }),
+    (err) => err.code === 'engram/daemon-spawn-failed',
+  )
+  assert.equal(notes.entries.length, 1)
+  assert.equal(notes.entries[0].stage, 'daemon-spawn-failed')
+  assert.ok(notes.entries[0].detail.includes('EADDRINUSE'))
+  assert.ok(notes.entries[0].detail.includes('daemon.port'), 'guidance in the noted detail')
+  assert.ok(notes.entries[0].detail.includes('connect-only'))
+})
+
+test('h2: provider-level spawn failure also notes daemon-spawn-failed', async () => {
+  const notes = makeNotes()
+  await assert.rejects(
+    ensureDaemon({
+      client: {},
+      probe: probeSequence([new EngramError('engram/unreachable', 'engram/unreachable: request to /health failed')]),
+      subprocess: makeSubprocess(() => ({ done: Promise.reject(new Error('provider exploded')), collected: {} })),
+      spawnEnabled: true,
+      buildEnv: () => ({}),
+      note: notes.note,
+      retry: baseRetry,
+    }),
+    (err) => err.code === 'engram/daemon-spawn-failed',
+  )
+  assert.equal(notes.entries.length, 1)
+  assert.equal(notes.entries[0].stage, 'daemon-spawn-failed')
+  assert.ok(notes.entries[0].detail.includes('provider exploded'))
+})
+
+test('i: terminal unreachable after retry exhaustion notes daemon-unreachable', async () => {
+  const notes = makeNotes()
+  await assert.rejects(
+    ensureDaemon({
+      client: {},
+      probe: probeSequence([new EngramError('engram/unreachable', 'engram/unreachable: request to /health failed')]),
+      subprocess: makeSubprocess(() => makeHandle({ exitCode: 0 })),
+      spawnEnabled: true,
+      buildEnv: () => ({}),
+      note: notes.note,
+      retry: { attempts: 2, delayMs: 0 },
+    }),
+    (err) => err.code === 'engram/daemon-unreachable',
+  )
+  assert.equal(notes.entries.length, 1)
+  assert.equal(notes.entries[0].stage, 'daemon-unreachable')
+  assert.ok(notes.entries[0].detail.includes('did not become reachable'))
+})
+
+test('j: connect-only unreachable notes daemon-unreachable', async () => {
+  const notes = makeNotes()
+  await assert.rejects(
+    ensureDaemon({
+      client: {},
+      probe: probeSequence([new EngramError('engram/unreachable', 'engram/unreachable: request to /health failed')]),
+      subprocess: makeSubprocess(() => { throw new Error('spawn is disabled') }),
+      spawnEnabled: false,
+      buildEnv: () => ({}),
+      note: notes.note,
+      retry: baseRetry,
+    }),
+    (err) => err.code === 'engram/daemon-unreachable',
+  )
+  assert.equal(notes.entries.length, 1)
+  assert.equal(notes.entries[0].stage, 'daemon-unreachable')
+  assert.ok(notes.entries[0].detail.includes('configured port'))
+})
+
+test('k: unsupported version notes daemon-unsupported-version with found vs >=3.7', async () => {
+  const notes = makeNotes()
+  await assert.rejects(
+    ensureDaemon({
+      client: {},
+      probe: probeSequence([oldHealth()]),
+      subprocess: makeSubprocess(() => { throw new Error('spawning cannot fix a version mismatch') }),
+      spawnEnabled: true,
+      buildEnv: () => ({}),
+      note: notes.note,
+      retry: baseRetry,
+    }),
+    (err) => err.code === 'engram/unsupported-version',
+  )
+  assert.equal(notes.entries.length, 1)
+  assert.equal(notes.entries[0].stage, 'daemon-unsupported-version')
+  assert.ok(notes.entries[0].detail.includes('3.6.1'))
+  assert.ok(notes.entries[0].detail.includes('>=3.7'))
+})
+
+// ---- final-review: capability gate ----------------------------------------
+
+test('l: /health without capabilities -> typed engram/unsupported-version naming the gap + note', async () => {
+  const notes = makeNotes()
+  await assert.rejects(
+    ensureDaemon({
+      client: {},
+      probe: probeSequence([{ version: '3.7.2' }]), // no capabilities field
+      subprocess: makeSubprocess(() => { throw new Error('spawning cannot fix capabilities') }),
+      spawnEnabled: true,
+      buildEnv: () => ({}),
+      note: notes.note,
+      retry: baseRetry,
+    }),
+    (err) => {
+      assert.ok(err instanceof EngramError)
+      assert.equal(err.code, 'engram/unsupported-version')
+      assert.ok(err.message.includes('capabilit'), 'message names the capability gap')
+      return true
+    },
+  )
+  assert.equal(notes.entries.length, 1)
+  assert.equal(notes.entries[0].stage, 'daemon-unsupported-version')
+})
+
+test('l2: /health with EMPTY capabilities object -> same typed error', async () => {
+  const notes = makeNotes()
+  await assert.rejects(
+    ensureDaemon({
+      client: {},
+      probe: probeSequence([{ version: '3.8.0', capabilities: {} }]),
+      subprocess: makeSubprocess(() => { throw new Error('spawning cannot fix capabilities') }),
+      spawnEnabled: true,
+      buildEnv: () => ({}),
+      note: notes.note,
+      retry: baseRetry,
+    }),
+    (err) => err.code === 'engram/unsupported-version' && err.message.includes('capabilit'),
+  )
+  assert.equal(notes.entries[0].stage, 'daemon-unsupported-version')
 })
