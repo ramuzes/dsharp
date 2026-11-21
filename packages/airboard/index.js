@@ -251,9 +251,12 @@ export function apply(ctx, config) {
         if (ref === tokenEnv) currentToken = await resolveAirboardToken(agentCtx.credentials, tokenEnv, config.token)
       })
       // Defensive read (the live mount once received a non-string baseUrl
-      // during an HMR remount): readString + row default keep the tools
-      // mounted instead of dying on an ill-composed config pass.
-      const baseUrl = readString(config.baseUrl) || 'http://ab.antaresy.cc'
+      // during an HMR remount): readString keeps the tools mounted; an EMPTY
+      // baseUrl mounts a client whose every call fails with the typed
+      // airboard/not-configured code — no hardcoded origin fallback (the
+      // browser half answers 503 AIRBOARD_BASE_URL_MISSING for the same
+      // state, and traffic must never silently go to a baked-in host).
+      const baseUrl = readString(config.baseUrl)
       const client = createAirboardClient({ baseUrl, tokenProvider: () => currentToken })
       const offTools = registerAgentTools(agentCtx, client)
       noteStage('tools-registered', { baseUrl: config.baseUrl })

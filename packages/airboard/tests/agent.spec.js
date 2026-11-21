@@ -205,3 +205,22 @@ test('apply registers agent tools WITHOUT a web server and hot-swaps the token',
   assert.ok(events.some(e => e[0] === 'tool' && e[1] === 'airboard_search'), 'tools registered without webServer')
   assert.ok(events.some(e => e[0] === 'section' && e[1] === 'tool:airboard'))
 })
+
+test('an unconfigured baseUrl fails every call with airboard/not-configured — no traffic leaves the host', async () => {
+  const fetchImpl = fakeFetch({ body: { ok: true } })
+  const client = createAirboardClient({ baseUrl: '', fetchImpl })
+  await assert.rejects(client.get('/api/search', { query: { q: 'x' } }), (error) => {
+    assert.equal(error.code, 'airboard/not-configured')
+    return true
+  })
+  assert.equal(fetchImpl.calls.length, 0, 'no HTTP request may be made')
+})
+
+test('tools surface the not-configured failure as model-facing text', async () => {
+  const ctx = makeCtx()
+  const off = registerAgentTools(ctx, createAirboardClient({ baseUrl: '' }))
+  const search = ctx.registered.tools.get('airboard_search')
+  const out = await search.execute({ q: 'x' }, {})
+  assert.match(String(out), /airboard\/not-configured/)
+  off()
+})

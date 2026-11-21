@@ -40,6 +40,14 @@ export function createAirboardClient({ baseUrl, tokenProvider = () => '', timeou
   const origin = baseUrl.replace(/\/+$/, '')
 
   const request = async (method, path, { query, body, signal } = {}) => {
+    // No silent third-party fallback: an unconfigured row fails every call
+    // with the typed not-configured code (mirrors the browser half's 503
+    // AIRBOARD_BASE_URL_MISSING) instead of sending traffic — including
+    // create/update content — to a hardcoded remote host.
+    if (origin === '') {
+      throw new AirboardError('airboard/not-configured',
+        'AirBoard baseUrl is not configured; set it on the Plugins page (or via the AIRBOARD_URL launch environment).')
+    }
     const url = new URL(`${origin}${path}`)
     if (query !== undefined) {
       for (const [name, value] of Object.entries(query)) {
