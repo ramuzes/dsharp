@@ -46,12 +46,14 @@ export class ProjectExplicitRequiredError extends Error {
   }
 }
 
-/** Longest-prefix match: pick the map key that prefixes cwd and is longest. */
+/** Path-boundary prefix match: the key must equal cwd or be a real
+ *  path-segment ancestor of it (`/w/x` matches `/w/x/sub`, not `/w/x2`). */
 function longestPrefixMatch(map, cwd) {
   let best = null
   let bestLength = -1
   for (const [prefix, project] of Object.entries(map ?? {})) {
-    if (cwd.startsWith(prefix) && prefix.length > bestLength) {
+    const withSlash = prefix.endsWith('/') ? prefix : `${prefix}/`
+    if ((cwd === prefix || cwd.startsWith(withSlash)) && prefix.length > bestLength) {
       best = project
       bestLength = prefix.length
     }
@@ -88,7 +90,7 @@ export function createProjectResolver({ client, getMode, getFixedProject, getPro
       }
       throw err
     }
-    if (body?.project_source === 'ambiguous' || body?.project === null) {
+    if (body?.project_source === 'ambiguous') {
       throw new ProjectAmbiguousError(Array.isArray(body.available_projects) ? body.available_projects : [])
     }
     if (typeof body?.project !== 'string' || body.project === '') {

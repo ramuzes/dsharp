@@ -192,3 +192,49 @@ test('a new cwd triggers a fresh probe', async () => {
   assert.deepEqual(result, { project: 'yrepo', source: 'git' })
   assert.deepEqual(client.calls, ['/w/x', '/w/y'])
 })
+
+test('map key matches child paths but not sibling directories', async () => {
+  const client = fakeClient({
+    probe: {
+      '/w/x2': { project: 'probe-fallback', project_source: 'git', project_path: '/w/x2', cwd: '/w/x2' },
+    },
+  })
+  const { resolve } = createProjectResolver({
+    client,
+    getMode: () => 'auto',
+    getFixedProject: () => '',
+    getProjectMap: () => ({ '/w/x': 'mapped' }),
+    getWorkingDir: (s) => s.getWorkingDir(),
+  })
+  // Sibling directory /w/x2 must NOT match key /w/x -> falls through to probe.
+  assert.deepEqual(await resolve(fakeSession('s1', '/w/x2')), { project: 'probe-fallback', source: 'git' })
+  assert.deepEqual(client.calls, ['/w/x2'])
+  // Exact key and child path must match.
+  assert.deepEqual(await resolve(fakeSession('s2', '/w/x')), { project: 'mapped', source: 'map' })
+  assert.deepEqual(await resolve(fakeSession('s3', '/w/x/sub')), { project: 'mapped', source: 'map' })
+  assert.deepEqual(client.calls, ['/w/x2']) // no further probes
+})
+
+test('200 with null project but non-ambiguous source falls through to bad-response', async () => {
+  const client = fakeClient({
+    probe: {
+      '/w/x': { project: null, project_source: 'unclassified', available_projects: [] },
+    },
+  })
+  const { resolve } = createProjectResolver({
+    client,
+    getMode: () => 'auto',
+    getFixedProject: () => '',
+    getProjectMap: () => ({}),
+    getWorkingDir: (s) => s.getWorkingDir(),
+  })
+  await assert.rejects(
+    resolve(fakeSession('s1', '/w/x')),
+    (err) => {
+      assert.ok(err instanceof EngramError)
+      assert.equal(err.code, 'engram/bad-response')
+      assert.ok(!(err instanceof ProjectAmbiguousError))
+      return true
+    },
+  )
+})
