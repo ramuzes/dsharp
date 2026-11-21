@@ -27,6 +27,16 @@
 
 const RENEW_TTL_MS = 4 * 60 * 1000 // ensureSession debounce window
 
+/**
+ * deps:
+ *  - client: { get, post, del } (Task 2).
+ *  - resolveProject: (agent) => Promise<{ project, source }> — ASYNC; the
+ *    Task 4 resolver's contract. Task 8's wiring adapts the session-keyed
+ *    resolver: `resolveProject: (agent) => resolver.resolve(agent?.session)`.
+ *  - note: (message) => void, containment sink.
+ *  - sessionIdOf: (agent) => string.
+ *  - now: () => number, injectable clock for the renewal TTL.
+ */
 export function registerSessionBridge(rootCtx, deps) {
   const {
     client,
@@ -54,9 +64,16 @@ export function registerSessionBridge(rootCtx, deps) {
       return false
     }
     const id = 'dsh-' + dshSessionId
+    // The resolver is ASYNC (Task 4: `async resolve(session, explicit?)`
+    // returns a Promise<{ project, source }>). It must be awaited inside the
+    // try/catch — both to get the real project (a sync read would POST
+    // `project: undefined`) and so a rejected promise is caught here instead
+    // of escaping as an unhandled rejection into the host.
     let project
     try {
-      const resolved = resolveProject(agent)
+      // Task 8's wiring adapts the session-keyed resolver:
+      // `resolveProject: (agent) => resolver.resolve(agent?.session)`.
+      const resolved = await resolveProject(agent)
       project = resolved.project
     } catch {
       // Unresolved project (ambiguous / explicit required / daemon error):

@@ -73,7 +73,8 @@ const baseDeps = (overrides = {}) => {
   const client = overrides.client ?? fakeClient()
   return {
     client,
-    resolveProject: overrides.resolveProject ?? (() => ({ project: 'proj-a', source: 'explicit' })),
+    // Real resolver is async (Task 4): returns a Promise<{project, source}>.
+    resolveProject: overrides.resolveProject ?? (async () => ({ project: 'proj-a', source: 'explicit' })),
     note: overrides.note ?? (() => {}),
     sessionIdOf: overrides.sessionIdOf ?? ((agent) => agent?.session?.id ?? ''),
     ...overrides,
@@ -98,7 +99,7 @@ test('agent/created fires -> POST body verified exactly', async () => {
   const rootCtx = fakeRootCtx()
   const bridge = registerSessionBridge(
     rootCtx,
-    baseDeps({ client, resolveProject: () => ({ project: 'proj-x', source: 'map' }) })
+    baseDeps({ client, resolveProject: async () => ({ project: 'proj-x', source: 'map' }) })
   )
   const { agent } = fakeAgent('abc')
 
@@ -241,6 +242,30 @@ test('unresolved project (ProjectAmbiguousError) -> no POST, note(bridge-unresol
   await rootCtx.emit('agent/created', { agent, source: 'startup' })
   await new Promise((r) => setImmediate(r))
   assert.equal(client.calls.length, 0, 'no POST when project unresolved')
+  assert.ok(notes.includes('bridge-unresolved-project'), `got notes: ${notes.join(',')}`)
+  bridge.dispose()
+})
+
+test('resolver returns a REJECTED promise -> contained, note, no POST, no unhandled rejection', async () => {
+  const client = fakeClient()
+  const notes = []
+  const rootCtx = fakeRootCtx()
+  const bridge = registerSessionBridge(
+    rootCtx,
+    baseDeps({
+      client,
+      note: (m) => notes.push(m),
+      resolveProject: () => Promise.reject(new ProjectAmbiguousError(['a'])),
+    })
+  )
+  const { agent } = fakeAgent('abc')
+
+  // Must not produce an unhandled rejection (the host-killer class).
+  rootCtx.emit('agent/created', { agent, source: 'startup' })
+  await bridge.ensureSession(agent)
+  await new Promise((r) => setImmediate(r))
+
+  assert.equal(client.calls.length, 0, 'no POST when the resolver rejects')
   assert.ok(notes.includes('bridge-unresolved-project'), `got notes: ${notes.join(',')}`)
   bridge.dispose()
 })
