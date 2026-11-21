@@ -220,7 +220,10 @@ test('apply injects exactly the five catalog services and stages apply → tools
     assert.equal(stageOf(file), 'tools-registered')
     assert.ok(host.registeredTools.some((t) => t.name === 'engram_search'))
   } finally {
-    process.env.ENGRAM_STATUS_FILE = prev
+    // Assigning undefined to process.env stores the STRING "undefined",
+    // which would send later notes to ./undefined — delete instead.
+    if (prev === undefined) delete process.env.ENGRAM_STATUS_FILE
+    else process.env.ENGRAM_STATUS_FILE = prev
     await daemon.stop()
     rmSync(dir, { recursive: true, force: true })
   }
