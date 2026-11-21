@@ -17,6 +17,7 @@
     "locale",
     "icon.svg",
     "README.md",
+    "docs",
     "lib"
   ],
   "scripts": {

@@ -18,6 +18,7 @@
     "README.md",
     "README.zh-CN.md",
     "locale/*.json",
+    "docs",
     "icon.svg"
   ],
   "scripts": {

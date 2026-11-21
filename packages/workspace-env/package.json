@@ -4,7 +4,11 @@
   "description": "Workspace-local toolchain state (uv, Go) for every confined bash call and PTY terminal — no sandbox holes",
   "type": "module",
   "main": "index.js",
-  "files": ["index.js", "cordis.patch.yml", "README.md"],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": ["index.js", "cordis.patch.yml", "locale", "docs", "README.md"],
   "scripts": {
     "test": "node --test \"tests/*.spec.js\""
   },

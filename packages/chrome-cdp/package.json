@@ -6,6 +6,7 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
@@ -14,6 +15,8 @@
     "lib",
     "cordis.patch.yml",
     "icon.svg",
+    "locale",
+    "docs",
     "README.md"
   ],
   "license": "MIT",

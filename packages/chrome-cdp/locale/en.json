@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Chrome over CDP",
+    "description": "Operate the user's real Chrome over CDP via chrome-devtools-mcp: per-Session exclusive attach, per-action approval gate, Plugins-page config card",
+    "detail": "docs/DETAIL.md"
+  }
+}

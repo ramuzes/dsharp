@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "AirBoard",
-    "description": "Read-only AirBoard viewer: browse project ADR / PRD / SPEC / PLAN / ISSUE markdown in a right-Sidebar tab, proxied host-side with your access token."
+    "description": "Read-only AirBoard viewer: browse project ADR / PRD / SPEC / PLAN / ISSUE markdown in a right-Sidebar tab, proxied host-side with your access token.",
+    "detail": "docs/DETAIL.md"
   }
 }

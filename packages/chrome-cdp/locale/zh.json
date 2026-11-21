@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Chrome (CDP)",
+    "description": "通过 chrome-devtools-mcp 以 CDP 操作你真实使用的 Chrome：每会话独占挂载、逐操作审批门、Plugins 页配置卡",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

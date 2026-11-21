@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Workspace toolchain env",
+    "description": "Workspace-local toolchain state (uv, Go) for every confined bash call and PTY terminal — no sandbox holes",
+    "detail": "docs/DETAIL.md"
+  }
+}
