@@ -122,10 +122,13 @@ export function registerAgentTools(ctx, deps) {
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
       try {
-        const dir = resolveRepoPath(args.dir, deps.getPolicy())
-        const info = await api.get(`/projects/${pid(args.project)}`)
+        // exec threads through BOTH the policy resolve (session-owned
+        // workspace root, not the deployment fallback) and the git runner
+        // (confinement + abort) — the gitlab_git_fetch pattern.
+        const dir = resolveRepoPath(args.dir, deps.getPolicy(exec))
+        const info = await api.get(`/projects/${pid(args.project)}`, undefined, exec?.signal)
         const gitArgs = ['clone', ...(args.branch ? ['-b', args.branch] : []), ...(args.depth ? ['--depth', String(args.depth)] : []), projectHttpUrl(baseUrl(), info.path_with_namespace), dir]
-        const { stdout, stderr } = await gitRun(gitArgs, undefined, undefined, { token: token(), timeoutMs: gitTimeout() })
+        const { stdout, stderr } = await gitRun(gitArgs, dir, exec, { token: token(), timeoutMs: gitTimeout() })
         return `Cloned ${info.path_with_namespace} into ${dir}${stdout ? `\n${stdout}` : ''}${stderr ? `\n${stderr}` : ''}`
       } catch (error) { return failure(error) }
     },

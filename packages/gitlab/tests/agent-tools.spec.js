@@ -272,3 +272,21 @@ test('gitlab_git_push with an https origin pushes via origin', async () => {
   await byName(registered, 'gitlab_git_push').execute({ repo: ROOT, from: 'main' })
   assert.deepEqual(seen[0], ['push', 'origin', 'main:main'])
 })
+
+test('gitlab_git_clone threads exec through policy resolve and the git runner', async () => {
+  const { ctx, registered } = makeCtx()
+  const seen = {}
+  const api = makeApi({ get: () => ({ id: 7, path_with_namespace: 'grp/repo', http_url_to_repo: 'https://gitlab.example.com/grp/repo.git' }) })
+  const gitRun = async (args, cwd, exec) => { seen.git = { args, cwd, exec }; return { stdout: '', stderr: '' } }
+  const deps = defaultDeps(api, gitRun)
+  deps.getPolicy = (exec) => { seen.policyExec = exec; return SESSION_POLICY }
+  registerAgentTools(ctx, deps)
+  const exec = { signal: { aborted: false }, agent: { session: { id: 's1' } } }
+  const out = await byName(registered, 'gitlab_git_clone').execute({ project: 'grp/repo', dir: 'sub/dir' }, exec)
+  assert.match(String(out), /Cloned grp\/repo/)
+  // exec reaches BOTH the policy resolve (session-owned workspace root, not
+  // the deployment fallback) and the runner (confinement + abort).
+  assert.equal(seen.policyExec, exec)
+  assert.equal(seen.git.exec, exec)
+  assert.equal(seen.git.cwd, `${ROOT}/sub/dir`)
+})
