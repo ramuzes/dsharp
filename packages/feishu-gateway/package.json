@@ -53,6 +53,7 @@
     "@deepseek-ai/schemastery": "*",
     "@deepseek-ai/dsh-storage": "0.0.1-rc.1",
     "@deepseek-ai/dsh-invariants": "0.0.1-rc.1",
-    "@deepseek-ai/cordis": "4.0.4"
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1"
   }
 }

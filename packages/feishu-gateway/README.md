@@ -23,7 +23,7 @@ Unresolved credentials leave the plugin silently inactive (one log line).
 1. Custom app → add capability **Bot**; **create a version and publish**.
 2. Permissions (after release): `im:message`, `im:message.p2p_msg`,
    `im:chat:readonly`, `im:resource`.
-3. Events: subscription mode **persistent connection**, event
+3. Events: subscription mode **persistent connection** (长连接), event
    `im.message.receive_v1`.
 4. Callbacks: **long connection**, configure `card.action.trigger` (a 200340
    error on button presses usually means this is misconfigured).
