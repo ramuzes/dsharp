@@ -151,10 +151,24 @@ function makeScope(initial = {}) {
 }
 
 /** Boot the browser plugin against a fresh harness and ctx. */
-function bootPlugin({ scope } = {}) {
+function bootPlugin({ scope, credentials } = {}) {
   const harness = createHarness()
   const form = scope ?? makeScope().scope
   const recorded = { namespaces: [], injects: [], registers: [], disposers: [] }
+  // Fake credentials Remote (the client side of ctx.remote.credentials):
+  // records set/describe; describe answers from the per-boot map so the
+  // Configured/Not-set badge has real input. Mirrors the real shape —
+  // set(ref, value) and describe(refs) → Record<ref, { configured }>.
+  const secretApi = {
+    setCalls: [],
+    describeCalls: [],
+    store: credentials ?? {},
+    set: async (ref, value) => { secretApi.setCalls.push([ref, value]); secretApi.store[ref] = value },
+    describe: async (refs) => {
+      secretApi.describeCalls.push([...refs])
+      return Object.fromEntries(refs.map((ref) => [ref, { configured: ref in secretApi.store, writable: true }]))
+    },
+  }
   const ctx = new Proxy({
     effect(fn) {
       const disposer = fn()
@@ -168,6 +182,7 @@ function bootPlugin({ scope } = {}) {
       },
     },
     configForms: { get: () => form },
+    remote: { credentials: secretApi },
     slots: {
       inject: (name, begin) => {
         recorded.injects.push(name)
@@ -188,7 +203,7 @@ function bootPlugin({ scope } = {}) {
     if (specifier === 'react') return harness.React
     throw new Error(`unexpected require: ${specifier}`)
   })
-  return { harness, ctx, recorded, plugin, form }
+  return { harness, ctx, recorded, plugin, form, secretApi }
 }
 
 /** Flat key list of a locale dictionary, for zh/en parity. */
@@ -200,7 +215,7 @@ test('client.js exposes the factory-format plugin with the documented inject lis
   const entry = loaded[0]
   assert.equal(entry.id, 'dsh-engram')
   const plugin = entry.factory(() => ({ createElement: () => null })) // react is the only module
-  assert.deepEqual(plugin.inject, ['slots', 'locale', 'configForms'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'configForms', 'remote'])
   assert.equal(typeof plugin.apply, 'function')
 })
 
@@ -431,4 +446,48 @@ test('classes are engram-prefixed and styles ride a plugin-tagged style element'
   } finally {
     delete globalThis.document
   }
+})
+
+// ---- credentials-backed secret control (the feishu SettingsSecretField pattern) ----
+
+test('a staged secret saves through the credentials Remote under the live ref name', async () => {
+  const { ctx, recorded, plugin, secretApi } = bootPlugin()
+  plugin.apply(ctx)
+  const face = recorded.registers[0].declaration.inject()
+  face.edit('httpToken', 'tok-secret-1')
+  await face.save()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(secretApi.setCalls, [['ENGRAM_HTTP_TOKEN', 'tok-secret-1']])
+  // No config op rides along: the secret never becomes a patch-layer value.
+  assert.equal(face.hooks.config.getSnapshot().httpToken.text, '')
+})
+
+test('a blank staged secret is a no-op — blank saves never clobber the stored value', async () => {
+  const { ctx, recorded, plugin, secretApi } = bootPlugin({ credentials: { ENGRAM_HTTP_TOKEN: 'kept' } })
+  plugin.apply(ctx)
+  const face = recorded.registers[0].declaration.inject()
+  face.edit('httpToken', '   ')
+  await face.save()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(secretApi.setCalls, [])
+  assert.equal(secretApi.store.ENGRAM_HTTP_TOKEN, 'kept')
+})
+
+test('the Configured badge follows describe and refreshes after a save', async () => {
+  const { ctx, recorded, plugin, secretApi } = bootPlugin()
+  plugin.apply(ctx)
+  const face = recorded.registers[0].declaration.inject()
+  // The real card subscribes (React), which is what invalidates the snapshot
+  // cache; mirror that so badge updates are observable here.
+  const unsubscribe = face.hooks.config.subscribe(() => {})
+  await new Promise((resolve) => setImmediate(resolve)) // initial refreshSecrets
+  assert.equal(face.hooks.config.getSnapshot().httpToken.configured, false)
+  face.edit('httpToken', 'tok-secret-2')
+  await face.save()
+  await new Promise((resolve) => setImmediate(resolve))
+  await new Promise((resolve) => setImmediate(resolve))
+  const state = face.hooks.config.getSnapshot().httpToken
+  assert.equal(state.configured, true, 'badge flips after the save lands')
+  assert.deepEqual(secretApi.describeCalls.at(-1), ['ENGRAM_HTTP_TOKEN'])
+  unsubscribe()
 })

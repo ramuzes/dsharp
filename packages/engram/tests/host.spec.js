@@ -32,9 +32,10 @@ test('Config defaults are empty/generic (ADR-0005)', () => {
   const parsed = Config({})
   assert.equal(unwrap(parsed.daemonMode), 'auto-spawn')          // protocol-generic default ok
   assert.equal(unwrap(parsed.port), '')                          // '' = engram's documented protocol default 7437; not baked
-  assert.equal(unwrap(parsed.httpTokenRef), '')                  // credential-ref name, empty = no auth
-  assert.equal(unwrap(parsed.cloudServerRef), '')                // credential references, empty
-  assert.equal(unwrap(parsed.cloudTokenRef), '')
+  assert.equal(unwrap(parsed.httpTokenRef), 'ENGRAM_HTTP_TOKEN') // protocol-generic env-var NAME default (feishu FEISHU_APP_SECRET pattern); unresolvable = no auth
+  assert.equal(unwrap(parsed.autosync), false)
+  assert.equal('cloudServer' in parsed || 'cloudServerRef' in parsed, false) // cloud config deliberately absent: engram's own cloud.json is the source of truth
+  assert.equal('cloudTokenRef' in parsed, false)
   assert.equal(unwrap(parsed.autosync), false)
   assert.equal(unwrap(parsed.contextInjection), 'off')
   assert.equal(unwrap(parsed.contextMaxBytes), 2048)
@@ -47,7 +48,7 @@ test('Config defaults are empty/generic (ADR-0005)', () => {
 test('volatile fields are marked hot-editable in the schema', () => {
   const parsed = Config({})
   // Every hot-editable field parses as a reactive wrapper (hot-editable).
-  for (const key of ['port', 'httpTokenRef', 'cloudServerRef', 'cloudTokenRef', 'autosync',
+  for (const key of ['port', 'httpTokenRef', 'autosync',
     'contextInjection', 'contextMaxBytes', 'projectMode', 'fixedProject', 'projectMap', 'toolProfile']) {
     assert.equal(typeof parsed[key]?.get, 'function', `${key} should parse as a reactive (hot-editable) wrapper`)
   }
@@ -95,8 +96,6 @@ function reactiveConfig(over = {}) {
     daemonMode: 'auto-spawn',
     port: '',
     httpTokenRef: '',
-    cloudServerRef: '',
-    cloudTokenRef: '',
     autosync: false,
     contextInjection: 'off',
     contextMaxBytes: 2048,
@@ -263,15 +262,13 @@ test('mid-session daemon death: next execute re-ensures, spawns once, succeeds',
   }
 })
 
-test('buildDaemonEnv omits blank cloud refs but keeps port/token/autosync flag', async () => {
+test('buildDaemonEnv injects only the autosync flag — cloud server/token stay with engram\'s own config', async () => {
   const host = makeFakeHost({
-    credentials: { ENGRAM_HTTP_TOKEN: { value: 'tok-8' } }, // cloud refs resolve undefined
+    credentials: { ENGRAM_HTTP_TOKEN: { value: 'tok-8' } },
   })
   const { config } = reactiveConfig({
     port: '8901',
     httpTokenRef: 'ENGRAM_HTTP_TOKEN',
-    cloudServerRef: 'ENGRAM_CLOUD_SERVER',
-    cloudTokenRef: 'ENGRAM_CLOUD_TOKEN',
     autosync: true,
   })
   const { dispose } = await mount(host, config) // no daemon on 8901
@@ -283,8 +280,10 @@ test('buildDaemonEnv omits blank cloud refs but keeps port/token/autosync flag',
   assert.equal(env.ENGRAM_PORT, '8901')
   assert.equal(env.ENGRAM_HTTP_TOKEN, 'tok-8')
   assert.equal(env.ENGRAM_CLOUD_AUTOSYNC, '1')
-  assert.ok(!('ENGRAM_CLOUD_SERVER' in env), 'blank cloudServerRef must contribute nothing')
-  assert.ok(!('ENGRAM_CLOUD_TOKEN' in env), 'blank cloudTokenRef must contribute nothing')
+  // Upstream resolves cloud server/token from ~/.engram/cloud.json (env would
+  // OVERRIDE the user's setup) — this plugin never injects them.
+  assert.ok(!('ENGRAM_CLOUD_SERVER' in env), 'cloud server must come from engram\'s own config')
+  assert.ok(!('ENGRAM_CLOUD_TOKEN' in env), 'cloud token must come from engram\'s own config')
   dispose()
 })
 

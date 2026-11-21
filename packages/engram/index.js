@@ -52,9 +52,18 @@ export function readNumber(value) {
 
 /**
  * Row configuration. Per ADR-0005: defaults are empty or protocol-generic —
- * no deployment addresses or credentials baked in. Secrets appear only as
- * credential-ref NAMES (httpTokenRef / cloudServerRef / cloudTokenRef),
- * resolved through ctx.credentials at mount time (Task 8) — never as values.
+ * no deployment addresses or credentials baked in. The one secret (the local
+ * daemon's HTTP token) appears only as a credential-ref name (httpTokenRef,
+ * default ENGRAM_HTTP_TOKEN) resolved through ctx.credentials — the
+ * Plugins-page secret control pastes the value straight into the credential
+ * store, so it never renders and never lands in a patch layer.
+ *
+ * Cloud sync is deliberately NOT configurable here: engram's own config
+ * (~/.engram/cloud.json via `engram cloud config/enroll`) is the single
+ * source of truth — upstream resolves server/token from cloud.json with env
+ * as override, so injecting our own values would silently shadow the user's
+ * setup. `autosync` only flips ENGRAM_CLOUD_AUTOSYNC=1 (an env-only opt-in
+ * cloud.json cannot express) on daemons THIS plugin spawns.
  *
  * Volatile fields are the ones Plugins-page edits apply live (settings.mutate
  * persists accepted edits into the profile patch — it is not a persistence
@@ -67,9 +76,7 @@ export const Config = Schema.object({
   // '' = engram's documented protocol default (7437); the client treats
   // empty as 7437 — the port number is never baked into the schema.
   port: Schema.string().default('').volatile(),
-  httpTokenRef: Schema.string().role('credential-ref').default('').volatile(),
-  cloudServerRef: Schema.string().role('credential-ref').default('').volatile(),
-  cloudTokenRef: Schema.string().role('credential-ref').default('').volatile(),
+  httpTokenRef: Schema.string().role('credential-ref').default('ENGRAM_HTTP_TOKEN').volatile(),
   autosync: Schema.boolean().default(false).volatile(),
   contextInjection: Schema.union(['off', 'on']).default('off').volatile(),
   contextMaxBytes: Schema.number().min(0).default(2048).volatile(),
@@ -115,31 +122,21 @@ export function apply(ctx, config) {
   ctx.inject(['tools', 'systemPrompt', 'credentials', 'subprocess', 'workingDirectory'], async (scope) => {
     note('tools-inject')
     try {
-      // ---- credentials: cached values, refreshed on reference updates -----
-      // Refs are NAMES, resolved through the credentials service; empty or
-      // unresolvable refs contribute '' (buildEnv then omits them).
-      const refNames = {
-        httpToken: () => readString(config.httpTokenRef),
-        cloudServer: () => readString(config.cloudServerRef),
-        cloudToken: () => readString(config.cloudTokenRef),
-      }
-      const values = { httpToken: '', cloudServer: '', cloudToken: '' }
+      // ---- credentials: cached token value, refreshed on updates ------------
+      // The daemon's HTTP token is a credential ref (the Plugins-page secret
+      // control writes the value into the store under the ref name); an
+      // unresolvable ref contributes '' (daemon takes no auth).
+      const httpTokenRef = () => readString(config.httpTokenRef) || 'ENGRAM_HTTP_TOKEN'
+      const values = { httpToken: '' }
       const refreshValues = async () => {
-        const [httpToken, cloudServer, cloudToken] = await Promise.all([
-          refNames.httpToken() ? scope.credentials.resolve(refNames.httpToken()) : undefined,
-          refNames.cloudServer() ? scope.credentials.resolve(refNames.cloudServer()) : undefined,
-          refNames.cloudToken() ? scope.credentials.resolve(refNames.cloudToken()) : undefined,
-        ])
+        const httpToken = await scope.credentials.resolve(httpTokenRef())
         values.httpToken = httpToken?.value ?? ''
-        values.cloudServer = cloudServer?.value ?? ''
-        values.cloudToken = cloudToken?.value ?? ''
       }
       await refreshValues()
       // Live refresh on credential updates (gitlab index.js:116 pattern);
-      // the listener re-reads only when one of OUR refs changed.
+      // the listener re-reads only when OUR ref changed.
       const offCredUpdates = scope.on('credentials/reference-updated', async (ref) => {
-        if (ref === refNames.httpToken() || ref === refNames.cloudServer()
-          || ref === refNames.cloudToken()) {
+        if (ref === httpTokenRef()) {
           try { await refreshValues() } catch { /* keep last good values */ }
         }
       })
@@ -156,18 +153,16 @@ export function apply(ctx, config) {
         timeoutMsProvider: () => REQUEST_TIMEOUT_MS,
       })
 
-      // Daemon spawn environment: ONLY non-empty extras (blank cloud refs
-      // contribute nothing).
+      // Daemon spawn environment: ONLY non-empty extras. Cloud is deliberately
+      // absent: upstream resolves cloud server/token from ~/.engram/cloud.json
+      // (env would OVERRIDE the user's setup, not supplement it), so this
+      // plugin passes nothing but the env-only autosync opt-in flag.
       const buildDaemonEnv = () => {
         const env = {}
         const port = getPort()
         if (port) env.ENGRAM_PORT = String(port)
         if (values.httpToken !== '') env.ENGRAM_HTTP_TOKEN = values.httpToken
-        if (readBoolean(config.autosync)) {
-          env.ENGRAM_CLOUD_AUTOSYNC = '1'
-          if (values.cloudServer !== '') env.ENGRAM_CLOUD_SERVER = values.cloudServer
-          if (values.cloudToken !== '') env.ENGRAM_CLOUD_TOKEN = values.cloudToken
-        }
+        if (readBoolean(config.autosync)) env.ENGRAM_CLOUD_AUTOSYNC = '1'
         return env
       }
 

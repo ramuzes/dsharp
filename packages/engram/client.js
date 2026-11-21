@@ -11,8 +11,9 @@
  * package name). The card edits the host Config fields (index.js) grouped
  * as Daemon (daemonMode / port / httpTokenRef), Project (projectMode /
  * fixedProject / projectMap), Injection (contextInjection / contextMaxBytes),
- * and Cloud (cloudServerRef / cloudTokenRef / autosync); toolProfile stays
- * out of the card (advanced, v1 core-only). There is NO status section: v1
+ * and Cloud (an autosync switch; cloud server/token deliberately stay with
+ * engram's own configuration). toolProfile stays out of the card (advanced,
+ * v1 core-only). There is NO status section: v1
  * has no Remote namespace. Chrome-cdp's `chromeCdp` status namespace is the
  * v2 precedent if a live-status card is added later.
  *
@@ -42,13 +43,15 @@ window.__ModuleLoader__.load({
     const NS = 'engram'
 
     const zh = {
-      'config.summary': 'engram 持久记忆：守护进程托管、项目解析、可选的上下文注入与云同步。密钥只以凭据引用名出现。',
+      'config.summary': 'engram 持久记忆：守护进程托管、项目解析、可选的上下文注入与自动同步开关。',
       'config.daemonMode': '守护进程模式',
       'config.daemonModeHint': 'auto-spawn（默认，按需拉起本地守护进程）或 connect-only（仅连接已运行的实例）。结构字段，保存后重载插件生效',
       'config.port': '守护进程端口',
       'config.portHint': '如 7437；留空使用 engram 协议默认端口',
-      'config.httpTokenRef': 'HTTP 令牌引用',
-      'config.httpTokenRefHint': '凭据存储中的引用名（非令牌本体）；留空表示守护进程无鉴权',
+      'config.httpToken': 'HTTP 令牌',
+      'config.httpTokenHint': '守护进程本地 API 的 Bearer 令牌；填入后存入 dsh 凭据存储，不会再次显示',
+      'config.secretSet': '已配置',
+      'config.secretUnset': '未配置（留空表示守护进程无鉴权）',
       'config.projectMode': '项目模式',
       'config.projectModeHint': 'auto（按工作目录自动解析）/ fixed（固定项目）/ map（按映射表）；留空恢复 auto',
       'config.fixedProject': '固定项目',
@@ -59,12 +62,9 @@ window.__ModuleLoader__.load({
       'config.contextInjectionHint': 'off（默认）/ on：on 时在每轮对话注入记忆摘要',
       'config.contextMaxBytes': '注入字节上限',
       'config.contextMaxBytesHint': '不小于 0 的字节数，默认 2048',
-      'config.cloudServerRef': '云同步服务引用',
-      'config.cloudServerRefHint': '凭据存储中的引用名，指向 engram 云服务地址；留空表示未配置云同步',
-      'config.cloudTokenRef': '云同步令牌引用',
-      'config.cloudTokenRefHint': '凭据存储中的引用名；留空表示云同步无鉴权',
       'config.autosync': '自动同步',
-      'config.autosyncHint': '开启后记忆变更自动同步到云端（需已配置云同步引用）',
+      'config.autosyncHint': '仅对 DSH 拉起的守护进程生效：注入 ENGRAM_CLOUD_AUTOSYNC=1 开启后台云同步',
+      'config.cloudNote': '云同步的服务器与令牌沿用 engram 自身的配置（~/.engram/cloud.json，经 engram cloud config/enroll 设置）——此处不重复配置，避免覆盖。',
       'group.daemon': '守护进程',
       'group.project': '项目',
       'group.injection': '注入',
@@ -80,13 +80,15 @@ window.__ModuleLoader__.load({
     }
 
     const en = {
-      'config.summary': 'Durable engram memory: daemon stewardship, project resolution, optional context injection, and cloud sync. Secrets appear only as credential-ref names.',
+      'config.summary': 'Durable engram memory: daemon stewardship, project resolution, optional context injection, and an autosync switch.',
       'config.daemonMode': 'Daemon mode',
       'config.daemonModeHint': 'auto-spawn (default; the host spawns the local daemon as needed) or connect-only (attach to an already-running instance). Structural: takes effect after plugin reload',
       'config.port': 'Daemon port',
       'config.portHint': 'e.g. 7437; empty uses engram\'s documented protocol default',
-      'config.httpTokenRef': 'HTTP token reference',
-      'config.httpTokenRefHint': 'Credential-store reference NAME (never the token itself); empty means the daemon takes no auth',
+      'config.httpToken': 'HTTP token',
+      'config.httpTokenHint': "Bearer token for the daemon's local API; stored in the dsh credential store, never shown again",
+      'config.secretSet': 'Configured',
+      'config.secretUnset': 'Not set (empty means the daemon takes no auth)',
       'config.projectMode': 'Project mode',
       'config.projectModeHint': 'auto (resolve from the working directory) / fixed (one fixed project) / map (per mapping table); empty re-inherits auto',
       'config.fixedProject': 'Fixed project',
@@ -97,12 +99,9 @@ window.__ModuleLoader__.load({
       'config.contextInjectionHint': 'off (default) / on: on injects a memory summary into every prompt',
       'config.contextMaxBytes': 'Injection byte cap',
       'config.contextMaxBytesHint': 'Bytes, at least 0; default 2048',
-      'config.cloudServerRef': 'Cloud server reference',
-      'config.cloudServerRefHint': 'Credential-store reference NAME pointing at the engram cloud service; empty means cloud sync is not configured',
-      'config.cloudTokenRef': 'Cloud token reference',
-      'config.cloudTokenRefHint': 'Credential-store reference NAME; empty means cloud sync takes no auth',
       'config.autosync': 'Autosync',
-      'config.autosyncHint': 'When on, memory changes sync to the cloud automatically (needs the cloud references configured)',
+      'config.autosyncHint': 'Applies only to daemons DSH spawns: injects ENGRAM_CLOUD_AUTOSYNC=1 for background cloud sync',
+      'config.cloudNote': 'Cloud sync reuses engram\'s own configuration (~/.engram/cloud.json via `engram cloud config/enroll`) — deliberately not duplicated here, so nothing shadows your setup.',
       'group.daemon': 'Daemon',
       'group.project': 'Project',
       'group.injection': 'Injection',
@@ -213,12 +212,22 @@ window.__ModuleLoader__.load({
      * (dsh checkout, ui-primitives/src/settings-form/form-model.ts): staged
      * drafts per field, a plan built in staging order, one revision-fenced
      * mutate per save with read-back re-seed, and overridden from user-layer
-     * PRESENCE. No secret controls: credential-ref NAMES are plain fields.
+     * PRESENCE. Secret fields follow the feishu SettingsSecretField pattern
+     * (hand-rolled so this card stays free of the primitives module):
+     * write-only staged text saved through the credentials Remote instead of
+     * a config op, a Configured/Not-set badge from describe, never a
+     * read-back, and blank staging is a no-op.
      */
     class EngramFormModel {
-      constructor(scope, specs) {
+      constructor(scope, specs, secrets = {}) {
         this.specs = new Map(specs.map((spec) => [spec.field, spec]))
         this.scope = scope
+        // field -> { refOf: () => credential ref name }; secretApi is the
+        // client credentials Remote ({ set(ref, value), describe(refs) }) or
+        // null when unavailable (controls render disabled).
+        this.secrets = secrets.fields ?? {}
+        this.secretApi = secrets.api ?? null
+        this.secretConfigured = {}
         this.staged = new Map()
         this.listeners = new Set()
         this.baseline = undefined
@@ -247,6 +256,18 @@ window.__ModuleLoader__.load({
       }
 
       field(name) {
+        // Secret fields have no config spec: write-only staged text plus the
+        // Configured badge from the last credentials describe.
+        if (this.secrets[name] !== undefined) {
+          const staged = this.staged.get(name)
+          return {
+            text: staged?.text ?? '',
+            overridden: false,
+            invalid: false,
+            configured: this.secretConfigured[name] ?? false,
+            available: this.secretApi !== null,
+          }
+        }
         const spec = this.spec(name)
         const staged = this.staged.get(name)
         if (staged === undefined) {
@@ -284,9 +305,16 @@ window.__ModuleLoader__.load({
         this.publish()
         try {
           const ops = plan.flatMap((item) => item.op === undefined ? [] : [item.op])
+          const runs = plan.flatMap((item) => item.run === undefined ? [] : [item.run])
           const landed = !ops.length || await this.scope.mutate(ops, this.baseline?.revision)
-          if (landed) { this.staged.clear(); this.baseline = undefined }
-          this.failed = !landed
+          let runsLanded = true
+          if (landed && runs.length) {
+            try { for (const run of runs) await run() } catch { runsLanded = false }
+            await this.refreshSecrets()
+          }
+          const ok = landed && runsLanded
+          if (ok) { this.staged.clear(); this.baseline = undefined }
+          this.failed = !ok
         } catch {
           this.failed = true
         } finally {
@@ -300,7 +328,21 @@ window.__ModuleLoader__.load({
       /** Every staged edit a save would write, in staging order. */
       plan() {
         const plan = []
+        // Secret fields first: non-empty staged text becomes a credentials
+        // write (run) — never a config op; empty/blank staging is a no-op
+        // (a blank save never clobbers the stored secret).
+        for (const [name, spec] of Object.entries(this.secrets)) {
+          const staged = this.staged.get(name)
+          if (staged === undefined || staged.clear) continue
+          const value = staged.text.trim()
+          if (value === '') continue
+          plan.push({
+            field: name,
+            run: async () => { await this.secretApi.set(spec.refOf(), value) },
+          })
+        }
         for (const [field, staged] of this.staged) {
+          if (this.secrets[field] !== undefined) continue
           const spec = this.spec(field)
           if (staged.clear) {
             if (this.stored(field)) plan.push({ field, op: { op: 'unset', path: [field] } })
@@ -313,6 +355,21 @@ window.__ModuleLoader__.load({
           else plan.push({ field, op: { op: 'set', path: [field], value: write.value } })
         }
         return plan
+      }
+
+      /** Refresh the Configured badges from the credentials store (contained). */
+      async refreshSecrets() {
+        if (this.secretApi === null) return
+        try {
+          const entries = Object.entries(this.secrets)
+          const refs = entries.map(([, spec]) => spec.refOf())
+          const infos = await this.secretApi.describe(refs)
+          for (const [name, spec] of entries) {
+            const info = infos?.[spec.refOf()]
+            this.secretConfigured[name] = info?.configured === true
+          }
+          this.publish()
+        } catch { /* keep last-known badges */ }
       }
 
       stage(field, edit) {
@@ -441,15 +498,42 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * A credentials-backed secret control (the feishu SettingsSecretField
+     * pattern): write-only input, a Configured/Not-set badge from the last
+     * describe, no reset and never a read-back. Blank staging is a no-op — a
+     * blank save never clobbers the stored secret.
+     */
+    function SecretField({ t, id, field, fieldState, disabled, onEdit }) {
+      const unavailable = fieldState.available === false
+      return h('div', { className: 'engram-field' },
+        h('div', { className: 'engram-field-head' },
+          h('label', { className: 'engram-field-label', htmlFor: id }, t(`config.${field}`)),
+          h('span', { className: 'engram-field-badges' },
+            h('span', { className: 'engram-field-badge' },
+              unavailable ? t('config.unavailable') : fieldState.configured ? t('config.secretSet') : t('config.secretUnset')))),
+        h('input', {
+          id,
+          className: 'engram-input',
+          type: 'password',
+          value: fieldState.text,
+          disabled: disabled || unavailable,
+          autoComplete: 'new-password',
+          onChange: (event) => { onEdit(field, event.target.value) },
+        }),
+        h('p', { className: 'engram-field-message', id: `${id}-message` }, t(`config.${field}Hint`)))
+    }
+
+    /**
      * The card's groups, in display order. Each entry names the group label
-     * key and the plain value fields it renders (autosync is the one
-     * checkbox and renders inside Cloud after the references).
+     * key, the plain value fields it renders, and the write-only secret
+     * fields; autosync is the one checkbox and renders inside Cloud with a
+     * note pointing at engram's own cloud configuration.
      */
     const GROUPS = [
-      { key: 'group.daemon', fields: ['daemonMode', 'port', 'httpTokenRef'] },
+      { key: 'group.daemon', fields: ['daemonMode', 'port'], secrets: ['httpToken'] },
       { key: 'group.project', fields: ['projectMode', 'fixedProject', 'projectMap'] },
       { key: 'group.injection', fields: ['contextInjection', 'contextMaxBytes'] },
-      { key: 'group.cloud', fields: ['cloudServerRef', 'cloudTokenRef'] },
+      { key: 'group.cloud', fields: [] },
     ]
     const NUMERIC_FIELDS = new Set(['contextMaxBytes'])
 
@@ -471,12 +555,22 @@ window.__ModuleLoader__.load({
         !state.writable ? h('p', { className: 'engram-config-notice', role: 'status' }, t('config.readOnly')) : null,
         GROUPS.map((group) => h('section', { className: 'engram-config-group', key: group.key },
           h('h4', { className: 'engram-config-group-title' }, t(group.key)),
+          group.key === 'group.cloud'
+            ? h('p', { className: 'engram-config-notice', role: 'note' }, t('config.cloudNote'))
+            : null,
           group.fields.map((field) => h(ValueField, {
             key: field,
             id: `engram-config-${field}`,
             field,
             fieldState: state[field],
             numeric: NUMERIC_FIELDS.has(field),
+            ...fieldProps,
+          })),
+          (group.secrets ?? []).map((field) => h(SecretField, {
+            key: field,
+            id: `engram-config-${field}`,
+            field,
+            fieldState: state[field],
             ...fieldProps,
           })),
           group.key === 'group.cloud'
@@ -500,22 +594,37 @@ window.__ModuleLoader__.load({
      */
     function buildConfigCard(ctx) {
       const configForm = ctx.configForms.get(ROW)
+      // The credentials Remote backs the write-only secret control (feishu
+      // pattern); absent remote leaves the control disabled, never broken.
+      const remote = ctx.remote
+      const secretApi = remote?.credentials && typeof remote.credentials.set === 'function'
+        && typeof remote.credentials.describe === 'function'
+        ? remote.credentials
+        : null
+      // Live credential-ref name: the config field's current value, falling
+      // back to the schema default ENGRAM_HTTP_TOKEN.
+      const httpTokenRefOf = () => {
+        const raw = configForm.getSnapshot().value?.httpTokenRef
+        const name = typeof raw?.get === 'function' ? raw.get() : raw
+        return typeof name === 'string' && name.trim() !== '' ? name.trim() : 'ENGRAM_HTTP_TOKEN'
+      }
       const model = new EngramFormModel(configForm, [
         enumField('daemonMode', DAEMON_MODES),
         portField,
-        textField('httpTokenRef'),
         enumField('projectMode', PROJECT_MODES),
         textField('fixedProject'),
         projectMapField,
         enumField('contextInjection', INJECTION_MODES),
         contextMaxBytesField,
-        textField('cloudServerRef'),
-        textField('cloudTokenRef'),
         autosyncField,
-      ])
+      ], {
+        fields: { httpToken: { refOf: httpTokenRefOf } },
+        api: secretApi,
+      })
+      void model.refreshSecrets()
       const formStore = model.bind(() => ({}))
-      const FIELDS = ['daemonMode', 'port', 'httpTokenRef', 'projectMode', 'fixedProject',
-        'projectMap', 'contextInjection', 'contextMaxBytes', 'cloudServerRef', 'cloudTokenRef', 'autosync']
+      const FIELDS = ['daemonMode', 'port', 'httpToken', 'projectMode', 'fixedProject',
+        'projectMap', 'contextInjection', 'contextMaxBytes', 'autosync']
       const computeSnapshot = () => {
         const snapshot = { ...model.shell() }
         for (const field of FIELDS) snapshot[field] = model.field(field)
@@ -545,7 +654,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'configForms'],
+      inject: ['slots', 'locale', 'configForms', 'remote'],
       apply(ctx) {
         // Containment: a failed card build must register NOTHING — a dead
         // entry or a missing dictionary would blank the slot cell for the

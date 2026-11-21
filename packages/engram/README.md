@@ -23,28 +23,37 @@ shows the configuration card documented below on the bundle's detail page.
 
 All fields live on the Loader row `engram` and are edited on the Plugins
 page (the bundle's config card) or defaulted through the bundle's patch
-layer. Secrets appear only as credential-ref **names**, resolved through
-`ctx.credentials` at mount time — never as values.
+layer. The one secret (the daemon HTTP token) is pasted into the card's
+write-only control — it lands in the dsh credential store under the
+`httpTokenRef` name and never renders or persists in a patch layer.
 
 | Field | Type | Default | Volatile | Meaning |
 | --- | --- | --- | --- | --- |
 | `daemonMode` | `auto-spawn` \| `connect-only` | `auto-spawn` | no | Daemon stewardship (see below). Structural: edits take effect after plugin reload. |
 | `port` | string | `''` | yes | Daemon port. Empty uses engram's documented protocol default (7437). |
-| `httpTokenRef` | credential-ref name | `''` | yes | Credential-store reference naming the daemon HTTP token. Empty = the daemon takes no auth. |
+| `httpTokenRef` | credential-ref name | `ENGRAM_HTTP_TOKEN` | yes | Credential-store reference for the daemon HTTP token (the card's secret control writes here). Unresolvable = the daemon takes no auth. |
 | `projectMode` | `auto` \| `fixed` \| `map` | `auto` | yes | How a session resolves its engram project: from the working directory (`auto`), one fixed project (`fixed`), or the `projectMap` table (`map`). |
 | `fixedProject` | string | `''` | yes | The engram project used when `projectMode=fixed`. |
 | `projectMap` | dict (string → string) | `{}` | yes | Working-directory name → engram project mapping for `projectMode=map`. |
 | `contextInjection` | `off` \| `on` | `off` | yes | When `on`, injects a memory summary into every prompt (fail-open: injection failure never blocks the turn). |
 | `contextMaxBytes` | number ≥ 0 | `2048` | yes | Byte cap for the injected summary. |
-| `cloudServerRef` | credential-ref name | `''` | yes | Credential-store reference naming the engram cloud service address. Empty = cloud sync not configured. |
-| `cloudTokenRef` | credential-ref name | `''` | yes | Credential-store reference naming the cloud sync token. |
-| `autosync` | boolean | `false` | yes | Sync memory changes to the cloud automatically (requires the cloud references). |
+| `autosync` | boolean | `false` | yes | Applies only to daemons this plugin spawns: injects `ENGRAM_CLOUD_AUTOSYNC=1` to enable background cloud sync. |
 | `toolProfile` | `core` \| `extended` | `core` | yes | Tool surface. v1 registers the core set only; `extended` is reserved. Not shown on the config card (advanced). |
 
 "Volatile" fields apply live: a Plugins-page save is picked up by the running
 plugin without a reload (config is re-read per call). `daemonMode` is the one
 exception — it changes mount-time stewardship structure, so saving it prints
 a reload hint in its field hint.
+
+### Cloud sync
+
+There is deliberately **no cloud server/token config here**. engram resolves
+cloud settings from its own `~/.engram/cloud.json` (set via `engram cloud
+config` / `engram cloud enroll`), with env as an override — upstream semantics
+this plugin does not second-guess. The `autosync` switch only passes the
+env-only `ENGRAM_CLOUD_AUTOSYNC=1` opt-in to daemons DSH spawns; everything
+else comes from your engram configuration. Under `connect-only` the plugin
+touches nothing cloud-related.
 
 ## Daemon stewardship
 
