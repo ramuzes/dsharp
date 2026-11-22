@@ -58,6 +58,16 @@
  *   would crash the plugin on hosts without them); each is resolved per use
  *   through the same try-guarded ctx.get() optional lookup as the roster
  *   namespace, and absence degrades the UI instead of throwing.
+ * - Session-scoped slot standard props — `useProjection`: the slot machinery
+ *   composes the standard props into every session-scope seat (ui-renderer
+ *   scoped-slots.tsx:521,602 standardProps keyed hooks; ui-session
+ *   client/index.ts:148-157 SessionStandardProps), and `useProjection` is
+ *   the per-key projection hook (UseProjection, session-controller
+ *   src/client/sessions/projection-store.ts:38-45; undefined = capability
+ *   absent). `modelSelection` is a registered projection key whose `next`
+ *   is the live selection (core/agent types.ts:78-101 — null while the
+ *   Agent's initial options supply the route). Read the ui-agent-team
+ *   TeamModeToggle.tsx:39-41 way: a PROP the seat receives, never a remote.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-agent-roster',
@@ -106,6 +116,7 @@ window.__ModuleLoader__.load({
       'draft.label': 'AI 起草',
       'draft.placeholder': '用一两句话描述想要的角色，模型将起草名称、描述与提示词',
       'draft.model': '起草模型',
+      'draft.model.inherit': '沿用草稿会话自身的模型',
       'draft.action': '起草',
       'draft.inflight': '起草中…',
       'draft.abort': '停止等待',
@@ -161,6 +172,7 @@ window.__ModuleLoader__.load({
       'draft.label': 'AI draft',
       'draft.placeholder': 'Describe the role you want in a sentence or two; the model drafts the name, description, and prompt',
       'draft.model': 'Draft model',
+      'draft.model.inherit': "Keep the draft session's own model",
       'draft.action': 'Draft',
       'draft.inflight': 'Drafting…',
       'draft.abort': 'Stop waiting',
@@ -340,11 +352,25 @@ window.__ModuleLoader__.load({
      * AI-draft area is a fill-only proposal (nothing is saved without the
      * explicit confirm, and an unparsed draft is visibly flagged); the
      * banner area carries the team-gating states (see the teamBanner
-     * derivation inside RosterModal).
-     * @param {any} props - `sessionId`, `close()`, and the locale seat's `t`.
+     * derivation inside RosterModal). The draft-model picker prefills from
+     * the live session selection (`useProjection('modelSelection').next`)
+     * with a truthful null-path default.
+     * @param {any} props - `sessionId`, `close()`, the locale seat's `t`,
+     *   and the slot machinery's standard `useProjection` prop.
      */
     function RosterModal(props) {
-      const { sessionId, close, t } = props
+      const { sessionId, close, t, useProjection } = props
+      // The session's live model selection, read through the slot
+      // machinery's standard `useProjection` prop (header citations) — NOT
+      // a remote. Called unconditionally through a stable fallback: the
+      // real prop is a hook (per-key uSES binding, projection-store.ts:
+      // 33-45), so a conditional call would break hook order in
+      // production; hosts whose seat props predate the standard resolve to
+      // the absent fallback. `next` is null while the Agent's initial
+      // options supply the route — the prefill then falls back.
+      const projectionOf = useProjection ?? ((key) => undefined)
+      const modelSelection = projectionOf('modelSelection')
+      const liveNext = modelSelection?.next ?? null
       const [templates, setTemplates] = React.useState({ phase: 'loading' })
       const [selectedId, setSelectedId] = React.useState(null)
       const [memberName, setMemberName] = React.useState('')
@@ -368,7 +394,9 @@ window.__ModuleLoader__.load({
       const [customPrompt, setCustomPrompt] = React.useState('')
       const [saveAsTemplate, setSaveAsTemplate] = React.useState(false)
       const [brief, setBrief] = React.useState('')
-      const [draftChoice, setDraftChoice] = React.useState('')
+      // null = unset (the live-selection prefill applies); '' = the labeled
+      // default chosen explicitly; otherwise the chosen row's key.
+      const [draftChoice, setDraftChoice] = React.useState(null)
       // One draft state object: `epoch` is the liveness token that lets an
       // abandoned wait discard its late resolution (no useRef — the fake
       // React of the test harness supports the hook subset above only).
@@ -489,7 +517,22 @@ window.__ModuleLoader__.load({
       }, [catalog])
       const modelByKey = new Map(modelRows.map((row) => [row.key, row]))
       const chosen = modelChoice === '' ? undefined : modelByKey.get(modelChoice)
-      const chosenDraft = draftChoice === '' ? undefined : modelByKey.get(draftChoice)
+      // Draft-picker prefill: while the user has not chosen, the picker
+      // starts from the session's LIVE model when the catalog maps it.
+      // Server-side, `model: null` is NOT "the current session's model"
+      // for a draft — runDraft skips selectModel on null, keeping the
+      // per-cwd draft session's own sticky selection (lib/drafter.js:
+      // 305-316), so the labeled default must say what null really does
+      // and the live selection must be sent explicitly. Unmapped, absent,
+      // or null `next` — and any explicit user choice — uses the labeled
+      // default instead. (The SPAWN selector's null is different and
+      // correct: it omits agentOptions so the child inherits the parent's
+      // route — lib/spawn.js model precedence.)
+      const liveKey = liveNext !== null && typeof liveNext.provider === 'string' && typeof liveNext.model === 'string'
+        ? JSON.stringify([liveNext.provider, liveNext.model])
+        : null
+      const effectiveDraftChoice = draftChoice ?? (liveKey !== null && modelByKey.has(liveKey) ? liveKey : '')
+      const chosenDraft = effectiveDraftChoice === '' ? undefined : modelByKey.get(effectiveDraftChoice)
 
       /**
        * The spawn/draft model reference of one catalog row: an explicit
@@ -871,12 +914,12 @@ window.__ModuleLoader__.load({
                 h('select', {
                   id: 'agent-roster-draft-model',
                   className: 'agent-roster-select',
-                  'data-agent-roster-draft-model': draftChoice === '' ? 'inherit' : draftChoice,
-                  value: draftChoice,
+                  'data-agent-roster-draft-model': effectiveDraftChoice === '' ? 'inherit' : effectiveDraftChoice,
+                  value: effectiveDraftChoice,
                   disabled: drafting,
                   onChange: (event) => { setDraftChoice(event.target.value) },
                 },
-                  h('option', { value: '' }, t('model.inherit')),
+                  h('option', { value: '' }, t('draft.model.inherit')),
                   ...catalogOptgroups()),
                 h('button', {
                   type: 'button',
@@ -957,18 +1000,19 @@ window.__ModuleLoader__.load({
      * opener its mount effect registers (the ui-message-feedback dialog
      * placement pattern — the Modal portals from here, the overlay supplies
      * the per-session scope).
-     * @param {any} props - the seat's composed props: the inject face's
-     *   `sessionId` and the locale seat's `t`.
+     * @param {any} props - the seat's composed props: the slot machinery's
+     *   standard `useProjection` (session scope), the inject face's
+     *   `sessionId`, and the locale seat's `t`.
      */
     function RosterModalSeat(props) {
-      const { sessionId, t } = props
+      const { sessionId, t, useProjection } = props
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => {
         const opener = () => { setOpen(true) }
         modalOpeners.set(sessionId, opener)
         return () => { if (modalOpeners.get(sessionId) === opener) modalOpeners.delete(sessionId) }
       }, [sessionId])
-      return open ? h(RosterModal, { sessionId, close: () => { setOpen(false) }, t }) : null
+      return open ? h(RosterModal, { sessionId, close: () => { setOpen(false) }, t, useProjection }) : null
     }
 
     /** Scoped sheet, appended once per activation and removed with the plugin. */

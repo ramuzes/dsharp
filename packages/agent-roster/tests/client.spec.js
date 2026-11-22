@@ -270,9 +270,12 @@ const TEMPLATES = [
  * registered command's run(session) — the exact production path. Returns a
  * view over the seat's vdom (vdom + interact) plus the fake roster's
  * recorded spawn calls. `roster: null` leaves the remote namespace absent;
- * `extras` passes client Remote faces through to the ctx double.
+ * `extras` passes client Remote faces through to the ctx double;
+ * `useProjection` installs a fake standard-props projection hook on the
+ * seat (the plain-function shape ui-agent-team's team-mode.client.spec.tsx
+ * :20 fakes; omitted = a host whose seat props predate the standard).
  */
-async function openModal({ roster, extras } = {}) {
+async function openModal({ roster, extras, useProjection } = {}) {
   const spawned = []
   const rosterFake = roster === undefined
     ? {
@@ -285,7 +288,11 @@ async function openModal({ roster, extras } = {}) {
   const { harness, recorded } = applyPlugin({ roster: rosterFake, extras })
   const seat = recorded.registers.find(({ declaration }) => declaration.name === 'conversation.input.overlay')
   assert.ok(seat, 'the overlay seat is registered')
-  const props = { t: makeT(), ...seat.declaration.inject('sess-1') }
+  const props = {
+    t: makeT(),
+    ...(useProjection === undefined ? {} : { useProjection }),
+    ...seat.declaration.inject('sess-1'),
+  }
   const view = { vdom: undefined, spawned, harness }
   const render = () => { view.vdom = harness.render(seat.Component, props) }
   render()
@@ -897,4 +904,103 @@ test('a failed team action renders the action-failed line without losing the ban
   assert.ok(line.includes('gateway/internal — connection failed'))
   // The enable banner stays for a retry.
   assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-team'] === 'enable'))
+})
+
+// ---------------------------------------------------------------------------
+// Review fix — the draft picker prefills from the live session model.
+// ---------------------------------------------------------------------------
+
+/** The fake session face serving the catalog. */
+const catalogFace = () => ({ ok: true, value: CATALOG })
+
+test('draft picker prefills from the live session model; the spawn selector stays on inherit', async () => {
+  const record = { spawned: [], saved: [], drafted: [] }
+  const reasonerKey = JSON.stringify(['deepseek', 'reasoner'])
+  const view = await openModal({
+    roster: rosterWithTeam(HEALTHY_TEAM, record),
+    extras: { session: { modelCatalog: catalogFace } },
+    useProjection: (key) => key === 'modelSelection'
+      ? { lastUsed: null, next: { provider: 'deepseek', model: 'reasoner' } }
+      : undefined,
+  })
+  await enableCustomRole(view)
+  // Prefill: the draft picker starts on the live selection's catalog row.
+  const draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
+  assert.equal(draftSelect.props.value, reasonerKey)
+  assert.equal(draftSelect.props['data-agent-roster-draft-model'], reasonerKey)
+  // The spawn selector is untouched by the prefill: inherit default.
+  const spawnSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.equal(spawnSelect.props.value, '')
+  assert.equal(spawnSelect.props['data-agent-roster-model'], 'inherit')
+  // Drafting sends the live selection explicitly (server-side null would
+  // keep the draft session's own sticky selection, not this model).
+  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
+  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
+  assert.deepEqual(record.drafted[0].model, { provider: 'deepseek', model: 'reasoner' })
+  // A spawn in the same state still sends model null — the child inherits
+  // the parent route (draft fills the custom form, so this spawns custom).
+  const modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.equal(record.spawned[0].model, null)
+})
+
+test('draft picker falls back to the truthful default when the live selection is null, absent, or unmapped', async () => {
+  const cases = [
+    { name: 'next is null (initial options supply the route)', useProjection: () => ({ lastUsed: null, next: null }) },
+    { name: 'the modelSelection capability is absent', useProjection: () => undefined },
+    { name: 'the live model is not in the catalog', useProjection: () => ({ next: { provider: 'other-host', model: 'private' } }) },
+  ]
+  for (const { name, useProjection } of cases) {
+    const record = { spawned: [], saved: [], drafted: [] }
+    const view = await openModal({
+      roster: rosterWithTeam(HEALTHY_TEAM, record),
+      extras: { session: { modelCatalog: catalogFace } },
+      useProjection,
+    })
+    await enableCustomRole(view)
+    const draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
+    assert.equal(draftSelect.props.value, '', name)
+    assert.equal(draftSelect.props['data-agent-roster-draft-model'], 'inherit', name)
+    // The labeled default tells the truth about null: the DRAFT session's
+    // own model, not the spawn selector's inherit copy.
+    assert.ok(texts(draftSelect.children[0]).includes('t:draft.model.inherit'), name)
+    assert.equal(texts(draftSelect.children[0]).includes('t:model.inherit'), false, name)
+    // Drafting then sends model null → the draft session keeps its own.
+    await typeInto(view, 'data-agent-roster-brief', 'Make a role')
+    await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
+    assert.equal(record.drafted[0].model, null, name)
+  }
+  // A seat without the standard prop at all (older host) behaves the same.
+  const record = { spawned: [], saved: [], drafted: [] }
+  const plain = await openModal({ roster: rosterWithTeam(HEALTHY_TEAM, record), extras: { session: { modelCatalog: catalogFace } } })
+  await enableCustomRole(plain)
+  assert.equal(find(plain.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined).props.value, '')
+})
+
+test('an explicit draft-picker choice overrides the prefill, including back to the default', async () => {
+  const record = { spawned: [], saved: [], drafted: [] }
+  const reasonerKey = JSON.stringify(['deepseek', 'reasoner'])
+  const chatKey = JSON.stringify(['deepseek', 'chat'])
+  const view = await openModal({
+    roster: rosterWithTeam(HEALTHY_TEAM, record),
+    extras: { session: { modelCatalog: catalogFace } },
+    useProjection: () => ({ lastUsed: null, next: { provider: 'deepseek', model: 'reasoner' } }),
+  })
+  await enableCustomRole(view)
+  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
+  // Explicitly revert to the labeled default: the prefill no longer applies.
+  let draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
+  await view.interact(() => { draftSelect.props.onChange({ target: { value: '' } }) })
+  draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
+  assert.equal(draftSelect.props.value, '')
+  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
+  assert.equal(record.drafted[0].model, null)
+  // Pick another model explicitly: that choice wins over the prefill.
+  draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
+  await view.interact(() => { draftSelect.props.onChange({ target: { value: chatKey } }) })
+  draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
+  assert.equal(draftSelect.props.value, chatKey)
+  assert.notEqual(draftSelect.props.value, reasonerKey)
+  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
+  assert.deepEqual(record.drafted[1].model, { provider: 'deepseek', model: 'chat' })
 })
