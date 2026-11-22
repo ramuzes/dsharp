@@ -831,8 +831,7 @@ test('modal close is gated while a spawn or draft is in flight', async () => {
   assert.equal(find(view2.vdom, (node) => node.props?.['data-agent-roster-custom-name'] !== undefined).props.value, 'Late')
 })
 
-test('draft button disabled while drafting; stop abandons the wait and discards the late answer', async () => {
-  let resolveDraft
+test('draft button disabled while drafting; stop abandons the wait and discards the late answer', async () => {  let resolveDraft
   const drafted = []
   const view = await openModal({ roster: {
     ...rosterWithTeam(HEALTHY_TEAM, { spawned: [], saved: [], drafted }),
@@ -860,4 +859,42 @@ test('draft button disabled while drafting; stop abandons the wait and discards 
   await view.interact()
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-name'] !== undefined).props.value, '')
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-prompt'] !== undefined).props.value, '')
+})
+
+test('a failed draft renders its error line inline and re-enables the Draft button', async () => {
+  const view = await openModal({ roster: {
+    ...rosterWithTeam(HEALTHY_TEAM),
+    draft: async () => ({ ok: false, error: { code: 'roster/draft-timeout', message: 'The draft turn did not finish / 草稿生成未完成' } }),
+  } })
+  await enableCustomRole(view)
+  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
+  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  await view.interact(() => { draftButton.props.onClick() })
+  const error = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-error'] !== undefined)
+  assert.ok(error, 'the draft error line renders')
+  assert.equal(error.props['data-agent-roster-error'], 'roster/draft-timeout')
+  const line = texts(error).join(' ')
+  assert.ok(line.includes('t:draft.failed'))
+  assert.ok(line.includes('roster/draft-timeout — The draft turn did not finish / 草稿生成未完成'))
+  // Nothing filled; the button is re-armed for a retry.
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-name'] !== undefined).props.value, '')
+  const retry = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  assert.equal(retry.props.disabled, false)
+})
+
+test('a failed team action renders the action-failed line without losing the banner', async () => {
+  const view = await openModal({
+    roster: rosterWithTeam({ teamMode: false, isRoot: true, canEnable: true }),
+    extras: { agentTeams: { setEnabled: async () => ({ ok: false, error: { code: 'gateway/internal', message: 'connection failed' } }) } },
+  })
+  const button = find(view.vdom, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined)
+  assert.ok(button)
+  await view.interact(() => { button.props.onClick() })
+  const error = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] === 'error')
+  assert.ok(error, 'the team action-failed line renders')
+  const line = texts(error).join(' ')
+  assert.ok(line.includes('t:team.actionFailed'))
+  assert.ok(line.includes('gateway/internal — connection failed'))
+  // The enable banner stays for a retry.
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-team'] === 'enable'))
 })

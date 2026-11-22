@@ -30,7 +30,7 @@
  *   (packages/client/ui-conversation/src/client/contract/slots.ts:310) —
  *   the placement ui-message-feedback uses for its dialog
  *   (packages/client/ui-message-feedback/src/client/index.ts:115-131): the
- *     seat renders per session, `run(session)` flips that session's open state.
+ *   seat renders per session, `run(session)` flips that session's open state.
  * - `ctx.remote.$mount` with version-1 invocation descriptors
  *   (packages/typert/protocol/src/types.ts InvocationDescriptor) — the
  *   chrome-cdp client.js:385-399 pattern. The mounted namespace is read
@@ -339,7 +339,8 @@ window.__ModuleLoader__.load({
      * (explicit choice sends a ModelRef, the default sends null); the
      * AI-draft area is a fill-only proposal (nothing is saved without the
      * explicit confirm, and an unparsed draft is visibly flagged); the
-     * banner area carries the team-gating states (see teamBannerOf).
+     * banner area carries the team-gating states (see the teamBanner
+     * derivation inside RosterModal).
      * @param {any} props - `sessionId`, `close()`, and the locale seat's `t`.
      */
     function RosterModal(props) {
