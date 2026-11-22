@@ -103,3 +103,23 @@ _Avoid_: auto-memory (confusable with engram autosync)
 
 The explicit criteria, stated in the tool description and prompt section, for what the agent should persist: durable decisions, preferences, discovered constraints, and conclusions — never transient, re-derivable, secret, or duplicate content. Saving is always the agent's own judgment; the plugin never bulk-captures conversation content.
 _Avoid_: auto-save, capture-all
+
+### Role template (角色模板)
+
+A persisted, reusable blueprint for a team member: display name, one-line description, a standing prompt (the role's duties and constraints), and an optional default model preference. Configured once per profile, instantiable in any session.
+_Avoid_: agent preset (DSH's own composition mechanism, a different layer), assistant (CherryStudio's term), persona (vague)
+
+### Roster (成员名册)
+
+The profile-wide library of role templates owned by the agent-roster plugin; the single source from which team members are created in any session.
+_Avoid_: team (DSH team mode is the per-session coordination flag), library, registry (collides with the preset registry)
+
+### Member spawn (成员生成)
+
+Creating a team member by instantiating a role template (or an ad-hoc custom role typed on the spot) as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. The standing prompt rides as the child's first user message, exactly as a model-driven spawn would carry it.
+_Avoid_: agent creation (that is sessionController's ordinary-session path), preset selection
+
+### Draft session (草稿会话)
+
+The dedicated, reusable ordinary session that turns a one-line brief into a full role-template draft; one per workspace, user-inspectable, and the only sanctioned surface for model-assisted template writing. A draft never enters the library until the user reviews and saves it.
+_Avoid_: helper agent, background agent, hidden call
