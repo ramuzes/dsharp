@@ -23,6 +23,7 @@ await import('../client.js')
 function SettingsForm(props) { return { type: 'settings-form', props } }
 function SettingsValueField(props) { return { type: 'settings-value-field', props } }
 function SettingsSecretField(props) { return { type: 'settings-secret-field', props } }
+function Checkbox(props) { return { type: 'Checkbox', props } }
 
 /** Fake React mirroring the surface the card consumes. */
 const fakeReact = {
@@ -84,7 +85,9 @@ class FakeFormModel {
     }
     const snapshot = this.scope.getSnapshot()
     if (!this.specs.has(name)) throw new Error(`unregistered field: ${name}`)
-    return { text: String(snapshot.value?.[name] ?? ''), overridden: false, invalid: null }
+    const raw = snapshot.value?.[name]
+    const text = raw === true ? 'true' : raw === false ? 'false' : String(raw ?? '')
+    return { text, overridden: false, invalid: null }
   }
   actions() {
     return {
@@ -151,7 +154,7 @@ function bootPlugin({ scope, credentials } = {}) {
     if (name === 'react') return fakeReact
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       return {
-        SettingsForm, SettingsValueField, SettingsSecretField,
+        SettingsForm, SettingsValueField, SettingsSecretField, Checkbox,
         SettingsFormModel: FakeFormModel,
         settingsTextField: (field) => ({ field }),
         settingsNumberField: (field) => ({ field }),
@@ -171,7 +174,7 @@ test('factory registers under the package id; inject list includes remote.creden
   const plugin = loaded[0].factory((name) => {
     if (name === 'react') return fakeReact
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
-      return { SettingsForm, SettingsValueField, SettingsSecretField, SettingsFormModel: FakeFormModel, settingsTextField: (f) => ({ field: f }), settingsNumberField: (f) => ({ field: f }) }
+      return { SettingsForm, SettingsValueField, SettingsSecretField, Checkbox, SettingsFormModel: FakeFormModel, settingsTextField: (f) => ({ field: f }), settingsNumberField: (f) => ({ field: f }) }
     }
     throw new Error(`unexpected require: ${name}`)
   })
@@ -284,6 +287,32 @@ test('the card renders the shared chrome with the token secret field and cloud n
   assert.ok(texts.includes('SettingsForm'))
   assert.ok(texts.includes('p'), 'cloud note paragraph renders')
   assert.ok(texts.includes('SettingsSecretField'), 'token renders through SettingsSecretField')
-  assert.ok(texts.filter((name) => name === 'StagedField').length >= 6, 'value fields render as staged components over SettingsValueField')
+  assert.ok(texts.filter((name) => name === 'StagedField').length >= 5, 'value fields render as staged components over SettingsValueField')
+  assert.ok(texts.includes('AutosyncCheckField'), 'autosync renders as the checkbox field component')
   assert.equal(component({ view: 'summary', t, useConfig: () => state }), 'config.summary')
+})
+
+
+test('the autosync checkbox toggles stage true/false through the real component', async () => {
+  const { ctx, recorded, plugin } = bootPlugin()
+  plugin.apply(ctx)
+  const face = recorded.registrations[0].declaration.inject()
+  assert.equal(face.hooks.config.getSnapshot().autosync.text, 'false', 'default renders unchecked')
+  // Find the AutosyncCheckField ELEMENT in the tree and invoke it like React would.
+  const state = { writable: true, autosync: { text: 'false' }, httpToken: { text: '' }, tokenConfigured: false, daemonMode: { text: 'auto-spawn' }, port: { text: '' }, projectMode: { text: 'auto' }, fixedProject: { text: '' }, projectMap: { text: '' }, contextInjection: { text: 'off' }, contextMaxBytes: { text: '2048' } }
+  const edits = []
+  const tree = recorded.registrations[0].component({
+    view: 'page', t: (k) => k, useConfig: () => state,
+    edit: (field, text) => edits.push([field, text]),
+    resetField: () => {}, save: () => {}, discard: () => {},
+  })
+  const fieldElement = (tree.children ?? []).find((child) => child?.type?.name === 'AutosyncCheckField')
+  assert.ok(fieldElement, 'card tree carries the checkbox field')
+  const checkbox = fieldElement.type(fieldElement.props)
+  assert.equal(checkbox.type, Checkbox)
+  assert.equal(checkbox.props.checked, false)
+  checkbox.props.onChange(true)
+  checkbox.props.onChange(false)
+  assert.deepEqual(edits, [['autosync', 'true'], ['autosync', 'false']], 'onChange stages the true/false draft')
+  assert.equal(checkbox.props.label, 'config.autosync')
 })

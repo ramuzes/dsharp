@@ -29,7 +29,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const {
       SettingsForm, SettingsValueField, SettingsSecretField, SettingsFormModel,
-      settingsTextField, settingsNumberField,
+      settingsTextField, settingsNumberField, Checkbox,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const h = React.createElement
 
@@ -137,12 +137,22 @@ window.__ModuleLoader__.load({
 
     const DaemonModeField = textField('daemonMode', 'engram-config-daemon-mode')
     const PortField = textField('port', 'engram-config-port')
-    const AutosyncField = textField('autosync', 'engram-config-autosync')
     const ProjectModeField = textField('projectMode', 'engram-config-project-mode')
     const FixedProjectField = textField('fixedProject', 'engram-config-fixed-project')
     const ProjectMapField = textField('projectMap', 'engram-config-project-map')
     const InjectionField = textField('contextInjection', 'engram-config-context-injection')
     const MaxBytesField = textField('contextMaxBytes', 'engram-config-context-max-bytes', { numeric: true })
+
+    /** The autosync boolean as the official Checkbox primitive (staged like any field). */
+    function AutosyncCheckField({ t, state, edit }) {
+      return h(Checkbox, {
+        checked: state.autosync.text === 'true',
+        onChange: (next) => { edit('autosync', next ? 'true' : 'false') },
+        label: t('config.autosync'),
+        disabled: !state.writable,
+        title: t('config.autosyncHint'),
+      })
+    }
 
     /**
      * The config card: shared form chrome, the staged value fields, the
@@ -168,7 +178,7 @@ window.__ModuleLoader__.load({
           onEdit: (text) => { edit('httpToken', text) },
         }),
         h('p', { style: { margin: '0 0 4px', fontSize: '13px' } }, t('config.cloudNote')),
-        h(AutosyncField, { t, ...fieldProps }),
+        h(AutosyncCheckField, { t, ...fieldProps }),
         h(ProjectModeField, { t, ...fieldProps }),
         h(FixedProjectField, { t, ...fieldProps }),
         h(ProjectMapField, { t, ...fieldProps }),
@@ -239,7 +249,18 @@ window.__ModuleLoader__.load({
           },
         }
       }
-      const booleanSpec = enumSpec('autosync', ['true', 'false'])
+      // autosync renders as the official Checkbox primitive: staged text is
+      // 'true'/'false', the spec formats real booleans for display and stores
+      // a BOOLEAN on set (not the string).
+      const booleanSpec = {
+        field: 'autosync',
+        format: (value) => (value === true ? 'true' : value === false ? 'false' : typeof value === 'string' ? value : ''),
+        parse: (text) => {
+          const trimmed = text.trim()
+          if (trimmed === '') return { kind: 'clear' }
+          return trimmed === 'true' ? { kind: 'set', value: true } : trimmed === 'false' ? { kind: 'set', value: false } : undefined
+        },
+      }
       const projectMapSpec = {
         field: 'projectMap',
         format: (value) => value !== null && typeof value === 'object'
