@@ -375,6 +375,60 @@ test('apply registers the service over the domain store and closes the domain on
   }
 })
 
+test('a rejected domain open never dangles: recorded, mount completes, ops fail loudly', async () => {
+  // Node's default unhandled-rejection policy throws and kills the process;
+  // capture the hook to assert the open() rejection is acknowledged instead.
+  const unhandled = []
+  const onUnhandled = (error) => { unhandled.push(error) }
+  process.on('unhandledRejection', onUnhandled)
+  const dir = mkdtempSync(join(tmpdir(), 'agent-roster-t2-'))
+  const file = join(dir, 'status.json')
+  const prev = process.env.AGENT_ROSTER_STATUS_FILE
+  process.env.AGENT_ROSTER_STATUS_FILE = file
+  try {
+    const failure = new Error('backend version-mismatch')
+
+    // Store level: the failing facility is resolved, open() rejects.
+    const status = recordingStatus()
+    const store = openRosterStore({ get: () => ({ open: async () => { throw failure } }) }, status)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(
+      status.records.filter((r) => r.stage === 'storage-open-failed').map((r) => r.detail),
+      [String(failure)],
+      'degradation recorded once on the early-failure path',
+    )
+    // Operations still fail loudly with the typed backend error — the
+    // creation-time handler observes, it does not swallow.
+    await assert.rejects(() => store.all(), (error) => error === failure)
+    await assert.rejects(() => store.putDraftSession({ cwd: '/w', sessionId: 's', createdAt: T0 }), (error) => error === failure)
+
+    // Mount level: apply still completes (done) — the failure settles after
+    // the mount, so it must not crash or block it — and the real status
+    // writer records the degradation once the rejection lands. apply() runs
+    // its effect body synchronously, so read the file WITHOUT awaiting (an
+    // await would flush the rejection microtask and overwrite first).
+    const host = makeFakeHost({ storageDomain: { open: async () => { throw failure } } })
+    let factoryRan = 0
+    setServiceFactoryForTests(() => { factoryRan += 1 })
+    apply(host.ctx, { exposeAgentTools: { get: () => true } })
+    assert.equal(factoryRan, 1, 'service registration ran — the mount completed')
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'done', 'mount writes done despite the open failure')
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'storage-open-failed')
+    // Disposal over a failed open is also safe (nothing to close).
+    host.effects[0].dispose()
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(unhandled, [], 'no unhandled rejection anywhere on the failed-open path')
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+    setServiceFactoryForTests(undefined)
+    if (prev === undefined) delete process.env.AGENT_ROSTER_STATUS_FILE
+    else process.env.AGENT_ROSTER_STATUS_FILE = prev
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('apply containment: a service failure writes wire-failed, rethrows, and still disposes the store', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agent-roster-t2-'))
   const file = join(dir, 'status.json')

@@ -100,7 +100,10 @@ export function freshId() {
  *   dispose(): void,
  * }} the store handle. Every operation awaits the domain open, so a backend
  *   failure rejects the operations that need it — loud, never a silent second
- *   fallback below the memory mode (AGENTS.md: no silent degradation).
+ *   fallback below the memory mode (AGENTS.md: no silent degradation) — and
+ *   an open() rejection is acknowledged at creation (never left dangling for
+ *   Node's unhandledRejection to kill the host) while recording a
+ *   `storage-open-failed` status entry.
  */
 export function openRosterStore(scope, status) {
   const memory = { templates: new Map(), draftSessions: new Map() }
@@ -110,10 +113,21 @@ export function openRosterStore(scope, status) {
       'storageDomain service absent — roster keeps records in memory for this mount only (edits do not persist)')
   }
   // Undefined in memory mode; otherwise the opened domain handle once open()
-  // settles. A rejected open() rejects every subsequent operation as-is.
+  // settles. A rejected open() (DomainFacility failure codes: already-open,
+  // backend-not-found, version-mismatch, malformed-medium, invalid-record)
+  // rejects every subsequent operation as-is — operations await THIS promise.
   const ready = storageDomain === undefined
     ? Promise.resolve(undefined)
     : storageDomain.open(rosterDomain)
+  // …but the rejection is ACKNOWLEDGED at creation, before anything awaits
+  // it: between mount and the first operation nothing else holds a handler,
+  // and a dangling rejected promise trips Node's unhandledRejection (default
+  // throw policy), killing the host process post-mount — the exact fatal
+  // path AGENTS.md forbids. This handler only observes and records; awaiting
+  // the original promise above keeps every operation failing loudly.
+  ready.catch((error) => {
+    status?.write('storage-open-failed', String(error))
+  })
 
   /** Resolve both table handles, or undefined in memory mode. */
   const tables = async () => {
