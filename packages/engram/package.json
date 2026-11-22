@@ -1,6 +1,6 @@
 {
   "name": "dsh-engram",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "engram memory for dsh agents: daemon stewardship, six curated memory tools, session bridge, optional prompt injection",
   "type": "module",
   "main": "index.js",
