@@ -49,8 +49,9 @@ export const Config = Schema.object({
  * Mount the plugin. Stage sequence (status file, engram pattern): apply →
  * wire-ready → (storage-degraded when the host exposes no storageDomain) →
  * service-registered → done → tools-registered (from the tools inject
- * callback, when exposeAgentTools reads true) or tools-skipped (false) —
- * or wire-failed with the error text, rethrown
+ * callback, when exposeAgentTools reads true), tools-skipped (false), or
+ * tools-failed with the error text (a contained registration failure,
+ * rethrown) — or wire-failed with the error text, rethrown
  * so a dead mount stays loud rather than silently degrading
  * (packages/gitlab/index.js noteStage pattern; AGENTS.md containment rule).
  * The tools stage lands AFTER `done` on purpose: the file keeps only the
@@ -94,13 +95,23 @@ export function apply(ctx, config) {
       // Cordis runs the callback once the tools service is available and
       // runs the returned disposer at that inject fiber's disposal, so the
       // tools unregister with the plugin even though they outlive this
-      // effect body; a registration failure escapes into the inject
-      // machinery and the host log (loud), never into a dead silent mount.
+      // effect body.
       if (exposeAgentTools) {
         ctx.inject(['tools'], (toolScope) => {
-          const offTools = registerRosterTools(toolScope, roster)
-          status.write('tools-registered')
-          return () => { offTools() }
+          // Containment on this entry point (AGENTS.md): a registration
+          // failure (duplicate tool name, invalid definition) names its
+          // stage with the error text, then rethrows — the status file is
+          // the live-mount diagnosability contract, so the last record must
+          // never sit at `done` over a dead registration (engram
+          // index.js:257-259 / airboard index.js:262-265 pattern).
+          try {
+            const offTools = registerRosterTools(toolScope, roster)
+            status.write('tools-registered')
+            return () => { offTools() }
+          } catch (error) {
+            status.write('tools-failed', String(error))
+            throw error
+          }
         })
       } else {
         status.write('tools-skipped')

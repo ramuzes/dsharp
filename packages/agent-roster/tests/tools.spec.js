@@ -219,6 +219,24 @@ test('list omits prompt: records carry exactly id, name, description, defaultMod
   assert.equal(records[1].defaultModel, null)
 })
 
+test('save with default_model: null clears the stored model through the tool schema', async () => {
+  const { service } = makeRoster()
+  const scope = makeToolsScope()
+  registerRosterTools(scope, service)
+  const save = toolOf(scope, 'roster_template_save')
+  const first = JSON.parse(await save.execute(
+    { name: 'Reviewer', prompt: 'v1', default_model: { provider: 'p', model: 'm' } }, EXEC))
+  // `default_model: null` rides the oneOf null branch of the real tool
+  // schema (defineTool validates before execute) and must CLEAR the stored
+  // model, not preserve it — the documented explicit-null contract.
+  const second = JSON.parse(await save.execute(
+    { name: 'Reviewer', prompt: 'v2', default_model: null }, EXEC))
+  assert.equal(second.id, first.id, 'still an upsert by name')
+  const [stored] = await service.listTemplates()
+  assert.equal(stored.defaultModel, null, 'explicit null clears the stored model')
+  assert.equal(stored.prompt, 'v2')
+})
+
 test('service failures map to model-facing text and never rethrow', async () => {
   const service = makeRecordingService({
     saveTemplate: () => {
@@ -255,6 +273,29 @@ test('apply registers the tools inject and both tools when exposeAgentTools read
     assert.equal(typeof offInject, 'function')
     offInject()
     assert.deepEqual(scope.disposed.sort(), ['roster_template_list', 'roster_template_save'])
+  })
+})
+
+test('a registration failure writes tools-failed with the error text and rethrows', async () => {
+  await withStatusFile(async (file) => {
+    const host = makeFakeHost()
+    setServiceFactoryForTests(() => makeRecordingService())
+    apply(host.ctx, { exposeAgentTools: { get: () => true } })
+    // A scope whose register throws (a duplicate tool name on a live host,
+    // an invalid definition): the callback must contain the failure —
+    // stage tools-failed with the error text — then rethrow loudly, the
+    // engram index.js:257-259 / airboard index.js:262-265 pattern.
+    const boom = new Error('tool name "roster_template_save" already registered')
+    const scope = {
+      tools: {
+        register: () => { throw boom },
+      },
+    }
+    assert.throws(() => host.injects[0].fn(scope), (error) => error === boom,
+      'the contained callback rethrows so the failure stays loud')
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(record.stage, 'tools-failed', 'the failure names its stage')
+    assert.equal(record.detail, String(boom), 'with the error text')
   })
 })
 
