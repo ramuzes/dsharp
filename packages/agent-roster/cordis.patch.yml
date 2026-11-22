@@ -1,0 +1,13 @@
+# dsh-agent-roster bundle layer: one row mounting the Host half (Task 1
+# scaffold — apply() writes its boot stages; Tasks 2-5 add the store, the
+# agentRoster remote, spawn, drafting, and the agent tools). The same package
+# also carries the browser half (package.json dsh.client + ./client export),
+# which the client module system attaches to this row.
+#
+# No defaults live here: every field comes from the schema (see index.js
+# Config) and is edited on the Plugins page — later layers win, per the usual
+# layer order.
+- insert:
+    - id: agent-roster
+      name: dsh-agent-roster
+      config: {}

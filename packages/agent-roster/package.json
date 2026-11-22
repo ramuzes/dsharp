@@ -1,0 +1,58 @@
+{
+  "name": "dsh-agent-roster",
+  "version": "0.1.0",
+  "description": "Agent roster for dsh: a profile-wide roster of role templates with a plus-menu member spawn flow, AI-assisted template drafting, model-facing roster tools, and a settings card",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "docs",
+    "lib"
+  ],
+  "scripts": {
+    "test": "node --test \"tests/*.spec.js\""
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  },
+  "engines": {
+    "dsh": "^0.2.2-rc.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-storage-domain": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-tools": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.0.1-rc.1",
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-scope": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-session": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-timeout": "0.0.1-rc.1"
+  }
+}
