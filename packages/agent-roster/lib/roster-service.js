@@ -17,6 +17,7 @@
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
+import { spawnFromRoster, teamStatusOf } from './spawn.js'
 
 /** Prototype marker key the protocol reads (REMOTE_METHOD_DESCRIPTOR). */
 const REMOTE_METHODS = '@deepseek-ai/dsh-typert-protocol/remote-methods'
@@ -106,6 +107,35 @@ export class AgentRosterService extends TypertRemoteService {
     }
     return { deleted: true }
   }
+
+  /**
+   * Spawn one roster member into the current session's subagent tree
+   * (ADR-0008). The optional host services are resolved from the service's
+   * ctx at CALL time through the sanctioned get() name lookup — the same
+   * optional-service rule lib/store.js applies to storageDomain — so a host
+   * without sessionController/subagents answers with typed
+   * `roster/no-session-controller` / `roster/no-subagents` errors instead of
+   * crashing. Semantics and citations live in lib/spawn.js.
+   * @param {{ sessionId: string, templateId?: string, custom?: { name: string, description: string, prompt: string }, memberName?: string, model?: import('./store.js').ModelRef | null, task?: string }} input
+   * @returns {Promise<{ name: string, childSessionId?: string }>}
+   * @Remote
+   */
+  async spawnMember(input) {
+    return spawnFromRoster(this.ctx, { store: this.store }, input)
+  }
+
+  /**
+   * Report Team status for one session: `teamMode` (the selection shared by
+   * its subagent tree), `isRoot`, and `canEnable = agentTeams present &&
+   * isRoot` — enabling Team mode requires the root (agent-team
+   * TEAM_LEAD_REQUIRED), so a member session can never offer it.
+   * @param {{ sessionId: string }} input
+   * @returns {Promise<{ teamMode: boolean, isRoot: boolean, canEnable: boolean }>}
+   * @Remote
+   */
+  async teamStatus(input) {
+    return teamStatusOf(this.ctx, {}, input)
+  }
 }
 
 // Manual remote-method markers: decorator syntax is unavailable in plain
@@ -121,6 +151,8 @@ export class AgentRosterService extends TypertRemoteService {
         Object.freeze({ method: 'listTemplates', invocation: direct }),
         Object.freeze({ method: 'saveTemplate', invocation: direct }),
         Object.freeze({ method: 'deleteTemplate', invocation: direct }),
+        Object.freeze({ method: 'spawnMember', invocation: direct }),
+        Object.freeze({ method: 'teamStatus', invocation: direct }),
       ]),
     }),
   })

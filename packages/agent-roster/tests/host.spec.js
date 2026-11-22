@@ -1,7 +1,9 @@
 /**
  * Host-half tests. Task 1: config unwrap discipline, the staged status
  * writer, and the apply() boot sequence. Task 2: the storageDomain-backed
- * roster store and the AgentRosterService CRUD remote.
+ * roster store and the AgentRosterService CRUD remote. Task 3 extends the
+ * remote with spawnMember/teamStatus (their behavior lives in
+ * tests/spawn.spec.js; only the Remote marker set is asserted here).
  *
  * Fakes mirror real strictness (AGENTS.md): the fake ctx exposes ONLY the
  * framework members a plugin may touch (inject / effect / get — the optional-
@@ -339,7 +341,10 @@ test('degrades to memory store with storage-degraded status', async () => {
 test('AgentRosterService carries Remote markers for the three CRUD methods', () => {
   // remoteMethods reads markers off getPrototypeOf(service): pass an instance.
   const markers = remoteMethods(Object.create(AgentRosterService.prototype))
-  assert.deepEqual(markers.map((m) => m.method).sort(), ['deleteTemplate', 'listTemplates', 'saveTemplate'])
+  // Task 3 added spawnMember/teamStatus; the spawn.spec marker test pins the
+  // full five-method set — this assertion keeps the CRUD trio covered here.
+  assert.deepEqual(markers.map((m) => m.method).sort(),
+    ['deleteTemplate', 'listTemplates', 'saveTemplate', 'spawnMember', 'teamStatus'])
   for (const marker of markers) {
     assert.deepEqual(marker.invocation, { kind: 'direct' }, `${marker.method} is a direct invocation`)
     assert.equal(marker.mode, undefined, 'unary method')
