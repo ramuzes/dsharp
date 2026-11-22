@@ -181,10 +181,17 @@ function placeholders(value) {
  * inject" — AGENTS.md fakes-must-replicate-real-strictness rule).
  * `roster` installs a fake `remote.agentRoster` namespace that ctx.get()
  * hands out once $mount runs (null / undefined = namespace absent).
+ * `extras` installs additional client Remote faces under
+ * `remote.<name>` (session, agentTeams, pluginInventory, pluginManager) the
+ * way the real boot graph mounts them; they answer RemoteResult shapes —
+ * `{ ok: true, value }` / `{ ok: false, error }` — mirroring the generated
+ * faces' actual wire contract (ui-agent-team browser-plugin.client.spec.ts
+ * :100-106), never a more forgiving shape.
  */
-function makeCtx({ roster } = {}) {
+function makeCtx({ roster, extras } = {}) {
   const recorded = { commands: [], injects: [], registers: [], namespaces: [], mounts: [] }
   const remoteNamespaces = {}
+  for (const [name, face] of Object.entries(extras ?? {})) remoteNamespaces[`remote.${name}`] = face
   const services = {
     commandUi: { register: (contribution) => { recorded.commands.push(contribution); return () => {} } },
     locale: {
@@ -241,9 +248,9 @@ function bootPlugin() {
 }
 
 /** Apply the plugin against a strict ctx and return the harness, the recordings, and the style node. */
-function applyPlugin({ roster } = {}) {
+function applyPlugin({ roster, extras } = {}) {
   const { harness, plugin } = bootPlugin()
-  const [ctx, recorded] = makeCtx({ roster })
+  const [ctx, recorded] = makeCtx({ roster, extras })
   const style = { dataset: {}, textContent: '', remove() {} }
   withDocument(
     { createElement: () => style, head: { append() {} } },
@@ -262,17 +269,20 @@ const TEMPLATES = [
  * Boot, apply, mount the overlay seat, and open the modal through the
  * registered command's run(session) — the exact production path. Returns a
  * view over the seat's vdom (vdom + interact) plus the fake roster's
- * recorded spawn calls. `roster: null` leaves the remote namespace absent.
+ * recorded spawn calls. `roster: null` leaves the remote namespace absent;
+ * `extras` passes client Remote faces through to the ctx double.
  */
-async function openModal({ roster } = {}) {
+async function openModal({ roster, extras } = {}) {
   const spawned = []
   const rosterFake = roster === undefined
     ? {
       listTemplates: async () => ({ ok: true, value: TEMPLATES }),
       spawnMember: async (input) => { spawned.push(input); return { ok: true, value: { name: 'spawned-member' } } },
+      // Healthy team: Team mode already on → the modal renders no banner.
+      teamStatus: async () => ({ ok: true, value: { teamMode: true, isRoot: true, canEnable: true } }),
     }
     : roster
-  const { harness, recorded } = applyPlugin({ roster: rosterFake })
+  const { harness, recorded } = applyPlugin({ roster: rosterFake, extras })
   const seat = recorded.registers.find(({ declaration }) => declaration.name === 'conversation.input.overlay')
   assert.ok(seat, 'the overlay seat is registered')
   const props = { t: makeT(), ...seat.declaration.inject('sess-1') }
@@ -386,10 +396,15 @@ test('run(session) opens the spawn modal through the overlay seat and cancel clo
   assert.ok(root, 'the scoped root renders')
   assert.deepEqual(root.children.map((child) => child.props['data-agent-roster-section']),
     ['banner', 'templates', 'member-name', 'model', 'task', 'custom'])
-  // The model selector is the inherit-only stub this task ships.
+  // The model selector is real since Task 7: enabled, with the
+  // "current session model" inherit entry as its default option. No session
+  // face is installed here, so the catalog-less degrade applies: one option.
   const modelSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
   assert.equal(modelSelect.type, 'select')
-  assert.equal(modelSelect.props.disabled, true)
+  assert.ok(modelSelect.props.disabled !== true)
+  assert.equal(modelSelect.children.length, 1)
+  assert.equal(modelSelect.children[0].props.value, '')
+  assert.ok(texts(modelSelect.children[0]).includes('t:model.inherit'))
   // The custom-role toggle renders (its form is Task 7).
   assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-toggle'] !== undefined))
   // Cancel (in the Modal footer prop) closes: no modal node remains.
@@ -474,4 +489,375 @@ test('a failed template load renders the error line with the upstream message', 
   assert.ok(line.includes('roster/store-read — store read failed / 存储读取失败'))
   const modal = find(view.vdom, (node) => node.type === Modal)
   assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.disabled, true)
+})
+
+// ---------------------------------------------------------------------------
+// Task 7 — modal completeness: custom role, AI draft, model selector, gating.
+// ---------------------------------------------------------------------------
+
+/** Healthy team status: Team mode on, so no banner renders. */
+const HEALTHY_TEAM = { teamMode: true, isRoot: true, canEnable: true }
+
+/** One provider-grouped catalog the fake session face serves (session-controller types.ts:103-135). */
+const CATALOG = {
+  default: { provider: 'deepseek', model: 'chat' },
+  routableProviders: ['deepseek'],
+  groups: [{
+    id: 'deepseek',
+    name: 'DeepSeek',
+    models: [
+      { id: 'chat', name: 'DeepSeek Chat' },
+      { id: 'reasoner', name: 'DeepSeek Reasoner', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' } },
+    ],
+  }],
+  failures: [],
+}
+
+/** A roster fake with a controllable teamStatus and recording spawn/save. */
+function rosterWithTeam(status, record = { spawned: [], saved: [], drafted: [] }) {
+  return {
+    listTemplates: async () => ({ ok: true, value: TEMPLATES }),
+    spawnMember: async (input) => { record.spawned.push(input); return { ok: true, value: { name: 'spawned-member' } } },
+    saveTemplate: async (input) => { record.saved.push(input); return { ok: true, value: { id: 'tpl-new', ...input } } },
+    draft: async (input) => { record.drafted.push(input); return { ok: true, value: { name: 'Drafted', description: 'Drafted role', prompt: 'You were drafted.', parsed: true } } },
+    teamStatus: async (input) => ({ ok: true, value: typeof status === 'function' ? status(input) : status }),
+  }
+}
+
+/** Flip the custom-role toggle on. */
+async function enableCustomRole(view) {
+  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-custom-toggle'] !== undefined)
+  await view.interact(() => { toggle.props.onChange({ target: { checked: true } }) })
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-form'] !== undefined), 'the custom form renders')
+}
+
+/** Type into one field marked with a data-agent-roster-* attribute (checkbox-safe). */
+async function typeInto(view, marker, value) {
+  const field = find(view.vdom, (node) => node.props?.[marker] !== undefined)
+  assert.ok(field, `${marker} renders`)
+  await view.interact(() => { field.props.onChange({ target: { value, checked: value } }) })
+}
+
+test('custom spawn payload (custom xor templateId)', async () => {
+  const record = { spawned: [], saved: [], drafted: [] }
+  const view = await openModal({ roster: rosterWithTeam(HEALTHY_TEAM, record) })
+  await enableCustomRole(view)
+  // Incomplete custom form: confirm disabled with an explanatory hint.
+  let modal = find(view.vdom, (node) => node.type === Modal)
+  let confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
+  assert.equal(confirm.props.disabled, true)
+  let hint = find(view.vdom, (node) => node.props?.['data-agent-roster-confirm-hint'] !== undefined)
+  assert.ok(hint, 'a hint renders while confirm is disabled')
+  assert.ok(texts(hint).join(' ').includes('t:custom.incomplete'))
+  // Fill name, prompt, description → hint gone, confirm enabled.
+  await typeInto(view, 'data-agent-roster-custom-name', 'Market Scout')
+  await typeInto(view, 'data-agent-roster-custom-prompt', 'You scout markets.')
+  await typeInto(view, 'data-agent-roster-custom-description', 'Scans markets')
+  modal = find(view.vdom, (node) => node.type === Modal)
+  confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
+  assert.equal(confirm.props.disabled, false)
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-confirm-hint'] !== undefined), undefined)
+  await view.interact(() => { confirm.props.onClick() })
+  // custom xor templateId: the payload carries custom and NO templateId key.
+  assert.equal(record.spawned.length, 1)
+  assert.equal('templateId' in record.spawned[0], false)
+  assert.deepEqual(record.spawned[0], {
+    sessionId: 'sess-1',
+    custom: { name: 'Market Scout', description: 'Scans markets', prompt: 'You scout markets.' },
+    model: null,
+  })
+  // The save-as-template box was unchecked: nothing was saved.
+  assert.deepEqual(record.saved, [])
+})
+
+test('draft fills form, save happens only on confirm', async () => {
+  const record = { spawned: [], saved: [], drafted: [] }
+  const order = []
+  const view = await openModal({ roster: {
+    ...rosterWithTeam(HEALTHY_TEAM, record),
+    spawnMember: async (input) => { order.push(['spawn', input]); return { ok: true, value: { name: 'market-scout' } } },
+    saveTemplate: async (input) => { order.push(['save', input]); return { ok: true, value: { id: 'tpl-x', ...input } } },
+    draft: async (input) => { record.drafted.push(input); return { ok: true, value: { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', parsed: true } } },
+  } })
+  await enableCustomRole(view)
+  await typeInto(view, 'data-agent-roster-brief', 'A role that scans markets')
+  // Draft: exact wire payload, model null = keep the draft session's own.
+  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  await view.interact(() => { draftButton.props.onClick() })
+  assert.deepEqual(record.drafted, [{ sessionId: 'sess-1', brief: 'A role that scans markets', model: null }])
+  // The result filled the FORM FIELDS ONLY — nothing was saved or spawned.
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-name'] !== undefined).props.value, 'Market Scout')
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-description'] !== undefined).props.value, 'Scans markets')
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-prompt'] !== undefined).props.value, 'You scan markets.')
+  assert.deepEqual(order, [])
+  // Explicit confirm with save-as-template checked: saveTemplate BEFORE the
+  // custom spawn (a save failure must surface while still fixable in-form).
+  await typeInto(view, 'data-agent-roster-save-template', true)
+  const modal = find(view.vdom, (node) => node.type === Modal)
+  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
+  await view.interact(() => { confirm.props.onClick() })
+  assert.deepEqual(order.map(([kind]) => kind), ['save', 'spawn'])
+  assert.deepEqual(order[0][1], { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', defaultModel: null })
+  assert.equal('templateId' in order[1][1], false)
+  assert.deepEqual(order[1][1].custom, { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.' })
+})
+
+test('an unparsed draft is visibly flagged and leaves confirm gated', async () => {
+  const view = await openModal({ roster: {
+    ...rosterWithTeam(HEALTHY_TEAM),
+    draft: async () => ({ ok: true, value: { name: '', description: '', prompt: 'not json at all', parsed: false } }),
+  } })
+  await enableCustomRole(view)
+  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
+  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  await view.interact(() => { draftButton.props.onClick() })
+  const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'draft-unparsed')
+  assert.ok(note, 'the unparsed flag renders')
+  assert.ok(texts(note).join(' ').includes('t:draft.unparsed'))
+  // The raw text landed in prompt; name stays empty so confirm stays gated.
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-prompt'] !== undefined).props.value, 'not json at all')
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-name'] !== undefined).props.value, '')
+  const modal = find(view.vdom, (node) => node.type === Modal)
+  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.disabled, true)
+})
+
+test('model selector lists catalog with current-model default; explicit choice sends ModelRef, default sends null', async () => {
+  const record = { spawned: [], saved: [], drafted: [] }
+  const view = await openModal({
+    roster: rosterWithTeam(HEALTHY_TEAM, record),
+    extras: { session: { modelCatalog: async () => ({ ok: true, value: CATALOG }) } },
+  })
+  const select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.equal(select.type, 'select')
+  assert.ok(select.props.disabled !== true)
+  assert.equal(select.props['data-agent-roster-model'], 'inherit')
+  assert.equal(select.props.value, '')
+  // Default entry first, then provider-grouped catalog models.
+  assert.equal(select.children[0].type, 'option')
+  assert.equal(select.children[0].props.value, '')
+  assert.ok(texts(select.children[0]).includes('t:model.inherit'))
+  const group = select.children.find((child) => child.type === 'optgroup')
+  assert.ok(group, 'catalog models render inside provider groups')
+  assert.equal(group.props.label, 'DeepSeek')
+  assert.deepEqual(group.children.map((option) => option.props.value),
+    [JSON.stringify(['deepseek', 'chat']), JSON.stringify(['deepseek', 'reasoner'])])
+  // Default: confirm sends model null (explicit inherit).
+  let modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.equal(record.spawned[0].model, null)
+  // Explicit reasoning model: the effort input appears beside it only now.
+  await view.interact(() => { select.props.onChange({ target: { value: JSON.stringify(['deepseek', 'reasoner']) } }) })
+  const effort = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
+  assert.ok(effort, 'the effort input renders beside an explicit reasoning model')
+  assert.deepEqual(effort.children.map((option) => option.props.value), ['', 'low', 'high'])
+  await view.interact(() => { effort.props.onChange({ target: { value: 'high' } }) })
+  modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.deepEqual(record.spawned[1].model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+  // A model without reasoning metadata: no effort input, no reasoningEffort key.
+  const selectAgain = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  await view.interact(() => { selectAgain.props.onChange({ target: { value: JSON.stringify(['deepseek', 'chat']) } }) })
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined), undefined)
+  modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.deepEqual(record.spawned[2].model, { provider: 'deepseek', model: 'chat' })
+})
+
+test('a failed or absent modelCatalog degrades to the inherit-only selector and never blocks spawn', async () => {
+  const record = { spawned: [], saved: [], drafted: [] }
+  // Absent face (no session remote at all).
+  const view = await openModal({ roster: rosterWithTeam(HEALTHY_TEAM, record) })
+  let select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.ok(select.props.disabled !== true)
+  assert.equal(select.children.length, 1)
+  assert.ok(texts(select.children[0]).includes('t:model.inherit'))
+  let modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.equal(record.spawned[0].model, null)
+  // A not-ok RemoteResult degrades the same way.
+  const record2 = { spawned: [], saved: [], drafted: [] }
+  const view2 = await openModal({
+    roster: rosterWithTeam(HEALTHY_TEAM, record2),
+    extras: { session: { modelCatalog: async () => ({ ok: false, error: { code: 'session/provider-models-unavailable', message: 'no key' } }) } },
+  })
+  select = find(view2.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.equal(select.children.length, 1)
+  modal = find(view2.vdom, (node) => node.type === Modal)
+  await view2.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.equal(record2.spawned[0].model, null)
+  // A rejecting call degrades the same way.
+  const record3 = { spawned: [], saved: [], drafted: [] }
+  const view3 = await openModal({
+    roster: rosterWithTeam(HEALTHY_TEAM, record3),
+    extras: { session: { modelCatalog: async () => { throw Object.assign(new Error('gateway down'), { code: 'gateway/internal' }) } } },
+  })
+  select = find(view3.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.equal(select.children.length, 1)
+  modal = find(view3.vdom, (node) => node.type === Modal)
+  await view3.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.equal(record3.spawned[0].model, null)
+})
+
+test('enable button appears only when canEnable && !teamMode, calls setEnabled then refreshes', async () => {
+  // Healthy (teamMode true): no banner at all, so no button either.
+  const healthy = await openModal()
+  assert.equal(find(healthy.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined), undefined)
+  // canEnable && !teamMode: explanation plus the Enable button.
+  const enabled = []
+  const teamCalls = []
+  const view = await openModal({
+    roster: {
+      ...rosterWithTeam(HEALTHY_TEAM),
+      teamStatus: async (input) => { teamCalls.push(input); return { ok: true, value: { teamMode: false, isRoot: true, canEnable: true } } },
+    },
+    extras: { agentTeams: { setEnabled: async (sessionId, on) => { enabled.push([sessionId, on]); return { ok: true, value: undefined } } } },
+  })
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
+  assert.equal(banner.props['data-agent-roster-team'], 'enable')
+  assert.ok(texts(banner).join(' ').includes('t:team.enable.explain'))
+  const button = find(banner, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined)
+  assert.ok(button, 'the Enable button renders')
+  // Click → setEnabled(sessionId, true), then teamStatus re-read (refresh).
+  const before = teamCalls.length
+  await view.interact(() => { button.props.onClick() })
+  assert.deepEqual(enabled, [['sess-1', true]])
+  assert.deepEqual(teamCalls.slice(before), [{ sessionId: 'sess-1' }], 'teamStatus is re-read after enabling')
+})
+
+test('non-root shows explanation and no button', async () => {
+  const view = await openModal({
+    roster: rosterWithTeam({ teamMode: false, isRoot: false, canEnable: false }),
+    extras: {
+      agentTeams: { setEnabled: async () => { throw new Error('must not be called') } },
+      pluginManager: { setPluginEnabled: async () => { throw new Error('must not be called') } },
+    },
+  })
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
+  assert.equal(banner.props['data-agent-roster-team'], 'nonroot')
+  assert.ok(texts(banner).join(' ').includes('t:team.nonroot'))
+  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined), undefined)
+  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined), undefined)
+})
+
+test('rows-disabled offers enable for both rows after confirm', async () => {
+  const toggles = []
+  const lists = []
+  const teamCalls = []
+  const view = await openModal({
+    roster: {
+      ...rosterWithTeam(() => { teamCalls.push(1); return { teamMode: false, isRoot: true, canEnable: false } }),
+    },
+    extras: {
+      pluginInventory: { list: async () => { lists.push(1); return { ok: true, value: { entries: [
+        { entryId: 'agent-team', moduleName: '@deepseek-ai/dsh-agent-team', enabled: false },
+        { entryId: 'tool-agent-team', moduleName: '@deepseek-ai/dsh-tool-agent-team', enabled: false },
+        { entryId: 'llm-deepseek', moduleName: '@deepseek-ai/dsh-llm-deepseek-api-key', enabled: true },
+      ], managementAvailable: true } } } },
+      pluginManager: { setPluginEnabled: async (entryId, on) => { toggles.push([entryId, on]); return { ok: true, value: { application: 'applied' } } } },
+    },
+  })
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
+  assert.equal(banner.props['data-agent-roster-team'], 'rows')
+  assert.ok(texts(banner).join(' ').includes('t:team.rows.explain'))
+  const button = find(banner, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined)
+  assert.ok(button)
+  assert.ok(texts(button).includes('t:team.rows.action'))
+  // First click arms the confirmation only; nothing toggles yet.
+  await view.interact(() => { button.props.onClick() })
+  assert.deepEqual(toggles, [])
+  const armed = find(view.vdom, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined)
+  assert.ok(texts(armed).includes('t:team.rows.confirm'))
+  // Second click enables BOTH rows and refreshes status + inventory.
+  await view.interact(() => { armed.props.onClick() })
+  assert.deepEqual(toggles, [['agent-team', true], ['tool-agent-team', true]])
+  assert.ok(lists.length >= 2, 'the inventory is re-read after enabling')
+  assert.ok(teamCalls.length >= 2, 'teamStatus is re-read after enabling')
+})
+
+test('absent remote shows guidance without throwing', async () => {
+  // Roster namespace absent entirely: guidance text, no buttons, no crash.
+  const view = await openModal({ roster: null })
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
+  assert.equal(banner.props['data-agent-roster-team'], 'guidance')
+  assert.ok(texts(banner).join(' ').includes('t:team.guidance'))
+  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined), undefined)
+  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined), undefined)
+  // canEnable but no agentTeams client face: the button cannot work, so the
+  // banner degrades to guidance text only.
+  const view2 = await openModal({ roster: rosterWithTeam({ teamMode: false, isRoot: true, canEnable: true }) })
+  const banner2 = find(view2.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
+  assert.equal(banner2.props['data-agent-roster-team'], 'guidance')
+  assert.equal(find(banner2, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined), undefined)
+})
+
+test('modal close is gated while a spawn or draft is in flight', async () => {
+  // Spawn in flight: Escape/mask close (onClose) and Cancel are gated.
+  let resolveSpawn
+  const view = await openModal({ roster: {
+    ...rosterWithTeam(HEALTHY_TEAM),
+    spawnMember: () => new Promise((resolve) => { resolveSpawn = resolve }),
+  } })
+  let modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  modal = find(view.vdom, (node) => node.type === Modal)
+  assert.ok(modal)
+  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined).props.disabled, true)
+  modal.props.onClose()
+  await view.interact()
+  assert.ok(find(view.vdom, (node) => node.type === Modal), 'the modal survives close while spawning')
+  resolveSpawn({ ok: true, value: { name: 'late-member' } })
+  await view.interact()
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success'), 'the in-flight result lands')
+  modal = find(view.vdom, (node) => node.type === Modal)
+  modal.props.onClose()
+  await view.interact()
+  assert.equal(find(view.vdom, (node) => node.type === Modal), undefined, 'close works again once settled')
+  // Draft in flight: gated the same way.
+  let resolveDraft
+  const view2 = await openModal({ roster: {
+    ...rosterWithTeam(HEALTHY_TEAM),
+    draft: () => new Promise((resolve) => { resolveDraft = resolve }),
+  } })
+  await enableCustomRole(view2)
+  await typeInto(view2, 'data-agent-roster-brief', 'Make a role')
+  const draftButton = find(view2.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  await view2.interact(() => { draftButton.props.onClick() })
+  let modal2 = find(view2.vdom, (node) => node.type === Modal)
+  modal2.props.onClose()
+  await view2.interact()
+  assert.ok(find(view2.vdom, (node) => node.type === Modal), 'the modal survives close while drafting')
+  resolveDraft({ ok: true, value: { name: 'Late', description: 'd', prompt: 'p', parsed: true } })
+  await view2.interact()
+  assert.equal(find(view2.vdom, (node) => node.props?.['data-agent-roster-custom-name'] !== undefined).props.value, 'Late')
+})
+
+test('draft button disabled while drafting; stop abandons the wait and discards the late answer', async () => {
+  let resolveDraft
+  const drafted = []
+  const view = await openModal({ roster: {
+    ...rosterWithTeam(HEALTHY_TEAM, { spawned: [], saved: [], drafted }),
+    draft: (input) => { drafted.push(input); return new Promise((resolve) => { resolveDraft = resolve }) },
+  } })
+  await enableCustomRole(view)
+  await typeInto(view, 'data-agent-roster-brief', 'Make me a role')
+  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  await view.interact(() => { draftButton.props.onClick() })
+  // In flight: the Draft button is disabled (one draft session per cwd) and
+  // the stop control appears.
+  const inFlight = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  assert.equal(inFlight.props.disabled, true)
+  assert.ok(texts(inFlight).includes('t:draft.inflight'))
+  const stop = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-abort'] !== undefined)
+  assert.ok(stop)
+  // Stop: the wait is abandoned; a second draft could start.
+  await view.interact(() => { stop.props.onClick() })
+  const after = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  assert.equal(after.props.disabled, false)
+  assert.ok(texts(after).includes('t:draft.action'))
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'draft-aborted'))
+  // The late answer is discarded: the fields stay empty, nothing crashes.
+  resolveDraft({ ok: true, value: { name: 'Late', description: 'd', prompt: 'p', parsed: true } })
+  await view.interact()
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-name'] !== undefined).props.value, '')
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-prompt'] !== undefined).props.value, '')
 })
