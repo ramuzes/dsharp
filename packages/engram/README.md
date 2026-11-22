@@ -34,7 +34,7 @@ write-only control — it lands in the dsh credential store under the
 | `httpTokenRef` | credential-ref name | `ENGRAM_HTTP_TOKEN` | yes | Credential-store reference for the daemon HTTP token (the card's secret control writes here). Unresolvable = the daemon takes no auth. |
 | `projectMode` | `auto` \| `fixed` \| `map` | `auto` | yes | How a session resolves its engram project: from the working directory (`auto`), one fixed project (`fixed`), or the `projectMap` table (`map`). |
 | `fixedProject` | string | `''` | yes | The engram project used when `projectMode=fixed`. |
-| `projectMap` | dict (string → string) | `{}` | yes | Working-directory name → engram project mapping for `projectMode=map`. |
+| `projectMap` | dict (string → string) | `{}` | yes | Workspace **absolute path** → engram project mapping (path-prefix matched; bare names do not match; non-matching directories fall back to auto detection) for `projectMode=map`. |
 | `contextInjection` | `off` \| `on` | `off` | yes | When `on`, injects a memory summary into every prompt (fail-open: injection failure never blocks the turn). |
 | `contextMaxBytes` | number ≥ 0 | `2048` | yes | Byte cap for the injected summary. |
 | `autosync` | boolean | `false` | yes | Applies only to daemons this plugin spawns: injects `ENGRAM_CLOUD_AUTOSYNC=1` to enable background cloud sync. |
