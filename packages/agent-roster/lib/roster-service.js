@@ -18,6 +18,7 @@ import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protoc
 import { readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
 import { spawnFromRoster, teamStatusOf } from './spawn.js'
+import { runDraft } from './drafter.js'
 
 /** Prototype marker key the protocol reads (REMOTE_METHOD_DESCRIPTOR). */
 const REMOTE_METHODS = '@deepseek-ai/dsh-typert-protocol/remote-methods'
@@ -136,6 +137,20 @@ export class AgentRosterService extends TypertRemoteService {
   async teamStatus(input) {
     return teamStatusOf(this.ctx, {}, input)
   }
+
+  /**
+   * Draft one member definition with model assistance over the reusable
+   * per-workspace draft session (ADR-0010). The result is a PROPOSAL: this
+   * call never saves anything — the user reviews and saves (or drops) it in
+   * the modal. Semantics, host-interface citations, and the timeout live in
+   * lib/drafter.js.
+   * @param {{ sessionId: string, brief: string, model?: import('./store.js').ModelRef | null }} input
+   * @returns {Promise<{ name: string, description: string, prompt: string, parsed: boolean }>}
+   * @Remote
+   */
+  async draft(input) {
+    return runDraft(this.ctx, { store: this.store }, input)
+  }
 }
 
 // Manual remote-method markers: decorator syntax is unavailable in plain
@@ -153,6 +168,7 @@ export class AgentRosterService extends TypertRemoteService {
         Object.freeze({ method: 'deleteTemplate', invocation: direct }),
         Object.freeze({ method: 'spawnMember', invocation: direct }),
         Object.freeze({ method: 'teamStatus', invocation: direct }),
+        Object.freeze({ method: 'draft', invocation: direct }),
       ]),
     }),
   })

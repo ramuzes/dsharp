@@ -501,7 +501,8 @@ test('AgentRosterService carries Remote markers for all five methods', () => {
   const markers = remoteMethods(Object.create(AgentRosterService.prototype))
   assert.deepEqual(
     markers.map((m) => m.method).sort(),
-    ['deleteTemplate', 'listTemplates', 'saveTemplate', 'spawnMember', 'teamStatus'],
+    // Task 4 added draft; drafter.spec pins its own marker details.
+    ['deleteTemplate', 'draft', 'listTemplates', 'saveTemplate', 'spawnMember', 'teamStatus'],
   )
   for (const marker of markers) {
     assert.deepEqual(marker.invocation, { kind: 'direct' }, `${marker.method} is a direct invocation`)
