@@ -1,13 +1,12 @@
 /**
- * dsh-agent-roster — Host half. Task 1 scaffold: Config schema, staged boot
- * observability, and the wire helpers everything later wires through.
+ * dsh-agent-roster — Host half. Task 1 scaffold: Config schema and staged
+ * boot observability; Task 2: the storageDomain-backed template store and
+ * the `agentRoster` CRUD remote service mounted on top of it.
  *
- * Later tasks mount the real contributions here: the storageDomain-backed
- * template store and CRUD remote (Task 2), member spawn via the subagent
- * runtime (Task 3), the reusable draft session (Task 4), and the
- * roster_template_save / roster_template_list agent tools (Task 5). This file
- * deliberately registers none of them yet — it only proves the boot path:
- * config arrives as reactive wrappers and is read exclusively through
+ * Later tasks extend the same wiring: member spawn via the subagent runtime
+ * (Task 3), the reusable draft session (Task 4), and the
+ * roster_template_save / roster_template_list agent tools (Task 5). Config
+ * arrives as reactive wrappers and is read exclusively through
  * readBoolean (AGENTS.md, "Config values arrive wrapped"), and every mount
  * stage lands in the status file so a dead mount names its stage.
  *
@@ -21,6 +20,20 @@
 import Schema from '@deepseek-ai/schemastery'
 import { readBoolean } from './lib/wire.js'
 import { openStatus } from './lib/status.js'
+import { openRosterStore } from './lib/store.js'
+import { AgentRosterService } from './lib/roster-service.js'
+
+/** @type {any} */
+let serviceFactory = undefined
+
+/**
+ * Test seam: substitute the Remote service factory. The real one needs a
+ * genuine cordis Context for Service registration, which unit fakes are not
+ * — the feishu-gateway setDiagnosticsFactoryForTests precedent
+ * (packages/feishu-gateway/index.js:29-36, consumed at index.js:178-183).
+ * @param {((ctx: unknown, store: unknown) => unknown) | undefined} factory
+ */
+export function setServiceFactoryForTests(factory) { serviceFactory = factory }
 
 /**
  * Row configuration. `exposeAgentTools` is deliberately NON-volatile: it
@@ -34,9 +47,10 @@ export const Config = Schema.object({
 })
 
 /**
- * Mount the plugin (Task 1 wiring). Stage sequence (status file, engram
- * pattern): apply → wire-ready → done — or wire-failed with the error text,
- * rethrown so a dead mount stays loud rather than silently degrading
+ * Mount the plugin. Stage sequence (status file, engram pattern): apply →
+ * wire-ready → (storage-degraded when the host exposes no storageDomain) →
+ * service-registered → done — or wire-failed with the error text, rethrown
+ * so a dead mount stays loud rather than silently degrading
  * (packages/gitlab/index.js noteStage pattern; AGENTS.md containment rule).
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
@@ -49,20 +63,33 @@ export function apply(ctx, config) {
   status.write('apply')
 
   ctx.effect(() => {
+    let store = undefined
     try {
-      // The ONLY config read in this scaffold — through the unwrap helper,
+      // The ONLY config read in this file — through the unwrap helper,
       // never raw (a wrapper-typed field must not crash the boot path).
       // Task 5 gates agent-tool registration on this value.
       const exposeAgentTools = readBoolean(config.exposeAgentTools)
-
       status.write('wire-ready', { exposeAgentTools })
-      // Nothing registered yet: Task 2 opens the store + remote service,
-      // Task 5 the agent tools.
+
+      // Template store over the optional storageDomain service (memory
+      // fallback + storage-degraded record when absent — lib/store.js), and
+      // the `agentRoster` remote the client calls for CRUD. A cordis Service
+      // self-registers with ctx and its lifecycle follows the fiber (the
+      // chrome-cdp registerStatus / feishu apply construction pattern).
+      store = openRosterStore(ctx, status)
+      const factory = serviceFactory ?? ((ctx2, store2) => new AgentRosterService(ctx2, store2))
+      factory(ctx, store)
+      status.write('service-registered')
       status.write('done')
-      return () => { /* nothing to dispose yet */ }
+      // Release the opened domain with this fiber (caller-owns-handle,
+      // lib/store.js dispose) so a remount never hits 'already-open'.
+      return () => { store?.dispose?.() }
     } catch (error) {
+      // Same containment as Task 1: name the stage, release what already
+      // opened, then rethrow — a dead mount stays loud.
+      store?.dispose?.()
       status.write('wire-failed', String(error))
       throw error
     }
-  }, 'dsh-agent-roster: scaffold wiring')
+  }, 'dsh-agent-roster: store and service wiring')
 }
