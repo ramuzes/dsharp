@@ -3,7 +3,9 @@
  * writer, and the apply() boot sequence. Task 2: the storageDomain-backed
  * roster store and the AgentRosterService CRUD remote. Task 3 extends the
  * remote with spawnMember/teamStatus (their behavior lives in
- * tests/spawn.spec.js; only the Remote marker set is asserted here).
+ * tests/spawn.spec.js; only the Remote marker set is asserted here). Task 5
+ * adds the tools inject to apply() — the tools themselves live in
+ * tests/tools.spec.js; only the inject's presence is pinned here.
  *
  * Fakes mirror real strictness (AGENTS.md): the fake ctx exposes ONLY the
  * framework members a plugin may touch (inject / effect / get — the optional-
@@ -151,7 +153,11 @@ test('apply reads config through wrappers', async () => {
     setServiceFactoryForTests((ctx, store) => { constructed.push({ ctx, store }) })
     await apply(host.ctx, config)
     assert.equal(constructed.length, 1, 'service factory ran once')
-    assert.equal(host.injects.length, 0, 'no inject callback registered')
+    // Task 5: with exposeAgentTools reading true, apply adds exactly one
+    // inject callback — the tools registration scope (tests/tools.spec.js
+    // drives and asserts it).
+    assert.equal(host.injects.length, 1, 'exactly the tools inject callback')
+    assert.deepEqual(host.injects[0].names, ['tools'])
     assert.equal(host.effects.length, 1, 'wiring wrapped in exactly one ctx.effect')
     assert.ok(wrapperReads >= 1, 'exposeAgentTools must be read through the wrapper getter')
     const record = JSON.parse(readFileSync(file, 'utf8'))
