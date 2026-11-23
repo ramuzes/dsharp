@@ -1708,58 +1708,93 @@ window.__ModuleLoader__.load({
     }
 
     /** Scoped sheet, appended once per activation and removed with the plugin. */
+    // Styles follow the HOST's native settings controls, copied and
+    // renamed under this plugin's prefix (practices.md: copy markup, CSS,
+    // and behavior from the host control; keep only --dsw-alias-* tokens):
+    // - field rhythm, label, input, hint  — ui-primitives
+    //   settings-form/fields.module.css (.field 12px 0 + 6px gap + hairline
+    //   separators; .label 13px/500/1.5; .input height 34px, padding 0 12px,
+    //   0.5px border-l4, radius md, bg layer-3, 13px/1.5, focus border
+    //   business-primary, disabled label-tertiary) and ConfigField.module.css
+    //   (textarea padding 6px 12px, resize vertical).
+    // - buttons — ui-primitives Button.module.css (sm 28px, radius sm,
+    //   ghost hover interactive-bg-hover, disabled 0.4) and
+    //   settings-form/SettingsForm.module.css (.save primary fill 5px 14px,
+    //   focus ring).
+    // Styles follow the HOST's native settings controls, copied and renamed
+    // under this plugin's prefix (practices.md: copy markup, CSS, and
+    // behavior from the host control; keep only --dsw-alias-* tokens):
+    // - field rhythm/label/input/hint — ui-primitives settings-form/
+    //   fields.module.css (.field 12px 0 + 6px gap + 0.5px hairline
+    //   separators; .label 13px/500/1.5; .input height 34px, padding
+    //   0 12px, 0.5px border-l4, radius md, bg layer-3, focus border
+    //   business-primary, disabled label-tertiary) and ConfigField.module.css
+    //   (textarea padding 6px 12px, resize vertical).
+    // - buttons — ui-primitives Button.module.css (sm 28px, radius sm, ghost
+    //   hover interactive-bg-hover, disabled 0.4) and settings-form/
+    //   SettingsForm.module.css (.save primary fill, focus ring).
     const STYLES = `
 [data-agent-roster] { display: flex; flex-direction: column; gap: 14px; color: var(--dsw-alias-label-primary); }
 .agent-roster-content { max-height: min(520px, 70vh); overflow: auto; }
 .agent-roster-section { display: flex; flex-direction: column; gap: 6px; }
-.agent-roster-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--dsw-alias-label-secondary); }
-.agent-roster-hint { margin: 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
-.agent-roster-note { padding: 8px 10px; font-size: 12px; color: var(--dsw-alias-label-secondary); border: 1px dashed var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); }
-.agent-roster-error { color: var(--dsw-alias-state-warn-primary); }
-.agent-roster-error-detail { font-family: var(--dsw-alias-font-mono, monospace); font-size: 11px; }
-.agent-roster-banner { padding: 8px 10px; font-size: 12px; border-radius: var(--dsw-radius-sm); }
+.agent-roster-label { font-size: 13px; font-weight: 500; line-height: 1.5; color: var(--dsw-alias-label-primary); }
+.agent-roster-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary); }
+.agent-roster-note { padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-3); border-radius: var(--dsw-radius-md); }
+.agent-roster-error { color: var(--dsw-alias-label-error); }
+.agent-roster-error-detail { font-family: var(--dsw-alias-font-mono, monospace); font-size: 12px; }
+.agent-roster-banner { padding: 8px 12px; font-size: 12px; line-height: 1.5; border-radius: var(--dsw-radius-md); }
 .agent-roster-banner-success { color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-interactive-bg-hover); }
-.agent-roster-banner-error { display: flex; flex-direction: column; gap: 2px; color: var(--dsw-alias-state-warn-primary); background: var(--dsw-alias-interactive-bg-hover); }
-.agent-roster-error-label { font-weight: 600; }
-.agent-roster-team { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover); border-radius: var(--dsw-radius-sm); }
-.agent-roster-team-error { color: var(--dsw-alias-state-warn-primary); }
+.agent-roster-banner-error { display: flex; flex-direction: column; gap: 2px; color: var(--dsw-alias-label-error); background: var(--dsw-alias-interactive-bg-hover); }
+.agent-roster-error-label { font-weight: 500; }
+.agent-roster-team { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover); border-radius: var(--dsw-radius-md); }
+.agent-roster-team-error { color: var(--dsw-alias-label-error); }
 .agent-roster-team-actions { display: flex; gap: 8px; }
 .agent-roster-templates { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; }
-.agent-roster-template { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border: 1px solid transparent; border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.agent-roster-template { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 0.5px solid transparent; border-radius: var(--dsw-radius-md); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .agent-roster-template:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.agent-roster-template[aria-selected='true'] { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-interactive-bg-active); }
-.agent-roster-template-name { font-size: 13px; font-weight: 600; }
-.agent-roster-template-desc { font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.agent-roster-input { box-sizing: border-box; width: 100%; font: inherit; font-size: 13px; color: inherit; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); padding: 6px 8px; }
-.agent-roster-input:disabled { opacity: 0.6; }
-.agent-roster-textarea { resize: vertical; min-height: 56px; }
-.agent-roster-select { box-sizing: border-box; width: 100%; font: inherit; font-size: 12px; color: inherit; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); padding: 5px 6px; }
-.agent-roster-select:disabled { opacity: 0.6; }
-.agent-roster-effort { display: flex; flex-direction: column; gap: 4px; }
-.agent-roster-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary); cursor: pointer; }
-.agent-roster-custom-form { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); }
-.agent-roster-draft-area { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px dashed var(--dsw-alias-border-l2); }
+.agent-roster-template[aria-selected='true'] { border-color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-interactive-bg-active); }
+.agent-roster-template-name { font-size: 13px; font-weight: 500; line-height: 1.5; }
+.agent-roster-template-desc { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
+.agent-roster-input { box-sizing: border-box; width: 100%; height: 34px; padding: 0 12px; font: inherit; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); }
+.agent-roster-input:focus-visible, .agent-roster-select:focus-visible { outline: none; border-color: var(--dsw-alias-state-business-primary); }
+.agent-roster-input:disabled, .agent-roster-select:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
+.agent-roster-textarea { height: auto; min-height: 56px; padding: 6px 12px; resize: vertical; }
+.agent-roster-select { box-sizing: border-box; width: 100%; height: 34px; padding: 0 12px; font: inherit; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); }
+.agent-roster-effort { display: flex; flex-direction: column; gap: 6px; }
+.agent-roster-toggle, .agent-roster-custom-toggle-row { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); cursor: pointer; }
+.agent-roster-custom-form { display: flex; flex-direction: column; gap: 6px; padding: 12px 0 0; border-top: 0.5px solid var(--dsw-alias-border-l2); }
+.agent-roster-draft-area { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }
 .agent-roster-draft-controls { display: flex; align-items: center; gap: 8px; }
 .agent-roster-draft-controls .agent-roster-select { flex: 1; width: auto; }
-.agent-roster-footer { display: flex; justify-content: flex-end; gap: 8px; }
-.agent-roster-button { padding: 6px 14px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-2); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
-.agent-roster-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.agent-roster-button:disabled { opacity: 0.5; cursor: default; }
-.agent-roster-button-confirm { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
-/* Task 8 — the Plugins-page roster card. */
+.agent-roster-footer { display: flex; align-items: center; gap: 8px; padding-top: 16px; }
+.agent-roster-button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 0 10px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; }
+.agent-roster-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.agent-roster-button:active:not(:disabled) { background: var(--dsw-alias-interactive-bg-active); }
+.agent-roster-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.agent-roster-button:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 1px; }
+.agent-roster-button-confirm { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); }
+.agent-roster-button-confirm:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+/* The Settings > Agent roster page (settings.section body). */
+[data-agent-roster-settings] { display: flex; flex-direction: column; gap: 12px; color: var(--dsw-alias-label-primary); }
+[data-agent-roster-settings-draft] { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; }
+.agent-roster-settings-draft-row { display: flex; flex-direction: column; gap: 6px; }
+[data-agent-roster-settings] .agent-roster-settings-draft-row .agent-roster-select { width: auto; }
+/* The roster manager (Settings section part two). */
 [data-agent-roster-card] { display: flex; flex-direction: column; gap: 12px; color: var(--dsw-alias-label-primary); }
 .agent-roster-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.agent-roster-card-rows { display: flex; flex-direction: column; gap: 8px; }
-.agent-roster-card-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); }
+.agent-roster-card-rows { display: flex; flex-direction: column; }
+.agent-roster-card-row { display: flex; flex-direction: column; gap: 4px; padding: 12px 0; border-top: 0.5px solid var(--dsw-alias-border-l2); }
+.agent-roster-card-row:first-child { border-top: none; }
 .agent-roster-card-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.agent-roster-card-row-name { font-size: 13px; font-weight: 600; }
-.agent-roster-card-row-desc { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.agent-roster-card-row-name { font-size: 13px; font-weight: 500; line-height: 1.5; }
+.agent-roster-card-row-desc { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
 .agent-roster-card-meta { display: flex; align-items: center; gap: 8px; }
-.agent-roster-card-chip { font-size: 11px; font-family: var(--dsw-alias-font-mono, monospace); padding: 2px 6px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); }
-.agent-roster-card-row-updated { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.agent-roster-card-chip { font-size: 12px; font-family: var(--dsw-alias-font-mono, monospace); padding: 2px 6px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm); }
+.agent-roster-card-row-updated { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary); }
 .agent-roster-card-row-actions { display: flex; gap: 8px; }
-.agent-roster-card-form { display: flex; flex-direction: column; gap: 10px; }
-.agent-roster-role-fields { display: flex; flex-direction: column; gap: 8px; }
+.agent-roster-card-form { display: flex; flex-direction: column; }
+.agent-roster-role-fields { display: flex; flex-direction: column; }
+.agent-roster-role-fields > * + * { border-top: 0.5px solid var(--dsw-alias-border-l2); }
 `
 
     function injectStyles() {
