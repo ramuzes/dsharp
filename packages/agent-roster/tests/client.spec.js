@@ -204,6 +204,29 @@ function makeCtx({ roster, extras } = {}) {
     },
     remote: {
       $mount: (contribution) => {
+        // Mirror the REAL gateway validation, not a more forgiving one
+        // (AGENTS.md §1): dsh packages/api/gateway/src/client/index.ts
+        // validateContribution (:283-330) — requireStrictInputs (:299-303 →
+        // requireStrictCodec :341-346) rejects any parameter whose codec
+        // mode is not 'strict', and duplicate (namespace, method) pairs
+        // reject. The 2026-11-23 live incident: src-json parameter codecs
+        // passed this fake and died at real mount, leaving the namespace
+        // silently absent. The fake must reject first.
+        const seen = new Set()
+        for (const descriptor of contribution.descriptors) {
+          const endpoint = `${descriptor.namespace}/${descriptor.method}`
+          if (seen.has(endpoint)) {
+            return Promise.reject(new Error(`client api: contribution repeats direct method ${endpoint}`))
+          }
+          seen.add(endpoint)
+          for (const parameter of descriptor.parameters ?? []) {
+            if (parameter.codec?.mode !== 'strict') {
+              return Promise.reject(new Error(
+                `client api: generated Remote ${contribution.package}#${endpoint} field ${JSON.stringify(parameter.wire)} has no strict codec`,
+              ))
+            }
+          }
+        }
         recorded.mounts.push(contribution)
         if (roster !== null && roster !== undefined) remoteNamespaces['remote.agentRoster'] = roster
         return Promise.resolve(() => {})
@@ -241,6 +264,11 @@ function bootPlugin() {
   const harness = createHarness({ leaves: [Modal, IconPlusOutlineRegular] })
   const require = (specifier) => {
     if (specifier === 'react') return harness.React
+    if (specifier === 'zod') {
+      // Baseline module-table zod double: only `z.unknown()` is consumed
+      // (lazily, by STRICT_JSON_CODEC.create) — the minimal parseable shape.
+      return { z: { unknown: () => ({ safeParse: (value) => ({ success: true, data: value }) }) } }
+    }
     if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives()
     throw new Error(`unexpected require: ${specifier}`)
   }
@@ -379,14 +407,27 @@ test('apply mounts the agentRoster remote namespace with all six method descript
   }
   // The host signatures (lib/roster-service.js): object-input methods carry
   // their input parameter; deleteTemplate the id string; listTemplates none.
-  const inputParameter = [{ name: 'input', wire: 'input', source: 'json', codec: { mode: 'src-json' } }]
+  // Every parameterized method carries the ONE frozen strict codec (the
+  // src-json parameter codec was the 2026-11-23 live-mount failure; strict
+  // is the gateway's requirement and the fake $mount now enforces it).
+  const strictCodecs = new Set()
+  for (const descriptor of contribution.descriptors) {
+    for (const parameter of descriptor.parameters) {
+      assert.equal(parameter.codec.mode, 'strict')
+      assert.equal(parameter.codec.typeSymbol, '@local/dsh-agent-roster/json-value')
+      assert.equal(typeof parameter.codec.create, 'function')
+      strictCodecs.add(parameter.codec)
+    }
+  }
+  assert.equal(strictCodecs.size, 1, 'one shared frozen codec instance')
+  const inputParameter = (descriptor) => [{ name: 'input', wire: 'input', source: 'json', codec: descriptor.parameters[0].codec }]
   assert.deepEqual(byMethod.get('listTemplates').parameters, [])
-  assert.deepEqual(byMethod.get('saveTemplate').parameters, inputParameter)
+  assert.deepEqual(byMethod.get('saveTemplate').parameters, inputParameter(byMethod.get('saveTemplate')))
   assert.deepEqual(byMethod.get('deleteTemplate').parameters,
-    [{ name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } }])
-  assert.deepEqual(byMethod.get('spawnMember').parameters, inputParameter)
-  assert.deepEqual(byMethod.get('teamStatus').parameters, inputParameter)
-  assert.deepEqual(byMethod.get('draft').parameters, inputParameter)
+    [{ name: 'id', wire: 'id', source: 'json', codec: byMethod.get('deleteTemplate').parameters[0].codec }])
+  assert.deepEqual(byMethod.get('spawnMember').parameters, inputParameter(byMethod.get('spawnMember')))
+  assert.deepEqual(byMethod.get('teamStatus').parameters, inputParameter(byMethod.get('teamStatus')))
+  assert.deepEqual(byMethod.get('draft').parameters, inputParameter(byMethod.get('draft')))
 })
 
 test('run(session) opens the spawn modal through the overlay seat and cancel closes it', async () => {

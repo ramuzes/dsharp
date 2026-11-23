@@ -87,6 +87,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-agent-roster',
   factory(require) {
     const React = require('react')
+    const { z } = require('zod')
     const { Modal, IconPlusOutlineRegular } = require('@deepseek-ai/dsh-client-ui-primitives')
     const h = React.createElement
 
@@ -319,7 +320,22 @@ window.__ModuleLoader__.load({
      * client.js:389-396 pattern over typert InvocationDescriptor.
      */
     const SRC_JSON = Object.freeze({ mode: 'src-json' })
-    const jsonParameter = (name) => Object.freeze({ name, wire: name, source: 'json', codec: { mode: 'src-json' } })
+    // Parameter codecs must be STRICT, not src-json: the gateway's mount
+    // validation rejects any parameter whose codec mode is not 'strict'
+    // (dsh packages/api/gateway/src/client/index.ts validateContribution
+    // :283-330 → requireStrictInputs :299-303 → requireStrictCodec :341-346;
+    // 'src-json' is legal for RESULTS only — chrome-cdp's zero-parameter
+    // status() mount never exercised this). After validation the invoke path
+    // reads only `parameter.wire` (prepareInvocation :505-546), so the
+    // minimal legal TypertCodec is mode 'strict' + typeSymbol + create.
+    // `create` comes from baseline zod (browser module table, hmr precedent:
+    // generated remote artifacts `import { z } from 'zod'`).
+    const STRICT_JSON_CODEC = Object.freeze({
+      mode: 'strict',
+      typeSymbol: '@local/dsh-agent-roster/json-value',
+      create: () => z.unknown(),
+    })
+    const jsonParameter = (name) => Object.freeze({ name, wire: name, source: 'json', codec: STRICT_JSON_CODEC })
     const ROSTER_METHODS = [
       { method: 'listTemplates', parameters: [] },
       { method: 'saveTemplate', parameters: [jsonParameter('input')] },
