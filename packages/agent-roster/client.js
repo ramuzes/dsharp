@@ -12,9 +12,10 @@
  * and the spawn modal's happy path. Task 7 completes the modal: the
  * custom-role form with save-as-template, the AI-draft area (fill-only
  * proposals), real model selection over the Host catalog, and the
- * team-gating banner states. Task 8 (this file's current scope) extracts
- * the shared field/model/draft pieces and adds the Plugins-page settings
- * card — the roster manager in `plugins.bundle.config`.
+ * team-gating banner states. Task 8 extracted the shared field/model
+ * pieces for the manager UI; the 2026-11-23 UX rework moved that manager
+ * from the Plugins-page card into a Settings page section and made the
+ * AI-draft toggle + model a Settings-owned configuration.
  *
  * dsh interfaces consumed (verified in the checkout, AGENTS.md 2b):
  * - `commandUi` service 'commandUi' (packages/client/ui-commands/src/client/
@@ -70,18 +71,19 @@
  *   is the live selection (core/agent types.ts:78-101 — null while the
  *   Agent's initial options supply the route). Read the ui-agent-team
  *   TeamModeToggle.tsx:39-41 way: a PROP the seat receives, never a remote.
- * - `plugins.bundle.config` keyed slot, scope root — the Plugins-page
- *   settings card seat: owner props are PluginConfigViewProps
- *   `{ view: 'summary' | 'page', form? }` with NO session identity
- *   (packages/client/ui-plugin-manager/src/client/slot-contract.ts:159; the
- *   generated catalog packages/extensions/cordis-client-runner/src/client/
- *   slot-catalog.ts:3478-3522), and the page renders it with exactly
- *   `{ view: 'page' }` (PluginManagerPage.tsx:848: renderSlot(
- *   'plugins.bundle.config', { view: 'page' }, { entryKey: pkg.name })).
- *   Consequence recorded at RosterCard: the card's AI-draft entry is
- *   disabled with a hint, because the Host `draft` resolves the draft
- *   session's cwd from the requesting session (lib/drafter.js:241-244) and
- *   this seat has none to give.
+ * - `settings.section` list slot, scope root — one Settings page entry
+ *   (`{ id, order, label }` options; ui-settings contract/slots.ts:17-27,
+ *   registration precedent ui-settings-models client/index.ts:143-152).
+ *   With no `plugins.bundle.config` card of our own, the Plugins page
+ *   shows this section's entry on the bundle row (settings shell
+ *   contract). The AI-draft configuration (toggle + model) lives here;
+ *   drafting itself needs a session, so its surface is the in-session
+ *   "+"-menu modal (lib/drafter.js resolves the draft session's cwd from
+ *   the requesting session).
+ * - `configForms` client service (inject list; airboard client.js:770-774
+ *   `ctx.configForms.get(<id>)` precedent) — the Settings block stages the
+ *   volatile draft fields through the form's set/mutate (config-form.ts:
+ *   109-133), and the modal reads the same snapshot live via subscribe.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-agent-roster',
@@ -131,8 +133,9 @@ window.__ModuleLoader__.load({
       'custom.saveTemplate': '保存为角色模板',
       'draft.label': 'AI 起草',
       'draft.placeholder': '用一两句话描述想要的角色，模型将起草名称、描述与提示词',
-      'draft.model': '起草模型',
-      'draft.model.inherit': '沿用草稿会话自身的模型',
+      'draft.uses': '将使用 {model} 起草',
+      'draft.configure.hint': 'AI 代笔未开启或未配置模型 — 请到 设置 > Agent roster 开启并选择模型。',
+      'draft.elsewhere': 'AI 代笔请从会话中的“+”菜单使用（需要会话上下文）。',
       'draft.action': '起草',
       'draft.inflight': '起草中…',
       'draft.abort': '停止等待',
@@ -171,7 +174,17 @@ window.__ModuleLoader__.load({
       'card.model.chip': '{provider} / {model}',
       'card.model.chip.effort': '{provider} / {model} · {effort}',
       'card.updatedAt': '更新于 {time}',
-      'card.draft.hint': '此页面没有会话上下文，无法在这里 AI 起草；请在对话输入区的“+”菜单中打开“添加成员”使用 AI 起草',
+      'settings.nav': '角色花名册',
+      'settings.draft.title': 'AI 代笔',
+      'settings.draft.toggle': '启用 AI 代笔',
+      'settings.draft.model': '草稿模型',
+      'settings.draft.model.unset': '未设置',
+      'settings.draft.effort.default': '默认',
+      'settings.draft.required': '已开启：请选择草稿模型。',
+      'settings.draft.explain': '开启后，会话内“+”菜单的自定义角色表单即可 AI 起草；草稿在专用草稿会话中生成，使用此模型。',
+      'settings.draft.loading': '设置读取中…',
+      'settings.draft.writeRefused': '设置写入被拒绝',
+      'settings.draft.writeFailed': '写入失败',
     }
     const en = {
       'command.label': 'Add member',
@@ -206,8 +219,9 @@ window.__ModuleLoader__.load({
       'custom.saveTemplate': 'Save as a role template',
       'draft.label': 'AI draft',
       'draft.placeholder': 'Describe the role you want in a sentence or two; the model drafts the name, description, and prompt',
-      'draft.model': 'Draft model',
-      'draft.model.inherit': "Keep the draft session's own model",
+      'draft.uses': 'Drafts run on {model}',
+      'draft.configure.hint': 'AI drafting is off or has no model — enable it in Settings > Agent roster.',
+      'draft.elsewhere': 'AI drafting is available from the "+" menu inside a session (it needs a session context).',
       'draft.action': 'Draft',
       'draft.inflight': 'Drafting…',
       'draft.abort': 'Stop waiting',
@@ -246,7 +260,17 @@ window.__ModuleLoader__.load({
       'card.model.chip': '{provider} / {model}',
       'card.model.chip.effort': '{provider} / {model} · {effort}',
       'card.updatedAt': 'Updated {time}',
-      'card.draft.hint': 'This page has no session context, so AI drafting is unavailable here — open "Add member" from a conversation\'s "+" menu to draft',
+      'settings.nav': 'Agent roster',
+      'settings.draft.title': 'AI draft',
+      'settings.draft.toggle': 'Enable AI-assisted drafting',
+      'settings.draft.model': 'Draft model',
+      'settings.draft.model.unset': 'Not configured',
+      'settings.draft.effort.default': 'Default',
+      'settings.draft.required': 'Enabled — pick a draft model.',
+      'settings.draft.explain': 'When enabled, the custom-role form in a session\'s "+" menu offers AI drafting; drafts run in the dedicated draft session on this model.',
+      'settings.draft.loading': 'Loading settings…',
+      'settings.draft.writeRefused': 'The settings write was refused',
+      'settings.draft.writeFailed': 'Write failed',
     }
 
     /**
@@ -271,6 +295,60 @@ window.__ModuleLoader__.load({
 
     /** Optional roster namespace lookup; undefined until $mount lands. */
     const rosterNs = () => optRemote('remote.agentRoster')
+
+    /**
+     * The plugin's own Config form, staged through the settings mutate path
+     * (airboard client.js:770-774 precedent: `ctx.configForms.get(<id>)`;
+     * `configForms` is in the inject list). Undefined while the host exposes
+     * no settings surface — every consumer degrades, never crashes.
+     */
+    const rosterForm = () => {
+      try { return pluginCtx?.get?.('configForms')?.get?.(ID) } catch { return undefined }
+    }
+
+    /**
+     * Unwrap one config-form snapshot value: the mirror delivers plain JSON,
+     * but defensive wrapper-tolerance matches the host-side readString rule.
+     */
+    const configValue = (value) => (typeof value?.get === 'function' ? value.get() : value)
+
+    /**
+     * Read the Settings-owned AI-draft configuration from the form snapshot.
+     * @returns {{ phase: 'loading' | 'ready', enabled?: boolean, modelRef?: { provider: string, model: string, reasoningEffort?: string } | null }}
+     */
+    const draftSettingsOf = () => {
+      const form = rosterForm()
+      const snapshot = form?.getSnapshot?.()
+      if (snapshot?.status !== 'ready' || snapshot.value === null || typeof snapshot.value !== 'object') {
+        return { phase: 'loading' }
+      }
+      const value = snapshot.value
+      const provider = configValue(value.draftModelProvider)
+      const modelId = configValue(value.draftModelId)
+      const effort = configValue(value.draftReasoningEffort)
+      const modelRef = typeof provider === 'string' && provider !== ''
+        && typeof modelId === 'string' && modelId !== ''
+        ? { provider, model: modelId, ...(typeof effort === 'string' && effort !== '' ? { reasoningEffort: effort } : {}) }
+        : null
+      return { phase: 'ready', enabled: configValue(value.draftEnabled) === true, modelRef }
+    }
+
+    /**
+     * React hook over draftSettingsOf: re-reads on every form snapshot
+     * change (form.subscribe, the ConfigForm mirror contract) so a Settings
+     * edit is live in an open modal.
+     * @returns {ReturnType<typeof draftSettingsOf>}
+     */
+    function useDraftSettings() {
+      const [settings, setSettings] = React.useState(draftSettingsOf)
+      React.useEffect(() => {
+        setSettings(draftSettingsOf())
+        const form = rosterForm()
+        const off = form?.subscribe?.(() => { setSettings(draftSettingsOf()) })
+        return () => { off?.() }
+      }, [])
+      return settings
+    }
 
     /**
      * Await one RemoteResult-shaped call and yield its value: `{ok: true}`
@@ -664,25 +742,14 @@ window.__ModuleLoader__.load({
      * AI-draft area is a fill-only proposal (nothing is saved without the
      * explicit confirm, and an unparsed draft is visibly flagged); the
      * banner area carries the team-gating states (see the teamBanner
-     * derivation inside RosterModal). The draft-model picker prefills from
-     * the live session selection (`useProjection('modelSelection').next`)
-     * with a truthful null-path default.
-     * @param {any} props - `sessionId`, `close()`, the locale seat's `t`,
-     *   and the slot machinery's standard `useProjection` prop.
+     * derivation inside RosterModal). The draft model is NOT chosen here:
+     * the Settings > Agent roster page owns the toggle and the model
+     * (2026-11-23 UX ruling) — this area states which model a draft will
+     * use and points at Settings while the feature is off or unconfigured.
+     * @param {any} props - `sessionId`, `close()`, the locale seat's `t`.
      */
     function RosterModal(props) {
-      const { sessionId, close, t, useProjection } = props
-      // The session's live model selection, read through the slot
-      // machinery's standard `useProjection` prop (header citations) — NOT
-      // a remote. Called unconditionally through a stable fallback: the
-      // real prop is a hook (per-key uSES binding, projection-store.ts:
-      // 33-45), so a conditional call would break hook order in
-      // production; hosts whose seat props predate the standard resolve to
-      // the absent fallback. `next` is null while the Agent's initial
-      // options supply the route — the prefill then falls back.
-      const projectionOf = useProjection ?? ((key) => undefined)
-      const modelSelection = projectionOf('modelSelection')
-      const liveNext = modelSelection?.next ?? null
+      const { sessionId, close, t } = props
       const [templates, setTemplates] = React.useState({ phase: 'loading' })
       const [selectedId, setSelectedId] = React.useState(null)
       const [memberName, setMemberName] = React.useState('')
@@ -706,9 +773,9 @@ window.__ModuleLoader__.load({
       const [customPrompt, setCustomPrompt] = React.useState('')
       const [saveAsTemplate, setSaveAsTemplate] = React.useState(false)
       const [brief, setBrief] = React.useState('')
-      // null = unset (the live-selection prefill applies); '' = the labeled
-      // default chosen explicitly; otherwise the chosen row's key.
-      const [draftChoice, setDraftChoice] = React.useState(null)
+      // The Settings-owned AI-draft configuration (toggle + model), read
+      // live from the config form — the host re-validates on every draft.
+      const draftSettings = useDraftSettings()
       // The shared client-side draft wait (epoch-guarded, abortable).
       const { draft, drafting, start: startDraftFlow, abort: abortDraft } = useDraftFlow(t)
 
@@ -796,29 +863,12 @@ window.__ModuleLoader__.load({
       // catalog degraded — the selector then offers the inherit entry only.
       const modelByKey = rowsByKey(modelRows)
       // Lossless spawn rows: the selected template's default rides as a
-      // synthetic row when the catalog does not carry it (the card editor's
-      // rowsWithRef machinery), so the prefill maps and an untouched
-      // open→confirm round-trip sends the stored ref whole.
+      // synthetic row when the catalog does not carry it (the settings
+      // editor's rowsWithRef machinery), so the prefill maps and an
+      // untouched open→confirm round-trip sends the stored ref whole.
       const spawnRows = React.useMemo(() => rowsWithRef(modelRows, templateDefault), [modelRows, templateDefault])
       const spawnByKey = rowsByKey(spawnRows)
       const chosen = modelChoice === '' ? undefined : spawnByKey.get(modelChoice)
-      // Draft-picker prefill: while the user has not chosen, the picker
-      // starts from the session's LIVE model when the catalog maps it.
-      // Server-side, `model: null` is NOT "the current session's model"
-      // for a draft — runDraft skips selectModel on null, keeping the
-      // per-cwd draft session's own sticky selection (lib/drafter.js:
-      // 305-316), so the labeled default must say what null really does
-      // and the live selection must be sent explicitly. Unmapped, absent,
-      // or null `next` — and any explicit user choice — uses the labeled
-      // default instead. (The SPAWN selector's null is different: for a
-      // default-bearing template it is an EXPLICIT CLEAR of the template
-      // default; otherwise it omits agentOptions so the child inherits the
-      // parent's route — lib/spawn.js model precedence.)
-      const liveKey = liveNext !== null && typeof liveNext.provider === 'string' && typeof liveNext.model === 'string'
-        ? JSON.stringify([liveNext.provider, liveNext.model])
-        : null
-      const effectiveDraftChoice = draftChoice ?? (liveKey !== null && modelByKey.has(liveKey) ? liveKey : '')
-      const chosenDraft = effectiveDraftChoice === '' ? undefined : modelByKey.get(effectiveDraftChoice)
 
       // SPEC — a template's optional defaultModel pre-fills the model
       // selector. The prefill follows the SELECTION (it re-applies whenever
@@ -834,15 +884,20 @@ window.__ModuleLoader__.load({
       }, [effectiveId])
 
       const modelRef = modelRefOf(chosen, effortChoice)
-      const draftModelRef = modelRefOf(chosenDraft, '')
+      // A draft runs only when Settings enabled it AND configured a model
+      // (the user's 2026-11-23 ruling: enabling requires picking a model);
+      // otherwise the area shows the configure-first hint.
+      const draftEligible = draftSettings.phase === 'ready' && draftSettings.enabled === true && draftSettings.modelRef !== null
 
       /**
        * Start one AI draft over the shared wait (useDraftFlow carries the
        * one-draft-session-per-workspace boundary and the epoch guard): the
-       * result is a PROPOSAL that fills the custom form below; nothing is
-       * saved without the explicit confirm.
+       * model is the Settings-configured one (host-side resolution — the
+       * modal sends none of its own), and the result is a PROPOSAL that
+       * fills the custom form below; nothing is saved without the explicit
+       * confirm.
        */
-      const startDraft = () => { startDraftFlow({ sessionId, brief, model: draftModelRef }) }
+      const startDraft = () => { startDraftFlow({ sessionId, brief, model: null }) }
 
       /** Enable Team mode for this session tree, then refresh the status. */
       const enableTeamMode = async () => {
@@ -1160,22 +1215,19 @@ window.__ModuleLoader__.load({
                 onChange: (event) => { setBrief(event.target.value) },
               }),
               h('div', { className: 'agent-roster-draft-controls' },
-                h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-draft-model' }, t('draft.model')),
-                h('select', {
-                  id: 'agent-roster-draft-model',
-                  className: 'agent-roster-select',
-                  'data-agent-roster-draft-model': effectiveDraftChoice === '' ? 'inherit' : effectiveDraftChoice,
-                  value: effectiveDraftChoice,
-                  disabled: drafting,
-                  onChange: (event) => { setDraftChoice(event.target.value) },
-                },
-                  h('option', { value: '' }, t('draft.model.inherit')),
-                  ...catalogOptgroups(modelRows)),
+                // Which model a draft will use — the Settings-configured
+                // one; never a per-draft choice (2026-11-23 UX ruling).
+                h('span', {
+                  className: 'agent-roster-note',
+                  'data-agent-roster-draft-model-line': draftEligible ? 'ready' : 'configure',
+                }, draftEligible
+                  ? t('draft.uses', { model: draftSettings.modelRef.model })
+                  : t('draft.configure.hint')),
                 h('button', {
                   type: 'button',
                   className: 'agent-roster-button',
                   'data-agent-roster-draft': '',
-                  disabled: brief.trim() === '' || drafting,
+                  disabled: !draftEligible || brief.trim() === '' || drafting,
                   onClick: () => { void startDraft() },
                 }, drafting ? t('draft.inflight') : t('draft.action')),
                 drafting
@@ -1250,32 +1302,134 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     /**
-     * The bundle's settings card, registered in `plugins.bundle.config`
-     * keyed by the package name (the airboard client.js:1055-1058 pattern).
-     * The Plugins page renders this seat on the bundle's page between its
-     * description and its rows with owner props `{ view: 'page' }` ONLY —
-     * `plugins.bundle.config` is a keyed ROOT-scope slot whose owner props
-     * are PluginConfigViewProps `{ view, form? }` with no session identity
-     * (packages/client/ui-plugin-manager/src/client/slot-contract.ts:159;
-     * the generated catalog packages/extensions/cordis-client-runner/src/
-     * client/slot-catalog.ts:3478-3522; the render call
-     * PluginManagerPage.tsx:848). The roster data therefore comes from the
-     * module-level rosterNs() lookup — never from a config `form`, which
-     * the page does not pass for bundle config anyway.
-     *
-     * Session-context resolution for the AI-draft entry: the Host `draft`
-     * resolves the shared draft session's cwd FROM the requesting session
-     * and hard-requires its id (lib/drafter.js:241-244), while this seat
-     * carries no session — so the entry renders DISABLED with a bilingual
-     * hint pointing at the in-session "+" flow, and the enabled path runs
-     * only when a `sessionId` prop actually reaches the card (no current
-     * host passes one; the branch exists so a future seat that does is
-     * correct, and tests exercise both variants).
+     * The roster manager body: the template list with per-row edit/delete
+     * and the add button, or one open editor form. Rendered inside the
+     * Settings section below the AI-draft block. Every write goes through
+     * the module-level rosterNs() lookup; failures render bilingual
+     * reasons and the list re-reads after each successful write.
      */
-    function RosterCard(props) {
-      const { view, t, sessionId } = props
-      if (view !== 'page') return null
-      return h(RosterCardPage, { t, sessionId })
+    /**
+     * The Settings > Agent roster page body (2026-11-23 UX ruling): part
+     * one is the AI-draft configuration (toggle + the draft model this
+     * profile's drafts run on — enabling REQUIRES a model, the modal never
+     * picks one per-draft); part two is the roster manager below it.
+     * `configForms` is in the inject list (airboard precedent); a missing
+     * form degrades the block to its loading note, never a crash.
+     */
+    function DraftSettingsBlock({ t }) {
+      const settings = useDraftSettings()
+      const { rows } = useModelRows()
+      const [writeError, setWriteError] = React.useState(null)
+      const currentKey = settings.phase === 'ready' && settings.modelRef !== null
+        ? refKey(settings.modelRef)
+        : null
+      const currentRow = currentKey === null ? undefined : rowsByKey(rows).get(currentKey)
+
+      /** Stage one write; a refused write surfaces its bilingual reason. */
+      const write = async (operation) => {
+        const form = rosterForm()
+        try {
+          const accepted = await operation(form)
+          if (accepted !== true) setWriteError({ code: 'roster/settings-write-refused', message: t('settings.draft.writeRefused') })
+          else setWriteError(null)
+        } catch (error) {
+          setWriteError(error)
+        }
+      }
+
+      const toggleDraft = () => {
+        if (settings.phase !== 'ready') return
+        void write((form) => form.set('draftEnabled', settings.enabled !== true))
+      }
+      const chooseModel = (event) => {
+        const value = event.target.value
+        if (value === '') {
+          void write((form) => form.mutate([
+            { op: 'set', path: ['draftModelProvider'], value: '' },
+            { op: 'set', path: ['draftModelId'], value: '' },
+            { op: 'set', path: ['draftReasoningEffort'], value: '' },
+          ]))
+          return
+        }
+        const row = rowsByKey(rows).get(value)
+        if (row === undefined) return
+        void write((form) => form.mutate([
+          { op: 'set', path: ['draftModelProvider'], value: row.provider },
+          { op: 'set', path: ['draftModelId'], value: row.model },
+          { op: 'set', path: ['draftReasoningEffort'], value: '' },
+        ]))
+      }
+      const chooseEffort = (event) => {
+        const value = event.target.value
+        void write((form) => form.set('draftReasoningEffort', value))
+      }
+
+      const efforts = currentRow?.efforts ?? []
+      const currentEffort = settings.phase === 'ready' && settings.modelRef !== null
+          && typeof settings.modelRef.reasoningEffort === 'string'
+        ? settings.modelRef.reasoningEffort
+        : ''
+
+      return h('div', { className: 'agent-roster-settings-draft', 'data-agent-roster-settings-draft': '' },
+        h('div', { className: 'agent-roster-card-head' },
+          h('span', { className: 'agent-roster-label' }, t('settings.draft.title'))),
+        settings.phase !== 'ready'
+          ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'loading' }, t('settings.draft.loading'))
+          : h('div', { className: 'agent-roster-settings-draft-row' },
+            h('label', { className: 'agent-roster-custom-toggle-row' },
+              h('input', {
+                type: 'checkbox',
+                role: 'switch',
+                'aria-checked': settings.enabled === true ? 'true' : 'false',
+                'data-agent-roster-draft-toggle': '',
+                checked: settings.enabled === true,
+                onChange: toggleDraft,
+              }),
+              h('span', {}, t('settings.draft.toggle'))),
+            h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-draft-model-setting' }, t('settings.draft.model')),
+            h('select', {
+              id: 'agent-roster-draft-model-setting',
+              className: 'agent-roster-select',
+              'data-agent-roster-draft-model-setting': currentKey ?? 'unset',
+              value: currentKey ?? '',
+              onChange: chooseModel,
+            },
+              h('option', { value: '' }, t('settings.draft.model.unset')),
+              ...catalogOptgroups(rows)),
+            efforts.length > 0
+              ? h('select', {
+                className: 'agent-roster-select',
+                'data-agent-roster-draft-effort-setting': currentEffort,
+                value: currentEffort,
+                onChange: chooseEffort,
+              },
+                h('option', { value: '' }, t('settings.draft.effort.default')),
+                ...efforts.map((effort) => h('option', { key: effort.id, value: effort.id }, effort.name ?? effort.id)))
+              : null,
+            settings.enabled === true && settings.modelRef === null
+              ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-draft-required': '' }, t('settings.draft.required'))
+              : null,
+            writeError !== null
+              ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-error': typeof writeError?.code === 'string' ? writeError.code : '' },
+                h('span', { className: 'agent-roster-error-label' }, t('settings.draft.writeFailed')),
+                errorDetail(writeError))
+              : null),
+        h('div', { className: 'agent-roster-note' }, t('settings.draft.explain')))
+    }
+
+    /**
+     * The settings.section entry: renders through the Settings page's
+     * `settings.section.view` factory with `{ id, close }` owner props
+     * (ui-settings contract/slots.ts:17-27) — no `view` gate and no session
+     * identity. The body is the AI-draft block plus the roster manager.
+     * @param {any} props - the section view props; the bound locale `t`
+     *   comes from the registration's `locale` option.
+     */
+    function RosterSettingsSection(props) {
+      const { t } = props
+      return h('div', { className: 'agent-roster-settings', 'data-agent-roster-settings': '' },
+        h(DraftSettingsBlock, { t }),
+        h(RosterCardPage, { t }))
     }
 
     /**
@@ -1288,7 +1442,7 @@ window.__ModuleLoader__.load({
      *   `sessionId` seat prop.
      */
     function RosterCardPage(props) {
-      const { t, sessionId } = props
+      const { t } = props
       const [templates, setTemplates] = React.useState({ phase: 'loading' })
       // null = list view; { mode: 'add' } | { mode: 'edit', template } = the open form.
       const [editor, setEditor] = React.useState(null)
@@ -1411,7 +1565,6 @@ window.__ModuleLoader__.load({
             mode: editor.mode,
             template: editor.mode === 'edit' ? editor.template : null,
             t,
-            sessionId,
             close: () => { setEditor(null) },
             saved: () => { setEditor(null); void loadTemplates() },
           }))
@@ -1429,11 +1582,8 @@ window.__ModuleLoader__.load({
      *   `close()`, `saved()`.
      */
     function RosterCardForm(props) {
-      const { mode, template, t, sessionId, close, saved } = props
+      const { mode, template, t, close, saved } = props
       const storedModel = mode === 'edit' ? (template?.defaultModel ?? null) : null
-      // The add form's draft wait; kept mounted in edit mode too so the
-      // hook order never shifts between modes.
-      const { draft, drafting, start: startDraftFlow, abort: abortDraft } = useDraftFlow(t)
       const { rows } = useModelRows()
       const startKey = refKey(storedModel)
       const startEffort = storedModel !== null && typeof storedModel.reasoningEffort === 'string' ? storedModel.reasoningEffort : ''
@@ -1442,20 +1592,8 @@ window.__ModuleLoader__.load({
       const [prompt, setPrompt] = React.useState(typeof template?.prompt === 'string' ? template.prompt : '')
       const [modelChoice, setModelChoice] = React.useState(startKey ?? '')
       const [effortChoice, setEffortChoice] = React.useState(startEffort)
-      const [brief, setBrief] = React.useState('')
       const [saving, setSaving] = React.useState(false)
       const [outcome, setOutcome] = React.useState(null)
-      // A draft result fills the form ONCE per result (result-identity
-      // keyed): an abandoned wait's epoch bump leaves state untouched,
-      // while a re-draft deliberately overwrites manual edits — the same
-      // contract as the modal's draft fill.
-      React.useEffect(() => {
-        if (draft.result?.ok !== true) return
-        const value = draft.result.value ?? {}
-        setName(typeof value.name === 'string' ? value.name : '')
-        setDescription(typeof value.description === 'string' ? value.description : '')
-        setPrompt(typeof value.prompt === 'string' ? value.prompt : '')
-      }, [draft.result])
 
       // Lossless model editing: the stored ref rides as a synthetic row
       // when the catalog does not carry it, so an untouched open→save
@@ -1466,7 +1604,6 @@ window.__ModuleLoader__.load({
       const editRows = React.useMemo(() => rowsWithRef(rows, storedModel), [rows, storedModel])
       const byKey = React.useMemo(() => rowsByKey(editRows), [editRows])
 
-      const sessionReachable = typeof sessionId === 'string' && sessionId !== ''
       const nameText = name.trim()
       const descriptionText = description.trim()
       const promptText = prompt.trim()
@@ -1501,65 +1638,18 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // The AI-draft entry (add mode only): disabled with the no-session
-      // hint — this seat has no session, and the Host draft resolves the
-      // draft session's cwd from the requesting session's id. The click
-      // guard is real (not just the disabled prop) because a disabled
-      // control is advisory only under test fakes.
-      const draftArea = mode !== 'add' ? null : h('div', { className: 'agent-roster-draft-area', 'data-agent-roster-card-draft-area': '' },
-        h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-card-brief' }, t('draft.label')),
-        h('textarea', {
-          id: 'agent-roster-card-brief',
-          className: 'agent-roster-input agent-roster-textarea',
-          'data-agent-roster-card-brief': '',
-          rows: 2,
-          value: brief,
-          placeholder: t('draft.placeholder'),
-          disabled: drafting || !sessionReachable,
-          onChange: (event) => { setBrief(event.target.value) },
-        }),
-        h('div', { className: 'agent-roster-draft-controls' },
-          h('button', {
-            type: 'button',
-            className: 'agent-roster-button',
-            'data-agent-roster-card-draft': '',
-            disabled: !sessionReachable || brief.trim() === '' || drafting,
-            onClick: () => {
-              if (!sessionReachable || drafting) return
-              startDraftFlow({ sessionId, brief, model: null })
-            },
-          }, drafting ? t('draft.inflight') : t('draft.action')),
-          drafting
-            ? h('button', {
-              type: 'button',
-              className: 'agent-roster-button',
-              'data-agent-roster-card-draft-abort': '',
-              onClick: abortDraft,
-            }, t('draft.abort'))
-            : null),
-        sessionReachable
-          ? null
-          : h('div', { className: 'agent-roster-note', 'data-agent-roster-card-draft-hint': '' }, t('card.draft.hint')),
-        draft.result?.ok === true && draft.result.value?.parsed !== true
-          ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-note': 'draft-unparsed' }, t('draft.unparsed'))
-          : null,
-        draft.result?.aborted === true
-          ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'draft-aborted' }, t('draft.aborted'))
-          : null,
-        draft.result?.ok === false && draft.result.aborted !== true
-          ? h('div', {
-            className: 'agent-roster-note agent-roster-error',
-            'data-agent-roster-card-draft-error': '',
-            'data-agent-roster-error': typeof draft.result.error?.code === 'string' ? draft.result.error.code : '',
-          },
-          h('span', { className: 'agent-roster-error-label' }, t('draft.failed')),
-          errorDetail(draft.result.error))
-          : null)
+      // The add form carries no AI-draft entry: drafting needs a session
+      // for the draft session's cwd, so the + menu in a session is the
+      // drafting surface (2026-11-23 UX ruling) — this hint says so.
+      const draftHint = mode !== 'add' ? null : h('div', {
+        className: 'agent-roster-note',
+        'data-agent-roster-card-draft-hint': '',
+      }, t('draft.elsewhere'))
 
       return h('div', { className: 'agent-roster-card-form', 'data-agent-roster-card-form': '' },
         h('div', { className: 'agent-roster-card-head' },
           h('span', { className: 'agent-roster-label' }, mode === 'edit' ? t('card.edit') : t('card.add'))),
-        draftArea,
+        draftHint,
         h(RoleFields, {
           t,
           idPrefix: 'agent-roster-card',
@@ -1606,7 +1696,7 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'agent-roster-button',
             'data-agent-roster-card-cancel': '',
-            disabled: saving || drafting,
+            disabled: saving,
             onClick: close,
           }, t('card.cancel'))))
     }
@@ -1676,7 +1766,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['commandUi', 'locale', 'slots', 'remote'],
+      inject: ['commandUi', 'configForms', 'locale', 'slots', 'remote'],
       apply(ctx) {
         pluginCtx = ctx
         const t = ctx.locale.bind(NS)
@@ -1700,15 +1790,19 @@ window.__ModuleLoader__.load({
           },
           RosterModalSeat,
         )), 'dsh-agent-roster: spawn modal seat')
-        // The Plugins-page settings card: keyed by the package name, the
-        // airboard client.js:1055-1058 pattern. `name` is the SlotMap key
-        // (slot-catalog.ts:31-32 "SlotMap key passed as the register call's
-        // `name`"); `key` is this bundle's package name the page dispatches
-        // (PluginManagerPage.tsx:848 entryKey: pkg.name).
-        ctx.effect(() => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
-          { name: 'plugins.bundle.config', key: ID, locale: NS },
-          RosterCard,
-        )), 'dsh-agent-roster: roster card')
+        // The Settings page section (2026-11-23 UX ruling: role
+        // configuration lives in Settings next to models/presets, not on
+        // the Plugins-page card). One `settings.section` list entry — the
+        // ui-settings-models precedent (client/index.ts:143-152): `name`
+        // is the SlotMap key, `id` the section key, `order` the nav
+        // position, `label` a locale thunk. With no
+        // `plugins.bundle.config` card of our own, the Plugins row shows
+        // this section's entry (settings shell contract: an entry appears
+        // on the bundle row that registers no configuration).
+        ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register(
+          { name: 'settings.section', id: 'agent-roster', order: 40, locale: NS, label: () => t('settings.nav') },
+          RosterSettingsSection,
+        )), 'dsh-agent-roster: settings section')
         ctx.effect(() => injectStyles(), 'dsh-agent-roster: styles')
       },
     }

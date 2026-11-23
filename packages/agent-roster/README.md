@@ -2,11 +2,13 @@
 
 A dsh plugin that keeps a **profile-wide roster of role templates** and turns
 it into one-click team building: a "+"-menu member spawn flow (pick a
-template, name the member, optionally pick a model and an initial task), a
-reusable AI-assisted drafting session for new templates, model-facing
-`roster_template_save` / `roster_template_list` tools, and a roster manager
-card on the Plugins page. Members are ordinary subagents — the plugin never
-renders member lists itself.
+template, name the member, optionally pick a model and an initial task),
+AI-assisted drafting for new templates (configured in **Settings > Agent
+roster**: an enable toggle plus the draft model — enabling requires picking
+one; drafts only ever propose), model-facing `roster_template_save` /
+`roster_template_list` tools, and an **Agent roster** manager page in
+Settings (create / edit / delete, per-template default model). Members are
+ordinary subagents — the plugin never renders member lists itself.
 
 Design and full spec: see `docs/specs/2026-11-22-agent-roster-design.md` and
 `docs/plan/2026-11-22-agent-roster.md` in the repository root.

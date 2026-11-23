@@ -188,11 +188,40 @@ function placeholders(value) {
  * faces' actual wire contract (ui-agent-team browser-plugin.client.spec.ts
  * :100-106), never a more forgiving shape.
  */
-function makeCtx({ roster, extras } = {}) {
+function makeCtx({ roster, extras, settings } = {}) {
   const recorded = { commands: [], injects: [], registers: [], namespaces: [], mounts: [] }
   const remoteNamespaces = {}
   for (const [name, face] of Object.entries(extras ?? {})) remoteNamespaces[`remote.${name}`] = face
+  // The fake ConfigForm mirrors the real contract (config-form.ts:104-160):
+  // getSnapshot/subscribe for reads, queued set/unset/mutate for writes,
+  // answered as RemoteResult. Values are plain JSON like the real mirror,
+  // and accepted writes notify subscribers (mirror.acceptView → store →
+  // listeners) so mounted readers re-read — a silent fake here made
+  // disabled-state assertions pass for the wrong reason.
+  const formValues = {
+    draftEnabled: false,
+    draftModelProvider: '',
+    draftModelId: '',
+    draftReasoningEffort: '',
+    ...(settings ?? {}),
+  }
+  const listeners = new Set()
+  const notify = () => { for (const listener of listeners) listener() }
+  const form = {
+    writes: { sets: [], unsets: [], mutations: [] },
+    getSnapshot: () => ({ status: 'ready', revision: 0, value: formValues }),
+    subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+    set: async (field, value) => { form.writes.sets.push([field, value]); formValues[field] = value; notify(); return true },
+    unset: async (field) => { form.writes.unsets.push(field); delete formValues[field]; notify(); return true },
+    mutate: async (ops) => {
+      form.writes.mutations.push(ops)
+      for (const op of ops) if (op.op === 'set') formValues[op.path[0]] = op.value
+      notify()
+      return true
+    },
+  }
   const services = {
+    configForms: { get: (id) => (id === 'dsh-agent-roster' ? form : undefined) },
     commandUi: { register: (contribution) => { recorded.commands.push(contribution); return () => {} } },
     locale: {
       bind: () => makeT(),
@@ -235,7 +264,13 @@ function makeCtx({ roster, extras } = {}) {
   }
   const ctx = new Proxy({
     effect(fn) { return fn() ?? undefined },
-    get(name) { return remoteNamespaces[name] },
+    // Real cordis semantics: get(name) resolves any service the plugin
+    // injected. The namespaces the $mount installs land in remoteNamespaces;
+    // injected client services (configForms) resolve from the services
+    // table — returning undefined for configForms made the settings look
+    // permanently 'loading' and let disabled-state tests pass for the
+    // wrong reason.
+    get(name) { return remoteNamespaces[name] ?? services[name] },
   }, {
     get(target, prop) {
       if (typeof prop === 'symbol') return target[prop]
@@ -244,7 +279,7 @@ function makeCtx({ roster, extras } = {}) {
       throw new Error(`cannot get property ${String(prop)} without inject`)
     },
   })
-  return [ctx, recorded]
+  return [ctx, recorded, form]
 }
 
 /** Install a document double around a callback. */
@@ -276,15 +311,15 @@ function bootPlugin() {
 }
 
 /** Apply the plugin against a strict ctx and return the harness, the recordings, and the style node. */
-function applyPlugin({ roster, extras } = {}) {
+function applyPlugin({ roster, extras, settings } = {}) {
   const { harness, plugin } = bootPlugin()
-  const [ctx, recorded] = makeCtx({ roster, extras })
+  const [ctx, recorded, form] = makeCtx({ roster, extras, settings })
   const style = { dataset: {}, textContent: '', remove() {} }
   withDocument(
     { createElement: () => style, head: { append() {} } },
     () => plugin.apply(ctx),
   )
-  return { harness, recorded, style }
+  return { harness, recorded, style, form }
 }
 
 /** Two templates the fake roster serves. */
@@ -303,7 +338,7 @@ const TEMPLATES = [
  * seat (the plain-function shape ui-agent-team's team-mode.client.spec.tsx
  * :20 fakes; omitted = a host whose seat props predate the standard).
  */
-async function openModal({ roster, extras, useProjection } = {}) {
+async function openModal({ roster, extras, settings } = {}) {
   const spawned = []
   const rosterFake = roster === undefined
     ? {
@@ -313,15 +348,17 @@ async function openModal({ roster, extras, useProjection } = {}) {
       teamStatus: async () => ({ ok: true, value: { teamMode: true, isRoot: true, canEnable: true } }),
     }
     : roster
-  const { harness, recorded } = applyPlugin({ roster: rosterFake, extras })
+  // AI drafting defaults to ON with a configured model so the modal's draft
+  // flows exercise their happy path; gating tests pass their own settings.
+  const withDraft = { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'chat', ...(settings ?? {}) }
+  const { harness, recorded, form } = applyPlugin({ roster: rosterFake, extras, settings: withDraft })
   const seat = recorded.registers.find(({ declaration }) => declaration.name === 'conversation.input.overlay')
   assert.ok(seat, 'the overlay seat is registered')
   const props = {
     t: makeT(),
-    ...(useProjection === undefined ? {} : { useProjection }),
     ...seat.declaration.inject('sess-1'),
   }
-  const view = { vdom: undefined, spawned, harness }
+  const view = { vdom: undefined, spawned, harness, form }
   const render = () => { view.vdom = harness.render(seat.Component, props) }
   render()
   await harness.settle()
@@ -346,7 +383,7 @@ test('client.js registers one module named dsh-agent-roster in the factory forma
 
 test('the factory returns a plugin injecting the documented services only', () => {
   const { plugin } = bootPlugin()
-  assert.deepEqual(plugin.inject, ['commandUi', 'locale', 'slots', 'remote'])
+  assert.deepEqual(plugin.inject, ['commandUi', 'configForms', 'locale', 'slots', 'remote'])
   assert.equal(typeof plugin.apply, 'function')
 })
 
@@ -947,107 +984,71 @@ test('a failed team action renders the action-failed line without losing the ban
   assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-team'] === 'enable'))
 })
 
-// ---------------------------------------------------------------------------
-// Review fix — the draft picker prefills from the live session model.
-// ---------------------------------------------------------------------------
-
 /** The fake session face serving the catalog. */
 const catalogFace = () => ({ ok: true, value: CATALOG })
 
-test('draft picker prefills from the live session model; the spawn selector stays on inherit', async () => {
-  const record = { spawned: [], saved: [], drafted: [] }
-  const reasonerKey = JSON.stringify(['deepseek', 'reasoner'])
-  const view = await openModal({
-    roster: rosterWithTeam(HEALTHY_TEAM, record),
-    extras: { session: { modelCatalog: catalogFace } },
-    useProjection: (key) => key === 'modelSelection'
-      ? { lastUsed: null, next: { provider: 'deepseek', model: 'reasoner' } }
-      : undefined,
-  })
-  await enableCustomRole(view)
-  // Prefill: the draft picker starts on the live selection's catalog row.
-  const draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
-  assert.equal(draftSelect.props.value, reasonerKey)
-  assert.equal(draftSelect.props['data-agent-roster-draft-model'], reasonerKey)
-  // The spawn selector is untouched by the prefill: inherit default.
-  const spawnSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.equal(spawnSelect.props.value, '')
-  assert.equal(spawnSelect.props['data-agent-roster-model'], 'inherit')
-  // Drafting sends the live selection explicitly (server-side null would
-  // keep the draft session's own sticky selection, not this model).
-  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
-  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
-  assert.deepEqual(record.drafted[0].model, { provider: 'deepseek', model: 'reasoner' })
-  // A spawn in the same state still sends model null — the child inherits
-  // the parent route (draft fills the custom form, so this spawns custom).
-  const modal = find(view.vdom, (node) => node.type === Modal)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.equal(record.spawned[0].model, null)
+test('the draft area follows the Settings configuration, never a per-draft picker', async () => {
+  const drafted = []
+  const roster = {
+    listTemplates: async () => ({ ok: true, value: TEMPLATES }),
+    spawnMember: async () => ({ ok: true, value: { name: 'x' } }),
+    teamStatus: async () => ({ ok: true, value: { teamMode: true, isRoot: true, canEnable: true } }),
+    draft: async (input) => { drafted.push(input); return { ok: true, value: { name: 'D', description: 'd', prompt: 'p', parsed: true } } },
+  }
+  // Disabled → configure hint, button disabled, no draft possible.
+  const off = await openModal({ roster, settings: { draftEnabled: false } })
+  await enableCustomRole(off)
+  const offLine = find(off.vdom, (node) => node.props?.['data-agent-roster-draft-model-line'] === 'configure')
+  assert.ok(offLine, 'the configure-first hint renders')
+  assert.ok(texts(offLine).includes('t:draft.configure.hint'))
+  const offButton = find(off.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
+  assert.equal(offButton.props.disabled, true)
+  // Enabled without a model → still the configure hint (enabling requires
+  // picking a model — the 2026-11-23 ruling).
+  const unconfigured = await openModal({ roster, settings: { draftEnabled: true, draftModelProvider: '', draftModelId: '' } })
+  await enableCustomRole(unconfigured)
+  assert.ok(find(unconfigured.vdom, (node) => node.props?.['data-agent-roster-draft-model-line'] === 'configure'))
+  assert.equal(find(unconfigured.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.disabled, true)
+  // Enabled + configured → the uses line names the model and the draft
+  // sends model: null (Settings owns the model; the host resolves it).
+  const on = await openModal({ roster, settings: { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'chat' } })
+  await enableCustomRole(on)
+  const uses = find(on.vdom, (node) => node.props?.['data-agent-roster-draft-model-line'] === 'ready')
+  assert.ok(uses, 'the uses line renders')
+  assert.ok(texts(uses).includes('t:draft.uses(model=chat)'))
+  await typeInto(on, 'data-agent-roster-brief', 'A role')
+  await on.interact(() => { find(on.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
+  assert.deepEqual(drafted, [{ sessionId: 'sess-1', brief: 'A role', model: null }])
 })
 
-test('draft picker falls back to the truthful default when the live selection is null, absent, or unmapped', async () => {
-  const cases = [
-    { name: 'next is null (initial options supply the route)', useProjection: () => ({ lastUsed: null, next: null }) },
-    { name: 'the modelSelection capability is absent', useProjection: () => undefined },
-    { name: 'the live model is not in the catalog', useProjection: () => ({ next: { provider: 'other-host', model: 'private' } }) },
-  ]
-  for (const { name, useProjection } of cases) {
-    const record = { spawned: [], saved: [], drafted: [] }
-    const view = await openModal({
-      roster: rosterWithTeam(HEALTHY_TEAM, record),
-      extras: { session: { modelCatalog: catalogFace } },
-      useProjection,
-    })
-    await enableCustomRole(view)
-    const draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
-    assert.equal(draftSelect.props.value, '', name)
-    assert.equal(draftSelect.props['data-agent-roster-draft-model'], 'inherit', name)
-    // The labeled default tells the truth about null: the DRAFT session's
-    // own model, not the spawn selector's inherit copy.
-    assert.ok(texts(draftSelect.children[0]).includes('t:draft.model.inherit'), name)
-    assert.equal(texts(draftSelect.children[0]).includes('t:model.inherit'), false, name)
-    // Drafting then sends model null → the draft session keeps its own.
-    await typeInto(view, 'data-agent-roster-brief', 'Make a role')
-    await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
-    assert.equal(record.drafted[0].model, null, name)
-  }
-  // A seat without the standard prop at all (older host) behaves the same.
-  const record = { spawned: [], saved: [], drafted: [] }
-  const plain = await openModal({ roster: rosterWithTeam(HEALTHY_TEAM, record), extras: { session: { modelCatalog: catalogFace } } })
-  await enableCustomRole(plain)
-  assert.equal(find(plain.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined).props.value, '')
-})
 
 // ---------------------------------------------------------------------------
 // Task 8 — Plugins-page settings card (roster manager).
 // ---------------------------------------------------------------------------
 
 /**
- * The slot contract the card renders under (verified in the checkout):
- * `plugins.bundle.config` is a keyed ROOT-scope slot whose owner props are
- * PluginConfigViewProps `{ view, form? }` alone — no session identity
- * (packages/client/ui-plugin-manager/src/client/slot-contract.ts:159, and
- * the generated catalog packages/extensions/cordis-client-runner/src/client/
- * slot-catalog.ts:3478-3522) — and the page renders it with exactly
- * `{ view: 'page' }` (PluginManagerPage.tsx:848:
- * renderSlot('plugins.bundle.config', { view: 'page' }, { entryKey: pkg.name })).
- * mountCard therefore passes owner props WITHOUT a session, the production
- * truth; `props` overrides them (a synthetic sessionId exercises the
- * session-reachable draft path no current host provides).
+ * The section contract (verified in the checkout): `settings.section` is a
+ * list ROOT-scope slot whose entries render through the Settings page's
+ * `settings.section.view` factory with `{ id, close }` owner props
+ * (packages/client/ui-settings/src/client/contract/slots.ts:17-27; the
+ * ui-settings-models registration precedent client/index.ts:143-152).
+ * mountSection therefore renders the registered component with `{ t }`
+ * alone — no session identity exists on this surface.
  */
-async function mountCard({ roster, extras, props } = {}) {
+async function mountSection({ roster, extras, settings } = {}) {
+
   const calls = { saved: [], deleted: [], listed: 0 }
   const rosterFake = roster === undefined ? {
     listTemplates: async () => { calls.listed += 1; return { ok: true, value: CARD_TEMPLATES } },
     saveTemplate: async (input) => { calls.saved.push(input); return { ok: true, value: { id: input?.id ?? 'tpl-new', ...input } } },
     deleteTemplate: async (id) => { calls.deleted.push(id); return { ok: true, value: { deleted: true } } },
   } : roster
-  const { harness, recorded } = applyPlugin({ roster: rosterFake, extras })
-  const card = recorded.registers.find(({ declaration }) => declaration.name === 'plugins.bundle.config')
-  assert.ok(card, 'the card is registered')
-  const seatProps = { view: 'page', t: makeT(), ...(props ?? {}) }
-  const view = { vdom: undefined, calls, harness }
-  const render = () => { view.vdom = harness.render(card.Component, seatProps) }
+  const { harness, recorded, form } = applyPlugin({ roster: rosterFake, extras, settings })
+  const section = recorded.registers.find(({ declaration }) => declaration.name === 'settings.section')
+  assert.ok(section, 'the settings section is registered')
+  const seatProps = { t: makeT() }
+  const view = { vdom: undefined, calls, harness, form }
+  const render = () => { view.vdom = harness.render(section.Component, seatProps) }
   render()
   await harness.settle()
   render()
@@ -1066,18 +1067,24 @@ const CARD_TEMPLATES = [
   { id: 'tpl-scout', name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' }, createdAt: '2026-11-20T08:00:00.000Z', updatedAt: '2026-11-21T10:00:00.000Z' },
 ]
 
-test('card registers in plugins.bundle.config keyed by package name', () => {
+test('the roster manager registers one settings.section entry', () => {
   const { recorded } = applyPlugin()
-  assert.ok(recorded.injects.includes('plugins.bundle.config'))
-  const card = recorded.registers.find(({ declaration }) => declaration.name === 'plugins.bundle.config')
-  assert.ok(card, 'the card is registered')
-  assert.equal(card.declaration.key, 'dsh-agent-roster')
-  assert.equal(card.declaration.locale, 'agent-roster')
-  assert.equal(typeof card.Component, 'function')
+  assert.ok(recorded.injects.includes('settings.section'))
+  const section = recorded.registers.find(({ declaration }) => declaration.name === 'settings.section')
+  assert.ok(section, 'the settings section is registered')
+  assert.equal(section.declaration.id, 'agent-roster')
+  assert.equal(section.declaration.order, 40)
+  assert.equal(section.declaration.locale, 'agent-roster')
+  assert.equal(typeof section.declaration.label, 'function')
+  assert.equal(section.declaration.label(), 't:settings.nav')
+  assert.equal(typeof section.Component, 'function')
+  // The Plugins-page card is GONE: the row shows the settings entry instead
+  // (the shell lists a bundle row's section when it registers no config).
+  assert.equal(recorded.injects.includes('plugins.bundle.config'), false)
 })
 
 test('card renders records from listTemplates with model chip and updatedAt', async () => {
-  const view = await mountCard()
+  const view = await mountSection()
   const rows = findAll(view.vdom, (node) => typeof node.props?.['data-agent-roster-row'] === 'string')
   assert.deepEqual(rows.map((row) => row.props['data-agent-roster-row']), ['tpl-researcher', 'tpl-scout'])
   const first = rows[0]
@@ -1096,7 +1103,7 @@ test('card renders records from listTemplates with model chip and updatedAt', as
 })
 
 test('card edit prefills the shared fields and saves through saveTemplate with id', async () => {
-  const view = await mountCard({ extras: { session: { modelCatalog: catalogFace } } })
+  const view = await mountSection({ extras: { session: { modelCatalog: catalogFace } } })
   await view.interact(() => {
     find(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] === 'tpl-scout').props.onClick()
   })
@@ -1129,7 +1136,7 @@ test('card edit prefills the shared fields and saves through saveTemplate with i
 })
 
 test('card edit keeps an unmapped default model losslessly when the catalog is absent', async () => {
-  const view = await mountCard()
+  const view = await mountSection()
   await view.interact(() => {
     find(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] === 'tpl-scout').props.onClick()
   })
@@ -1145,7 +1152,7 @@ test('card edit keeps an unmapped default model losslessly when the catalog is a
 })
 
 test('card add form gates on name+prompt, defaults to no model, and sends no id', async () => {
-  const view = await mountCard({ extras: { session: { modelCatalog: catalogFace } } })
+  const view = await mountSection({ extras: { session: { modelCatalog: catalogFace } } })
   await view.interact(() => {
     find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
   })
@@ -1183,7 +1190,7 @@ test('card delete arms on the first click and calls deleteTemplate on the second
   const deleted = []
   let listed = 0
   let list = [...CARD_TEMPLATES]
-  const view = await mountCard({ roster: {
+  const view = await mountSection({ roster: {
     listTemplates: async () => { listed += 1; return { ok: true, value: list } },
     deleteTemplate: async (id) => { deleted.push(id); list = list.filter((tpl) => tpl.id !== id); return { ok: true, value: { deleted: true } } },
   } })
@@ -1201,89 +1208,12 @@ test('card delete arms on the first click and calls deleteTemplate on the second
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-row'] === 'tpl-researcher'), undefined)
 })
 
-test('card AI-draft entry is disabled with a bilingual hint when no session context exists', async () => {
-  const drafted = []
-  const view = await mountCard({ roster: {
-    listTemplates: async () => ({ ok: true, value: [] }),
-    draft: async (input) => { drafted.push(input); return { ok: true, value: { name: 'X', description: '', prompt: 'p', parsed: true } } },
-  } })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
-  })
-  const hint = find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft-hint'] !== undefined)
-  assert.ok(hint, 'the no-session hint renders')
-  assert.ok(texts(hint).join(' ').includes('t:card.draft.hint'))
-  const brief = find(view.vdom, (node) => node.props?.['data-agent-roster-card-brief'] !== undefined)
-  assert.equal(brief.props.disabled, true)
-  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft'] !== undefined)
-  assert.equal(draftButton.props.disabled, true)
-  // Even driving the controls directly (a disabled control is advisory only
-  // under the fake DOM) nothing may reach the Host: draft needs a session.
-  await view.interact(() => { brief.props.onChange({ target: { value: 'Make a role' } }) })
-  await view.interact(() => { draftButton.props.onClick() })
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft'] !== undefined).props.disabled, true)
-  assert.deepEqual(drafted, [])
-})
 
-test('card AI-draft with a session prop: proposal fills the review form; save only on explicit confirm', async () => {
-  const drafted = []
-  const view = await mountCard({
-    roster: {
-      listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES }),
-      saveTemplate: async (input) => { view.calls.saved.push(input); return { ok: true, value: { id: 'tpl-draft', ...input } } },
-      draft: async (input) => { drafted.push(input); return { ok: true, value: { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', parsed: true } } },
-    },
-    props: { sessionId: 'sess-9' },
-  })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
-  })
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft-hint'] !== undefined), undefined)
-  await typeInto(view, 'data-agent-roster-card-brief', 'A role that scans markets')
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft'] !== undefined).props.onClick()
-  })
-  assert.deepEqual(drafted, [{ sessionId: 'sess-9', brief: 'A role that scans markets', model: null }])
-  // The proposal filled the review fields ONLY — nothing is saved yet.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, 'Market Scout')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-prompt'] !== undefined).props.value, 'You scan markets.')
-  assert.deepEqual(view.calls.saved, [])
-  // Explicit save persists the reviewed draft (add mode: no id key).
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined).props.onClick()
-  })
-  assert.equal(view.calls.saved.length, 1)
-  assert.equal('id' in view.calls.saved[0], false)
-  assert.deepEqual(view.calls.saved[0], { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', defaultModel: null })
-})
 
-test('card AI-draft sends the session id and shows the drafting state with a stop control', async () => {
-  const drafted = []
-  let resolveDraft
-  const view = await mountCard({ roster: {
-    listTemplates: async () => ({ ok: true, value: [] }),
-    draft: (input) => { drafted.push(input); return new Promise((resolve) => { resolveDraft = resolve }) },
-  }, props: { sessionId: 'sess-9' } })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
-  })
-  await typeInto(view, 'data-agent-roster-card-brief', 'Make a role')
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft'] !== undefined).props.onClick()
-  })
-  assert.deepEqual(drafted, [{ sessionId: 'sess-9', brief: 'Make a role', model: null }])
-  const inFlight = find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft'] !== undefined)
-  assert.equal(inFlight.props.disabled, true)
-  assert.ok(texts(inFlight).includes('t:draft.inflight'))
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft-abort'] !== undefined), 'the stop control renders')
-  resolveDraft({ ok: true, value: { name: 'N', description: '', prompt: 'P', parsed: true } })
-  await view.interact()
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, 'N')
-})
 
 test('card save and delete failures render bilingual error lines', async () => {
   // Save failure: the form stays open with the reason line.
-  const view = await mountCard({ roster: {
+  const view = await mountSection({ roster: {
     listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES }),
     saveTemplate: async () => { throw Object.assign(new Error('Template name "X" is already taken / 名称已被占用'), { code: 'roster/name-taken' }) },
   } })
@@ -1303,7 +1233,7 @@ test('card save and delete failures render bilingual error lines', async () => {
   assert.ok(line.includes('roster/name-taken — Template name "X" is already taken / 名称已被占用'))
   assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined), 'the form stays open for a fix')
   // Delete failure: the list renders the reason line.
-  const view2 = await mountCard({ roster: {
+  const view2 = await mountSection({ roster: {
     listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES }),
     deleteTemplate: async () => { throw Object.assign(new Error('store write failed / 存储写入失败'), { code: 'roster/store-write' }) },
   } })
@@ -1318,22 +1248,22 @@ test('card save and delete failures render bilingual error lines', async () => {
 })
 
 test('card list degrades: unavailable namespace, failed load, empty roster', async () => {
-  const unavailable = await mountCard({ roster: null })
+  const unavailable = await mountSection({ roster: null })
   assert.ok(texts(find(unavailable.vdom, (node) => node.props?.['data-agent-roster-note'] === 'unavailable')).join(' ')
     .includes('t:templates.unavailable'))
-  const failed = await mountCard({ roster: {
+  const failed = await mountSection({ roster: {
     listTemplates: async () => { throw Object.assign(new Error('boom'), { code: 'roster/store-read' }) },
   } })
   const note = find(failed.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
   assert.ok(texts(note).join(' ').includes('t:templates.error'))
   assert.ok(texts(note).join(' ').includes('roster/store-read — boom'))
-  const empty = await mountCard({ roster: { listTemplates: async () => ({ ok: true, value: [] }) } })
+  const empty = await mountSection({ roster: { listTemplates: async () => ({ ok: true, value: [] }) } })
   assert.ok(texts(find(empty.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty')).join(' ')
     .includes('t:templates.empty'))
 })
 
 test('card cancel returns to the list without writing anything', async () => {
-  const view = await mountCard()
+  const view = await mountSection()
   await view.interact(() => {
     find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
   })
@@ -1346,33 +1276,6 @@ test('card cancel returns to the list without writing anything', async () => {
   assert.deepEqual(view.calls.deleted, [])
 })
 
-test('an explicit draft-picker choice overrides the prefill, including back to the default', async () => {
-  const record = { spawned: [], saved: [], drafted: [] }
-  const reasonerKey = JSON.stringify(['deepseek', 'reasoner'])
-  const chatKey = JSON.stringify(['deepseek', 'chat'])
-  const view = await openModal({
-    roster: rosterWithTeam(HEALTHY_TEAM, record),
-    extras: { session: { modelCatalog: catalogFace } },
-    useProjection: () => ({ lastUsed: null, next: { provider: 'deepseek', model: 'reasoner' } }),
-  })
-  await enableCustomRole(view)
-  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
-  // Explicitly revert to the labeled default: the prefill no longer applies.
-  let draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
-  await view.interact(() => { draftSelect.props.onChange({ target: { value: '' } }) })
-  draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
-  assert.equal(draftSelect.props.value, '')
-  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
-  assert.equal(record.drafted[0].model, null)
-  // Pick another model explicitly: that choice wins over the prefill.
-  draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
-  await view.interact(() => { draftSelect.props.onChange({ target: { value: chatKey } }) })
-  draftSelect = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model'] !== undefined)
-  assert.equal(draftSelect.props.value, chatKey)
-  assert.notEqual(draftSelect.props.value, reasonerKey)
-  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
-  assert.deepEqual(record.drafted[1].model, { provider: 'deepseek', model: 'chat' })
-})
 
 // ---------------------------------------------------------------------------
 // Review fix wave — the template defaultModel reaches the spawn flow, the
@@ -1498,10 +1401,75 @@ test('modal close is gated while a team action is in flight', async () => {
   assert.equal(find(view.vdom, (node) => node.type === Modal), undefined, 'close works again once the team action settles')
 })
 
+
+// ---------------------------------------------------------------------------
+// Settings section — the AI-draft configuration block (2026-11-23 UX rework).
+// ---------------------------------------------------------------------------
+
+test('the AI-draft block stages the toggle and model through the config form', async () => {
+  const view = await mountSection({
+    extras: { session: { modelCatalog: catalogFace } },
+    settings: { draftEnabled: false, draftModelProvider: '', draftModelId: '' },
+  })
+  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-toggle'] !== undefined)
+  assert.equal(toggle.props.checked, false)
+  // Enable: one queued set of the volatile boolean.
+  await view.interact(() => { toggle.props.onChange({ target: { checked: true } }) })
+  assert.deepEqual(view.form.writes.sets, [['draftEnabled', true]])
+  // Enabled without a model: the required-model hint renders.
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-draft-required'] !== undefined))
+  // Pick a model from the catalog: one atomic mutation sets provider+model
+  // and clears the effort.
+  const model = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model-setting'] !== undefined)
+  await view.interact(() => { model.props.onChange({ target: { value: JSON.stringify(['deepseek', 'chat']) } }) })
+  assert.deepEqual(view.form.writes.mutations, [[
+    { op: 'set', path: ['draftModelProvider'], value: 'deepseek' },
+    { op: 'set', path: ['draftModelId'], value: 'chat' },
+    { op: 'set', path: ['draftReasoningEffort'], value: '' },
+  ]])
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-draft-required'] !== undefined), undefined)
+})
+
+test('the AI-draft block reads back a configured model and offers its efforts', async () => {
+  const view = await mountSection({
+    extras: { session: { modelCatalog: catalogFace } },
+    settings: { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'reasoner', draftReasoningEffort: 'high' },
+  })
+  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-toggle'] !== undefined)
+  assert.equal(toggle.props.checked, true)
+  const model = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model-setting'] !== undefined)
+  assert.equal(model.props['data-agent-roster-draft-model-setting'], JSON.stringify(['deepseek', 'reasoner']))
+  const effort = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-effort-setting'] !== undefined)
+  assert.ok(effort, 'the effort select renders for a model that advertises efforts')
+  assert.equal(effort.props.value, 'high')
+  await view.interact(() => { effort.props.onChange({ target: { value: 'low' } }) })
+  assert.deepEqual(view.form.writes.sets, [['draftReasoningEffort', 'low']])
+  // Unsetting the model clears all three fields atomically.
+  await view.interact(() => { model.props.onChange({ target: { value: '' } }) })
+  assert.deepEqual(view.form.writes.mutations.at(-1), [
+    { op: 'set', path: ['draftModelProvider'], value: '' },
+    { op: 'set', path: ['draftModelId'], value: '' },
+    { op: 'set', path: ['draftReasoningEffort'], value: '' },
+  ])
+})
+
+test('the add form points at the in-session drafting surface instead of embedding one', async () => {
+  const view = await mountSection()
+  await view.interact(() => {
+    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
+  })
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined), 'the add form opens')
+  assert.ok(texts(find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft-hint'] !== undefined))
+    .includes('t:draft.elsewhere'), 'the elsewhere hint renders')
+  // No drafting controls exist on this surface at all.
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft'] !== undefined), undefined)
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-brief'] !== undefined), undefined)
+})
+
 test('card delete-failure banner clears on editor open and on a successful delete', async () => {
   let failFirst = true
   const deletedIds = []
-  const view = await mountCard({ roster: {
+  const view = await mountSection({ roster: {
     listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES.filter((tpl) => !deletedIds.includes(tpl.id)) }),
     deleteTemplate: async (id) => {
       if (failFirst) {

@@ -540,6 +540,12 @@ test('service draft resolves services from its ctx scope', async () => {
   const service = Object.create(AgentRosterService.prototype)
   service.store = rig.store
   service.ctx = rig.scope
+  service.config = {
+    draftEnabled: { get: () => true },
+    draftModelProvider: { get: () => 'deepseek-official' },
+    draftModelId: { get: () => 'deepseek-chat' },
+    draftReasoningEffort: { get: () => '' },
+  }
   const result = await service.draft({ sessionId: 's-req', brief: 'Draft me a reviewer' })
   assert.deepEqual(result, { name: 'A', description: 'd', prompt: 'p', parsed: true })
 })
@@ -550,4 +556,59 @@ test('AgentRosterService carries a direct Remote marker for draft', () => {
   assert.ok(draft !== undefined, 'draft method is marked')
   assert.deepEqual(draft.invocation, { kind: 'direct' }, 'direct invocation')
   assert.equal(draft.mode, undefined, 'unary method')
+})
+
+// ---------------------------------------------------------------------------
+// AI-draft settings gate (Settings page owns the toggle + model; the modal
+// sends no model of its own — resolution is input.model > configured)
+// ---------------------------------------------------------------------------
+
+test('service draft gates on the configured AI-draft settings', async () => {
+  const rig = makeRig({ assistantText: '{"name":"A","description":"d","prompt":"p"}' })
+  const service = Object.create(AgentRosterService.prototype)
+  service.store = rig.store
+  service.ctx = rig.scope
+  const wrap = (value) => ({ get: () => value })
+  const settings = (enabled, provider = '', model = '', effort = '') => ({
+    draftEnabled: wrap(enabled),
+    draftModelProvider: wrap(provider),
+    draftModelId: wrap(model),
+    draftReasoningEffort: wrap(effort),
+  })
+  // Disabled toggle refuses regardless of anything else.
+  service.config = settings(false, 'deepseek-official', 'deepseek-chat')
+  await assert.rejects(
+    () => service.draft({ sessionId: 's-req', brief: 'b' }),
+    (error) => remoteErrorOf(error)?.code === 'roster/draft-disabled',
+  )
+  // Enabled without a configured model and without an explicit input model.
+  service.config = settings(true)
+  await assert.rejects(
+    () => service.draft({ sessionId: 's-req', brief: 'b' }),
+    (error) => remoteErrorOf(error)?.code === 'roster/draft-model-unset',
+  )
+  assert.equal(rig.draftAgent.followups.length, 0, 'nothing delivered while gated')
+})
+
+test('service draft resolves the configured draft model; explicit input wins', async () => {
+  const rig = makeRig({ assistantText: '{"name":"A","description":"d","prompt":"p"}' })
+  const service = Object.create(AgentRosterService.prototype)
+  service.store = rig.store
+  service.ctx = rig.scope
+  const wrap = (value) => ({ get: () => value })
+  service.config = {
+    draftEnabled: wrap(true),
+    draftModelProvider: wrap('deepseek-official'),
+    draftModelId: wrap('deepseek-chat'),
+    draftReasoningEffort: wrap('low'),
+  }
+  await service.draft({ sessionId: 's-req', brief: 'b', model: null })
+  assert.deepEqual(rig.controller.selections.at(-1), {
+    sessionId: rig.draftSession.id, provider: 'deepseek-official', model: 'deepseek-chat', reasoningEffort: 'low',
+  })
+  // An explicit input model overrides the configured one.
+  await service.draft({ sessionId: 's-req', brief: 'b', model: { provider: 'p2', model: 'm2' } })
+  assert.deepEqual(rig.controller.selections.at(-1), {
+    sessionId: rig.draftSession.id, provider: 'p2', model: 'm2',
+  })
 })

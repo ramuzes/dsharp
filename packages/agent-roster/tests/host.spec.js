@@ -195,6 +195,20 @@ test('Config parses {} to exposeAgentTools: true', () => {
   assert.equal(typeof parsed.exposeAgentTools?.get, 'undefined')
 })
 
+test('Config parses AI-draft settings as volatile wrappers with OFF/empty defaults', () => {
+  const parsed = Config({})
+  // Volatile = live-editable AND persisted (ADR-0005): the field parses as
+  // a reactive wrapper the Settings section stages through configForms.
+  assert.equal(unwrap(parsed.draftEnabled), false, 'AI drafting opts in, not out')
+  assert.equal(typeof parsed.draftEnabled.get, 'function')
+  assert.equal(unwrap(parsed.draftModelProvider), '')
+  assert.equal(unwrap(parsed.draftModelId), '')
+  assert.equal(unwrap(parsed.draftReasoningEffort), '')
+  for (const key of ['draftModelProvider', 'draftModelId', 'draftReasoningEffort']) {
+    assert.equal(typeof parsed[key].get, 'function', `${key} is volatile`)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Task 2: roster store + CRUD remote
 // ---------------------------------------------------------------------------

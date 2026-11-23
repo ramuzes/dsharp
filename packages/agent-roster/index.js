@@ -43,6 +43,18 @@ export function setServiceFactoryForTests(factory) { serviceFactory = factory }
 export const Config = Schema.object({
   exposeAgentTools: Schema.boolean().default(true)
     .description('Expose roster_template_save and roster_template_list tools to the model'),
+  // Volatile = live-editable AND persisted (ADR-0005): the Settings section
+  // stages these through the settings mutate path and they apply without a
+  // plugin reload. The AI-draft toggle defaults OFF (user opt-in, 2026-11-23
+  // UX ruling) and the model stays deliberately unset until configured.
+  draftEnabled: Schema.boolean().default(false).volatile()
+    .description('Enable AI-assisted template drafting'),
+  draftModelProvider: Schema.string().default('').volatile()
+    .description('Provider of the configured draft model (empty = unset)'),
+  draftModelId: Schema.string().default('').volatile()
+    .description('Model id of the configured draft model (empty = unset)'),
+  draftReasoningEffort: Schema.string().default('').volatile()
+    .description('Optional reasoning effort of the configured draft model (empty = unset)'),
 })
 
 /**
@@ -81,7 +93,7 @@ export function apply(ctx, config) {
       // self-registers with ctx and its lifecycle follows the fiber (the
       // chrome-cdp registerStatus / feishu apply construction pattern).
       store = openRosterStore(ctx, status)
-      const factory = serviceFactory ?? ((ctx2, store2) => new AgentRosterService(ctx2, store2))
+      const factory = serviceFactory ?? ((ctx2, store2) => new AgentRosterService(ctx2, store2, config))
       const roster = factory(ctx, store)
       status.write('service-registered')
       status.write('done')

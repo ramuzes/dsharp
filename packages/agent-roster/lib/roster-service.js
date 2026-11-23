@@ -15,7 +15,7 @@
  * (modal error lines, settings card rows).
  */
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { readString } from './wire.js'
+import { readBoolean, readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
 import { spawnFromRoster, teamStatusOf } from './spawn.js'
 import { runDraft } from './drafter.js'
@@ -30,10 +30,38 @@ export class AgentRosterService extends TypertRemoteService {
    *   tests drive methods via Object.create(prototype), the feishu
    *   diagnostics.spec precedent).
    * @param {ReturnType<typeof import('./store.js').openRosterStore>} store
+   * @param {{ draftEnabled?: unknown, draftModelProvider?: unknown, draftModelId?: unknown, draftReasoningEffort?: unknown }} [config]
+   *   validated row config (fields may arrive as reactive wrappers); owns
+   *   the AI-draft gate and the configured draft model (Settings page).
    */
-  constructor(ctx, store) {
+  constructor(ctx, store, config = {}) {
     super(ctx, 'agentRoster', { namespace: 'agentRoster' })
     this.store = store
+    this.config = config
+  }
+
+  /**
+   * Resolve the effective draft model from Settings: an explicit input model
+   * wins; otherwise the configured one; the feature is gated on the toggle.
+   * @param {{ sessionId: string, brief: string, model?: import('./store.js').ModelRef | null }} input
+   * @returns {Promise<import('./store.js').ModelRef | null>}
+   */
+  resolveDraftModel(input) {
+    if (readBoolean(this.config?.draftEnabled) !== true) {
+      throw new RemoteError('roster/draft-disabled', 'AI-assisted drafting is disabled. Enable it in Settings > Agent roster. / AI 代笔未开启，请先在 设置 > Agent roster 中开启。')
+    }
+    const provider = readString(this.config?.draftModelProvider)
+    const modelId = readString(this.config?.draftModelId)
+    const effort = readString(this.config?.draftReasoningEffort)
+    const configured = provider !== '' && modelId !== ''
+      ? { provider, model: modelId, ...(effort !== '' ? { reasoningEffort: effort } : {}) }
+      : null
+    const explicit = input?.model === null || input?.model === undefined ? null : input.model
+    const effective = explicit ?? configured
+    if (effective === null) {
+      throw new RemoteError('roster/draft-model-unset', 'No draft model configured. Pick one in Settings > Agent roster. / 尚未配置草稿模型，请到 设置 > Agent roster 选择。')
+    }
+    return effective
   }
 
   /** Every stored template, insertion order. @Remote */
@@ -149,7 +177,8 @@ export class AgentRosterService extends TypertRemoteService {
    * @Remote
    */
   async draft(input) {
-    return runDraft(this.ctx, { store: this.store }, input)
+    const model = this.resolveDraftModel(input)
+    return runDraft(this.ctx, { store: this.store }, { ...input, model })
   }
 }
 

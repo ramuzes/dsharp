@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-roster",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent roster for dsh: a profile-wide roster of role templates with a plus-menu member spawn flow, AI-assisted template drafting, model-facing roster tools, and a settings card",
   "type": "module",
   "main": "index.js",

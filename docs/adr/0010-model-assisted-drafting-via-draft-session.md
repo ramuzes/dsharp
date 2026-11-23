@@ -22,5 +22,5 @@ The plugin lazily creates one ordinary draft session per workspace (`sessionCont
 
 - One extra, explicitly titled row in the session list per workspace; fully transparent and inspectable.
 - The Remote draft call runs as long as a model turn: the client shows a drafting state with abort, and the service enforces its own timeout with a surfaced failure.
-- Drafting can use a cheaper model chosen in the modal (the draft session is an ordinary session with its own model selection).
+- ~~Drafting can use a cheaper model chosen in the modal (the draft session is an ordinary session with its own model selection).~~ **Updated 2026-11-23:** the draft model is configured in Settings > Agent roster (toggle + model, volatile Config) and the modal never picks per-draft — see the SPEC's change section; the draft session still carries its own selection when config is absent via the explicit-input API path.
 - Conversation flows and team mode never see drafting traffic.

@@ -1,5 +1,11 @@
 # Agent roster — reusable role templates for team members
 
+## Change 2026-11-23 — settings-owned AI draft + Settings page manager
+
+- MODIFIED: the roster manager moved from a Plugins-page config card to a **Settings page section** (`settings.section`, id `agent-roster`): part one is the AI-draft configuration (enable toggle + draft model — enabling requires picking a model), part two the template manager. The Plugins row links the section (no card of our own).
+- MODIFIED: AI-draft model selection is **Settings-owned** (volatile Config fields `draftEnabled` default false, `draftModelProvider/Id/ReasoningEffort`), replacing the in-modal per-draft picker and its live-session prefill. The modal states which model will be used and points at Settings while off or unconfigured; the host resolves `input.model > configured > refuse` (`roster/draft-disabled`, `roster/draft-model-unset`).
+- MODIFIED: the Settings add-form carries no drafting surface (drafting needs a session context); a hint points at the in-session "+" flow.
+
 ## Requirement (the why & what)
 
 ### Problem statement
