@@ -89,8 +89,12 @@ window.__ModuleLoader__.load({
   id: 'dsh-agent-roster',
   factory(require) {
     const React = require('react')
+    const { createPortal } = require('react-dom')
     const { z } = require('zod')
-    const { Modal, IconPlusOutlineRegular } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const {
+      Modal, IconPlusOutlineRegular, MenuSurface, MenuGroup,
+      IconChevronDownOutlineRegular, IconCheckOutlineRegular,
+    } = require('@deepseek-ai/dsh-client-ui-primitives')
     const h = React.createElement
 
     /** Registration identity: the package name. */
@@ -538,16 +542,19 @@ window.__ModuleLoader__.load({
     /** Map one flat-row list by row key (JSON [provider, model]). */
     const rowsByKey = (rows) => new Map(rows.map((row) => [row.key, row]))
 
-    /** Provider-grouped <optgroup> rows over a flat-row list. */
-    function catalogOptgroups(rows) {
+    /**
+     * Provider-grouped DATA groups over a flat-row list — the ModelMenu
+     * `groups` shape ({name, rows}), replacing the old <optgroup> elements
+     * when the selects became host-picker menus.
+     */
+    function catalogGroups(rows) {
       const groups = []
       for (const row of rows) {
         let group = groups.find((entry) => entry.name === row.groupName)
         if (group === undefined) { group = { name: row.groupName, rows: [] }; groups.push(group) }
         group.rows.push(row)
       }
-      return groups.map((group) => h('optgroup', { key: group.name, label: group.name },
-        group.rows.map((row) => h('option', { key: row.key, value: row.key }, row.name))))
+      return groups
     }
 
     /**
@@ -563,6 +570,159 @@ window.__ModuleLoader__.load({
       provider: row.provider,
       model: row.model,
       ...(effort !== '' ? { reasoningEffort: effort } : {}),
+    }
+
+    /** Per-instance CSS anchor-name sequence for ModelMenu (host ModelSelect
+     * uses useId for the same purpose; the fake React has none). */
+    let rosterMenuSeq = 0
+
+    /**
+     * ModelMenu: the host model-picker dropdown pattern, copied and renamed
+     * under this plugin's prefix (practices.md copy rule). Sources:
+     * - trigger/menu geometry, anchoring, and rows — dsh
+     *   packages/client/ui-model-selection/src/client/ModelSelect.tsx and
+     *   ModelSelect.module.css (CSS anchor positioning: trigger declares
+     *   anchor-name via an inline custom property, the fixed body portal
+     *   declares position-anchor; right: anchor(right); bottom:
+     *   calc(anchor(top) + 8px)).
+     * - surface material and sticky group headings — ui-primitives
+     *   MenuSurface.tsx / MenuGroup.tsx (used as real components from the
+     *   browser module table, exactly as the host imports them).
+     * Behavior kept from the host: outside pointerdown closes, Escape
+     * closes, ArrowUp/Down move focus between rows, the selected row keeps
+     * a trailing check (never a fill), and rows are real buttons with
+     * menuitemradio semantics. Search and drill-in panes stay out — our
+     * catalogs are small.
+     * @param {any} props - `marker` (trigger data attribute), `markerValue`
+     *   (its value for the current choice), `value` (current key; '' = the
+     *   `noneLabel` entry), `noneLabel`, `groups` (catalogOptgroups shape;
+     *   null = plain ungrouped rows), `rows` (ungrouped flat options),
+     *   `onPick(key)`, `disabled`, `ariaLabel`, `triggerClass`.
+     */
+    function ModelMenu(props) {
+      const {
+        marker, markerValue, value, noneLabel, groups, rows, onPick, disabled, ariaLabel, triggerClass,
+      } = props
+      const [open, setOpen] = React.useState(false)
+      const [anchorVar] = React.useState(() => `--dsh-roster-menu-${(rosterMenuSeq += 1)}`)
+      const rootRef = React.useRef(null)
+      const openRef = React.useRef(false)
+      openRef.current = open
+
+      // Outside pointerdown closes (host closeOutside pattern: pointerdown
+      // covers WebKit taps; the portal subtree counts as inside).
+      React.useEffect(() => {
+        // Environments without a DOM (the test harness renders without one)
+        // simply skip the outside-close wiring; the host page always has it.
+        if (!open || typeof document === 'undefined') return undefined
+        const closeOutside = (event) => {
+          if (rootRef.current !== null && event !== undefined && typeof event.target === 'object'
+            && event.target !== null && typeof rootRef.current.contains === 'function'
+            && rootRef.current.contains(event.target)) return
+          setOpen(false)
+        }
+        document.addEventListener('pointerdown', closeOutside)
+        document.addEventListener('mousedown', closeOutside)
+        return () => {
+          document.removeEventListener('pointerdown', closeOutside)
+          document.removeEventListener('mousedown', closeOutside)
+        }
+      }, [open])
+
+      const flatRows = groups !== null && groups !== undefined
+        ? groups.flatMap((group) => group.rows)
+        : (rows ?? [])
+      const currentLabel = value === ''
+        ? noneLabel
+        : (flatRows.find((row) => row.key === value)?.label ?? noneLabel)
+
+      /** Escape closes; arrows move focus between rows (host moveFocus). */
+      const onKeyDown = (event) => {
+        if (event.key === 'Escape' && openRef.current) {
+          event.preventDefault()
+          setOpen(false)
+          return
+        }
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+        const items = rootRef.current === null ? [] : Array.from(
+          rootRef.current.querySelectorAll('button[role="menuitemradio"]:not([disabled])'),
+        )
+        if (items.length === 0) return
+        event.preventDefault()
+        const active = items.findIndex((item) => item === document.activeElement)
+        const next = active === -1
+          ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
+          : (active + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+        items[next]?.focus?.()
+      }
+
+      const rowButton = (row, selected) => h('button', {
+        key: row.key,
+        type: 'button',
+        role: 'menuitemradio',
+        'aria-checked': selected ? 'true' : 'false',
+        'data-agent-roster-menu-option': row.key,
+        className: 'agent-roster-menu-option',
+        disabled,
+        onClick: () => { setOpen(false); onPick(row.key) },
+      },
+        h('span', { className: 'agent-roster-menu-option-copy' },
+          h('span', { className: 'agent-roster-menu-option-name' }, row.label)),
+        h('span', { className: 'agent-roster-menu-check' },
+          selected ? h(IconCheckOutlineRegular, null) : null))
+
+      return h('div', {
+        ref: rootRef,
+        className: 'agent-roster-menu-root',
+        'data-agent-roster-menu': open ? 'open' : 'closed',
+        onKeyDown,
+      },
+        h('button', {
+          type: 'button',
+          className: `agent-roster-menu-trigger ${triggerClass ?? ''}`,
+          style: { '--dsh-roster-anchor': anchorVar },
+          'aria-haspopup': 'menu',
+          'aria-expanded': open ? 'true' : 'false',
+          'aria-label': ariaLabel,
+          [marker]: markerValue,
+          'data-agent-roster-menu-value': value,
+          disabled,
+          onClick: () => { setOpen(!open) },
+        },
+          h('span', { className: 'agent-roster-menu-trigger-label' }, currentLabel),
+          h(IconChevronDownOutlineRegular, {
+            className: `agent-roster-menu-chevron ${open ? 'agent-roster-menu-chevron-open' : ''}`,
+          })),
+        // The body portal escapes overflow ancestors (clipping Modal and
+        // docked composer) exactly like the host ModelSelect; environments
+        // without a DOM (the node test renderer) render the menu inline
+        // instead — same tree, no portal container.
+        open
+          ? (typeof document === 'undefined'
+              ? h('div', { className: 'agent-roster-menu-inline' },
+                  h('div', { className: 'agent-roster-menu-groups' },
+                    h('div', { key: 'none', role: 'group' },
+                      rowButton({ key: '', label: noneLabel }, value === '')),
+                    groups !== null && groups !== undefined
+                      ? groups.map((group) => h(MenuGroup, { key: group.name, label: group.name },
+                          group.rows.map((row) => rowButton(row, row.key === value))))
+                      : (rows ?? []).map((row) => rowButton(row, row.key === value))))
+              : createPortal(
+                h(MenuSurface, {
+                  className: 'agent-roster-menu-surface',
+                  role: 'menu',
+                  style: { '--dsh-roster-anchor': anchorVar },
+                },
+                  h('div', { className: 'agent-roster-menu-groups' },
+                    h('div', { key: 'none', role: 'group' },
+                      rowButton({ key: '', label: noneLabel }, value === '')),
+                    groups !== null && groups !== undefined
+                      ? groups.map((group) => h(MenuGroup, { key: group.name, label: group.name },
+                          group.rows.map((row) => rowButton(row, row.key === value))))
+                      : (rows ?? []).map((row) => rowButton(row, row.key === value)))),
+                document.body,
+              ))
+          : null)
     }
 
     /**
@@ -590,28 +750,45 @@ window.__ModuleLoader__.load({
         ...(section === undefined ? {} : { 'data-agent-roster-section': section }),
       },
         h('label', { className: 'agent-roster-label', htmlFor: id }, label),
-        h('select', {
-          id,
-          className: 'agent-roster-select',
-          [marker]: choice === '' ? noneMarker : choice,
+        h(ModelMenu, {
+          marker,
+          markerValue: choice === '' ? noneMarker : choice,
           value: choice,
+          noneLabel: defaultLabel,
+          groups: catalogGroups(rows),
+          onPick: onChoice,
           disabled,
-          onChange: (event) => { onChoice(event.target.value) },
-        },
-          h('option', { value: '' }, defaultLabel),
-          ...catalogOptgroups(rows)),
-        onEffort !== undefined && chosen !== undefined && chosen.efforts.length > 0
-          ? h('div', { className: 'agent-roster-effort' },
-            h('label', { className: 'agent-roster-label', htmlFor: `${id}-effort` }, effortLabel),
-            h('select', {
-              id: `${id}-effort`,
-              className: 'agent-roster-select',
-              'data-agent-roster-effort': '',
-              value: effort,
-              onChange: (event) => { onEffort(event.target.value) },
+          ariaLabel: label,
+          triggerClass: 'agent-roster-menu-trigger-form',
+        }),
+        // Always mounted, hidden when no explicit model advertises
+        // efforts: the client test harness keys hooks by a global render
+        // cursor, so a conditionally mounted hook-bearing component would
+        // shift every later slot (real React keys them per fiber, but the
+        // DOM stays stable under this pattern too).
+        onEffort !== undefined
+          ? (() => {
+            const effortRows = (chosen?.efforts ?? []).map((item) => ({ key: String(item?.id ?? ''), label: String(item?.name ?? item?.id ?? '') }))
+            const visible = effortRows.length > 0
+            return h('div', {
+              className: 'agent-roster-effort',
+              hidden: !visible,
+              'data-agent-roster-effort-area': visible ? 'on' : 'off',
             },
-              h('option', { value: '' }, effortDefaultLabel),
-              chosen.efforts.map((item) => h('option', { key: item?.id, value: item?.id }, String(item?.name ?? item?.id)))))
+              h('label', { className: 'agent-roster-label', htmlFor: `${id}-effort` }, effortLabel),
+              h(ModelMenu, {
+                marker: 'data-agent-roster-effort',
+                markerValue: effort,
+                value: effort,
+                noneLabel: effortDefaultLabel,
+                groups: null,
+                rows: effortRows,
+                onPick: onEffort,
+                disabled: disabled || !visible,
+                ariaLabel: effortLabel,
+                triggerClass: 'agent-roster-menu-trigger-form',
+              }))
+          })()
           : null)
     }
 
@@ -1393,25 +1570,28 @@ window.__ModuleLoader__.load({
               }),
               h('span', {}, t('settings.draft.toggle'))),
             h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-draft-model-setting' }, t('settings.draft.model')),
-            h('select', {
-              id: 'agent-roster-draft-model-setting',
-              className: 'agent-roster-select',
-              'data-agent-roster-draft-model-setting': currentKey ?? 'unset',
+            h(ModelMenu, {
+              marker: 'data-agent-roster-draft-model-setting',
+              markerValue: currentKey ?? 'unset',
               value: currentKey ?? '',
-              onChange: chooseModel,
-            },
-              h('option', { value: '' }, t('settings.draft.model.unset')),
-              ...catalogOptgroups(rows)),
-            efforts.length > 0
-              ? h('select', {
-                className: 'agent-roster-select',
-                'data-agent-roster-draft-effort-setting': currentEffort,
-                value: currentEffort,
-                onChange: chooseEffort,
-              },
-                h('option', { value: '' }, t('settings.draft.effort.default')),
-                ...efforts.map((effort) => h('option', { key: effort.id, value: effort.id }, effort.name ?? effort.id)))
-              : null,
+              noneLabel: t('settings.draft.model.unset'),
+              groups: catalogGroups(rows),
+              onPick: (key) => { chooseModel({ target: { value: key } }) },
+              ariaLabel: t('settings.draft.model'),
+              triggerClass: 'agent-roster-menu-trigger-form',
+            }),
+            h(ModelMenu, {
+              marker: 'data-agent-roster-draft-effort-setting',
+              markerValue: currentEffort,
+              value: currentEffort,
+              noneLabel: t('settings.draft.effort.default'),
+              groups: null,
+              rows: efforts.map((effort) => ({ key: effort.id, label: effort.name ?? effort.id })),
+              onPick: (key) => { chooseEffort({ target: { value: key } }) },
+              disabled: efforts.length === 0,
+              ariaLabel: t('settings.draft.model'),
+              triggerClass: 'agent-roster-menu-trigger-form',
+            }),
             settings.enabled === true && settings.modelRef === null
               ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-draft-required': '' }, t('settings.draft.required'))
               : null,
@@ -1795,6 +1975,90 @@ window.__ModuleLoader__.load({
 .agent-roster-card-form { display: flex; flex-direction: column; }
 .agent-roster-role-fields { display: flex; flex-direction: column; }
 .agent-roster-role-fields > * + * { border-top: 0.5px solid var(--dsw-alias-border-l2); }
+/* ModelMenu — copied from ui-model-selection ModelSelect.module.css and
+ * ui-primitives MenuGroup.module.css, renamed under this prefix. CSS anchor
+ * positioning: the trigger names an anchor through an inline custom
+ * property; the fixed body portal positions against it. */
+.agent-roster-menu-root { position: relative; min-width: 0; }
+.agent-roster-menu-trigger {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px 0 12px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  outline: none;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+  anchor-name: var(--dsh-roster-anchor);
+}
+.agent-roster-menu-trigger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.agent-roster-menu-trigger:focus-visible { box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); }
+.agent-roster-menu-trigger:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
+.agent-roster-menu-trigger-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.agent-roster-menu-chevron { flex: 0 0 auto; color: var(--dsw-alias-label-caption); transition: transform 120ms ease; }
+.agent-roster-menu-chevron-open { transform: rotate(180deg); }
+.agent-roster-menu-surface {
+  box-sizing: border-box;
+  position: fixed;
+  position-anchor: var(--dsh-roster-anchor);
+  top: max(12px, var(--dsh-frame-overlay-top, 12px));
+  left: 12px;
+  right: anchor(right);
+  bottom: calc(anchor(top) + 8px);
+  align-self: safe end;
+  justify-self: safe end;
+  margin: 0;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  width: fit-content;
+  height: fit-content;
+  min-width: min(240px, calc(100vw - 24px));
+  max-width: min(420px, calc(100vw - 24px));
+  max-height: min(360px, calc(100dvh - 96px));
+  overflow: hidden;
+  padding: 4px;
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  box-shadow: var(--dsw-elevation-prominent);
+  color: var(--dsw-alias-label-primary);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+.agent-roster-menu-groups { min-height: 0; overflow-x: hidden; overflow-y: auto; }
+.agent-roster-menu-option {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 100%;
+  min-height: 34px;
+  padding: 5px 7px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  outline: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-roster-menu-option:focus-visible { background: var(--dsw-alias-interactive-bg-hover); }
+@media (hover: hover) { .agent-roster-menu-option:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); } }
+.agent-roster-menu-option:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; }
+.agent-roster-menu-option-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.agent-roster-menu-option-name { overflow: hidden; color: inherit; font-size: 13px; line-height: 18px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.agent-roster-menu-check { display: grid; place-items: center; flex: 0 0 14px; color: var(--dsw-alias-label-primary); }
+.agent-roster-menu-check svg { width: 14px; height: 14px; }
 `
 
     function injectStyles() {
