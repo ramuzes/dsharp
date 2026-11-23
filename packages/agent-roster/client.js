@@ -632,9 +632,13 @@ window.__ModuleLoader__.load({
       const flatRows = groups !== null && groups !== undefined
         ? groups.flatMap((group) => group.rows)
         : (rows ?? [])
+      // Rows carry either `label` (mapped callers) or `name` (flat catalog
+      // rows from catalogGroups) — normalize once; the 2026-11-23 empty-row
+      // incident came from reading only `label`.
+      const labelOf = (row) => row?.label ?? row?.name ?? ''
       const currentLabel = value === ''
         ? noneLabel
-        : (flatRows.find((row) => row.key === value)?.label ?? noneLabel)
+        : (labelOf(flatRows.find((row) => row.key === value)) || noneLabel)
 
       /** Escape closes; arrows move focus between rows (host moveFocus). */
       const onKeyDown = (event) => {
@@ -667,7 +671,7 @@ window.__ModuleLoader__.load({
         onClick: () => { setOpen(false); onPick(row.key) },
       },
         h('span', { className: 'agent-roster-menu-option-copy' },
-          h('span', { className: 'agent-roster-menu-option-name' }, row.label)),
+          h('span', { className: 'agent-roster-menu-option-name' }, labelOf(row))),
         h('span', { className: 'agent-roster-menu-check' },
           selected ? h(IconCheckOutlineRegular, null) : null))
 

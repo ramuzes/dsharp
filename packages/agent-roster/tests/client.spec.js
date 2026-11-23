@@ -732,10 +732,19 @@ test('model selector lists catalog with current-model default; explicit choice s
   assert.ok(texts(rows[0]).includes('t:model.inherit'))
   const groups = findAll(view.vdom, (node) => node.props?.['data-agent-roster-fake-group'] !== undefined)
   assert.deepEqual(groups.map((group) => group.props['data-agent-roster-fake-group']), ['DeepSeek'])
+  // Regression (2026-11-23 empty-rows incident): catalog rows carry `name`,
+  // not `label` — the row text must actually render the model name.
+  const chatRow = find(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] === chatKey)
+  assert.ok(texts(chatRow).includes('DeepSeek Chat'), 'catalog row text renders the model name')
   // Close with a re-found trigger (the pre-open closure would reopen).
   await view.interact(() => {
     find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined).props.onClick()
   })
+  // The trigger label mirrors the chosen row's name once picked.
+  await pickMenuOption(view, 'data-agent-roster-model', chatKey)
+  const triggerAfter = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.ok(texts(triggerAfter).includes('DeepSeek Chat'), 'the trigger shows the chosen model name')
+  await pickMenuOption(view, 'data-agent-roster-model', '')
   // Default: confirm sends model null (explicit inherit).
   let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
   await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
