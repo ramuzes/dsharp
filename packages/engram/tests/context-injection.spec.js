@@ -11,7 +11,7 @@
  *    index.js:460-461, 487). `systemPrompt.section({ name, order, text })`
  *    captures the section; `text` must be a SYNC string provider
  *    (PromptSection.text: `string | ((ctx) => string)`, dsh
- *    packages/core/system-prompt/lib/types/index.d.ts:60).
+ *    packages/core/system-prompt/src/index.ts:79).
  *  - client: { get } — GET /context with query { project, compact: 'true',
  *    max_bytes }; the real client returns the parsed JSON body directly on
  *    2xx (lib/engram-api.js:112), whose `context` field is a string.

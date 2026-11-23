@@ -32,9 +32,9 @@ const DEFAULT_RETRY = { attempts: 5, delayMs: 300 }
 async function spawnDaemon(subprocess, buildEnv, note) {
   try {
     // Spec members mirror SubprocessSpawnSpec exactly: argv, cwd, stdio
-    // (all three streams explicit — the seam applies no defaults), env.
-    // stderr is collected (bounded tail) so a port-collision message stays
-    // readable after settlement via readFrom(0).
+    // (all three streams explicit — the seam applies no defaults), env,
+    // and graceMs. stderr is collected (bounded tail) so a port-collision
+    // message stays readable after settlement via readFrom(0).
     const spec = {
       argv: ['engram', 'run', '-d'],
       cwd: process.cwd(),
@@ -44,6 +44,15 @@ async function spawnDaemon(subprocess, buildEnv, note) {
         stderr: { maxBytes: 8192 },
       },
       env: buildEnv(),
+      // REQUIRED, and validated before launch (dsh
+      // packages/subprocess/subprocess-local/src/spawn.ts:165-167): a
+      // positive finite number no greater than MAX_TIMER_DELAY_MS. It is the
+      // grace period the seam allows a cancelled child before force-killing
+      // it; `engram run -d` daemonizes and exits at once, so a short grace
+      // suffices. Omitting it fails EVERY real spawn with "subprocess
+      // graceMs must be a positive finite number…" — the 2026-11-23 outage,
+      // hidden by a forgiving test fake (AGENTS.md §1).
+      graceMs: 5000,
     }
     const handle = subprocess.spawn(spec)
     const outcome = await handle.done

@@ -6,4 +6,11 @@
 - insert:
     - id: bash-workspace-env
       name: dsh-workspace-env
+      # The stock bash-sandbox row sets timeoutMs: 60000 (dsh
+      # packages/bundle/base/cordis.patch.yml). This replacement row never
+      # did, so its bash tool has always run on the LocalConfig default of
+      # 120000 (bash-local/src/index.ts:102). Pinned here explicitly so the
+      # deviation is visible; set 60000 for stock parity.
+      config:
+        timeoutMs: 120000
       disabled: !!js process.platform === 'win32'

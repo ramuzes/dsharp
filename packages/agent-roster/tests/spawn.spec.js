@@ -7,7 +7,7 @@
  * (/home/ramuz/deepseek-harness, AGENTS.md 2b: source is the source of truth):
  *
  * - `startActivation` fake mirrors SubagentRuntime.startActivation
- *   (packages/subagent/subagent/src/index.ts:267-292): requires a registered
+ *   (packages/subagent/subagent/src/index.ts:274-299): requires a registered
  *   provider name, the EXACT live parent agent, a text ContentBlock[] prompt,
  *   an AbortSignal, and a 'parent'|'caller' delivery; it also reserves the
  *   requested name like the real sibling-name reservation

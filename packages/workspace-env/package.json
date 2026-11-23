@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-env",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Workspace-local toolchain state (uv, Go) for every confined bash call and PTY terminal — no sandbox holes",
   "type": "module",
   "main": "index.js",
@@ -8,7 +8,13 @@
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json"
   },
-  "files": ["index.js", "cordis.patch.yml", "locale", "docs", "README.md"],
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale",
+    "docs",
+    "README.md"
+  ],
   "scripts": {
     "test": "node --test \"tests/*.spec.js\""
   },

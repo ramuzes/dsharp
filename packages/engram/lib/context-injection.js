@@ -7,7 +7,7 @@
  *    dsh packages/core/agent/src/runtime-types.ts:291, emit site
  *    packages/core/agent/src/index.ts:575; the listener destructures { agent }.
  *  - PromptSection.text is `string | ((context: AssembleContext) => string)`
- *    (dsh packages/core/system-prompt/lib/types/index.d.ts:60): the provider
+ *    (dsh packages/core/system-prompt/src/index.ts:79): the provider
  *    MUST return a string SYNCHRONOUSLY and receives no session identity
  *    (AssembleContext carries only { scope?, signal? }). The ONLY correct
  *    channel is therefore registering the section on the agent's own context
@@ -60,7 +60,7 @@ export function registerContextInjection(rootCtx, deps) {
   /**
    * TTL cache keyed by the AGENT OBJECT (Finding 2: `agent.session.cwd` is
    * not a live runtime field — the cwd lives on the frozen creation header
-   * `session.header.cwd`, dsh packages/core/session/src/index.ts:1276, and
+   * `session.header.cwd`, dsh packages/core/session/src/validation.ts:563, and
    * the live directory is a WorkingDirectoryService projection; one agent =
    * one session, and the resolver's own session+cwd cache handles cwd moves
    * and self-invalidates, so this module never touches cwd).

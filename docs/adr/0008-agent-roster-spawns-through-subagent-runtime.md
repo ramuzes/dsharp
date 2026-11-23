@@ -4,7 +4,7 @@ Status: Accepted (2026-11-22) · Amended (2026-11-23): the caller is now the `ro
 
 ## Context
 
-Users need to add team members from persisted role templates via the Web GUI's "+" menu, deterministically and in any session. Since DSH v0.2.1-rc.2 a teammate is just an ordinary subagent (team mode is a per-session flag plus a shared task board; `packages/team/agent-team`, docs/upgrade-guide/v0.2.1-rc.2/agent-team-subagents). The only creation path is `ctx.subagents.startActivation(...)` — host-side, not `@Remote` (`packages/subagent/subagent/src/index.ts:267-292`), which is what the `subagent` tool calls (`packages/subagent/tool-subagent/src/index.ts:320-336`). There is no client-callable create API.
+Users need to add team members from persisted role templates via the Web GUI's "+" menu, deterministically and in any session. Since DSH v0.2.1-rc.2 a teammate is just an ordinary subagent (team mode is a per-session flag plus a shared task board; `packages/team/agent-team`, docs/upgrade-guide/v0.2.1-rc.2/agent-team-subagents). The only creation path is `ctx.subagents.startActivation(...)` — host-side, not `@Remote` (`packages/subagent/subagent/src/index.ts:274-299`), which is what the `subagent` tool calls (`packages/subagent/tool-subagent/src/index.ts:320-336`). There is no client-callable create API.
 
 ## Decision
 

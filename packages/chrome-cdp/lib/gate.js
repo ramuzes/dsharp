@@ -4,7 +4,9 @@
  * the host's serviceAsk turns ask into ctx.approval.request, which the Web
  * GUI renders as Allow/Deny on the streamed tool-call card, fail-closed when
  * no approval channel is composed
- * (packages/core/tools/src/index.ts:599-612, 1517-1519, 1735-1776).
+ * (dsh packages/core/tools/src/pipeline.ts:200-206 — the tools/pre-execute
+ * waterfall and the ask hand-off; :453-494 — serviceAsk, which fails closed
+ * when no approval channel answers).
  */
 export const TOOL_PREFIX = 'mcp__chrome-cdp__'
 export const APPROVAL_POLICIES = ['sensitive', 'all', 'none']

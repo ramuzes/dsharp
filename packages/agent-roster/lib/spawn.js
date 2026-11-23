@@ -11,7 +11,7 @@
  * therefore owns the deterministic part and the agent loop owns the context.
  *
  * Mechanism (unchanged from ADR-0008): resolve the caller's tree root via the
- * subagents runtime (`rootOf`, packages/subagent/subagent/src/index.ts:300),
+ * subagents runtime (`rootOf`, packages/subagent/subagent/src/index.ts:307),
  * allocate a free sibling name, then `startActivation` with parent delivery —
  * the identical path the `subagent` tool uses. `prompt` becomes the child's
  * FIRST USER MESSAGE, not its system prompt (manager.ts:406-412); the system

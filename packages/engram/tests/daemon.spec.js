@@ -19,6 +19,15 @@ import { ensureDaemon } from '../lib/daemon.js'
 function makeSubprocess(handler) {
   const specs = []
   const spawn = (spec) => {
+    // Mirror the real seam's synchronous validation (dsh
+    // packages/subprocess/subprocess-local/src/spawn.ts:165-167): a spec
+    // without a valid graceMs is rejected BEFORE launch. A fake that skipped
+    // this let a graceMs-less spec pass the whole suite while every real
+    // spawn failed (2026-11-23 outage; AGENTS.md §1: fakes must replicate
+    // real strictness).
+    if (!Number.isFinite(spec.graceMs) || spec.graceMs <= 0 || spec.graceMs > 2147483647) {
+      throw new Error('subprocess graceMs must be a positive finite number no greater than 2147483647')
+    }
     specs.push(spec)
     return handler(spec, specs.length)
   }
@@ -411,4 +420,25 @@ test('l2: /health with EMPTY capabilities object -> same typed error', async () 
     (err) => err.code === 'engram/unsupported-version' && err.message.includes('capabilit'),
   )
   assert.equal(notes.entries[0].stage, 'daemon-unsupported-version')
+})
+
+test('the daemon spawn spec carries a graceMs the real seam accepts', async () => {
+  // Regression for the 2026-11-23 outage: lib/daemon.js omitted graceMs,
+  // which dsh validates before launch (subprocess-local/src/spawn.ts:165-167).
+  // The fake in this file now rejects such a spec, so the spawn below fails
+  // with engram/daemon-spawn-failed if the member goes missing again.
+  const subprocess = makeSubprocess(() => makeHandle({ exitCode: 0 }))
+  const health = await ensureDaemon({
+    client: {},
+    probe: probeSequence([new Error('daemon down'), supportedHealth()]),
+    subprocess,
+    spawnEnabled: true,
+    buildEnv: () => ({}),
+    note: noopNote,
+    retry: baseRetry,
+  })
+  assert.deepEqual(health, supportedHealth())
+  assert.equal(subprocess.spawn.specs.length, 1)
+  const { graceMs } = subprocess.spawn.specs[0]
+  assert.ok(Number.isInteger(graceMs) && graceMs > 0 && graceMs <= 2147483647, `graceMs must be a positive safe integer, got ${String(graceMs)}`)
 })
