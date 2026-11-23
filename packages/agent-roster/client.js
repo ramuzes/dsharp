@@ -606,6 +606,12 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(false)
       const [anchorVar] = React.useState(() => `--dsh-roster-menu-${(rosterMenuSeq += 1)}`)
       const rootRef = React.useRef(null)
+      // The menu SURFACE lives in a body portal, OUTSIDE rootRef — the host
+      // ModelSelect checks both refs in closeOutside (ModelSelect.tsx:173-188)
+      // and so must we: checking only the root closed the menu on the row's
+      // own pointerdown, killing the click before it could select (the
+      // 2026-11-23 "click does nothing" incident).
+      const menuRef = React.useRef(null)
       const openRef = React.useRef(false)
       openRef.current = open
 
@@ -616,9 +622,11 @@ window.__ModuleLoader__.load({
         // simply skip the outside-close wiring; the host page always has it.
         if (!open || typeof document === 'undefined') return undefined
         const closeOutside = (event) => {
-          if (rootRef.current !== null && event !== undefined && typeof event.target === 'object'
-            && event.target !== null && typeof rootRef.current.contains === 'function'
-            && rootRef.current.contains(event.target)) return
+          const target = event?.target
+          if (typeof target !== 'object' || target === null) return
+          // The portaled card is outside the trigger subtree; check both.
+          if (rootRef.current?.contains?.(target) === true) return
+          if (menuRef.current?.contains?.(target) === true) return
           setOpen(false)
         }
         document.addEventListener('pointerdown', closeOutside)
@@ -713,6 +721,7 @@ window.__ModuleLoader__.load({
                       : (rows ?? []).map((row) => rowButton(row, row.key === value))))
               : createPortal(
                 h(MenuSurface, {
+                  ref: menuRef,
                   className: 'agent-roster-menu-surface',
                   role: 'menu',
                   style: { '--dsh-roster-anchor': anchorVar },
