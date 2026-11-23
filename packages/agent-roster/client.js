@@ -9,10 +9,12 @@
  *
  * Task 6 landed the scaffold: locale dictionaries, the `agentRoster` remote
  * namespace mount (all six Host methods, Tasks 2–4), one "+"-menu command,
- * and the spawn modal's happy path. Task 7 (this file's current scope)
- * completes the modal: the custom-role form with save-as-template, the
- * AI-draft area (fill-only proposals), real model selection over the Host
- * catalog, and the team-gating banner states. The settings card is Task 8.
+ * and the spawn modal's happy path. Task 7 completes the modal: the
+ * custom-role form with save-as-template, the AI-draft area (fill-only
+ * proposals), real model selection over the Host catalog, and the
+ * team-gating banner states. Task 8 (this file's current scope) extracts
+ * the shared field/model/draft pieces and adds the Plugins-page settings
+ * card — the roster manager in `plugins.bundle.config`.
  *
  * dsh interfaces consumed (verified in the checkout, AGENTS.md 2b):
  * - `commandUi` service 'commandUi' (packages/client/ui-commands/src/client/
@@ -68,6 +70,18 @@
  *   is the live selection (core/agent types.ts:78-101 — null while the
  *   Agent's initial options supply the route). Read the ui-agent-team
  *   TeamModeToggle.tsx:39-41 way: a PROP the seat receives, never a remote.
+ * - `plugins.bundle.config` keyed slot, scope root — the Plugins-page
+ *   settings card seat: owner props are PluginConfigViewProps
+ *   `{ view: 'summary' | 'page', form? }` with NO session identity
+ *   (packages/client/ui-plugin-manager/src/client/slot-contract.ts:159; the
+ *   generated catalog packages/extensions/cordis-client-runner/src/client/
+ *   slot-catalog.ts:3478-3522), and the page renders it with exactly
+ *   `{ view: 'page' }` (PluginManagerPage.tsx:848: renderSlot(
+ *   'plugins.bundle.config', { view: 'page' }, { entryKey: pkg.name })).
+ *   Consequence recorded at RosterCard: the card's AI-draft entry is
+ *   disabled with a hint, because the Host `draft` resolves the draft
+ *   session's cwd from the requesting session (lib/drafter.js:241-244) and
+ *   this seat has none to give.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-agent-roster',
@@ -138,6 +152,24 @@ window.__ModuleLoader__.load({
       'action.cancel': '取消',
       'spawn.success': '成员 {name} 已创建',
       'spawn.failed': '创建失败',
+      'card.title': '角色花名册',
+      'card.add': '新建角色模板',
+      'card.edit': '编辑',
+      'card.delete': '删除',
+      'card.delete.confirm': '再次点击以确认删除',
+      'card.deleting': '删除中…',
+      'card.save': '保存',
+      'card.saving': '保存中…',
+      'card.cancel': '取消',
+      'card.incomplete': '填写角色名称与提示词后才能保存',
+      'card.saveFailed': '保存失败',
+      'card.deleteFailed': '删除失败',
+      'card.defaultModel': '默认模型',
+      'card.model.none': '不设默认模型',
+      'card.model.chip': '{provider} / {model}',
+      'card.model.chip.effort': '{provider} / {model} · {effort}',
+      'card.updatedAt': '更新于 {time}',
+      'card.draft.hint': '此页面没有会话上下文，无法在这里 AI 起草；请在对话输入区的“+”菜单中打开“添加成员”使用 AI 起草',
     }
     const en = {
       'command.label': 'Add member',
@@ -194,6 +226,24 @@ window.__ModuleLoader__.load({
       'action.cancel': 'Cancel',
       'spawn.success': 'Member {name} created',
       'spawn.failed': 'Spawn failed',
+      'card.title': 'Role roster',
+      'card.add': 'New role template',
+      'card.edit': 'Edit',
+      'card.delete': 'Delete',
+      'card.delete.confirm': 'Click again to confirm deletion',
+      'card.deleting': 'Deleting…',
+      'card.save': 'Save',
+      'card.saving': 'Saving…',
+      'card.cancel': 'Cancel',
+      'card.incomplete': 'Fill in the role name and prompt to save',
+      'card.saveFailed': 'Save failed',
+      'card.deleteFailed': 'Delete failed',
+      'card.defaultModel': 'Default model',
+      'card.model.none': 'No default model',
+      'card.model.chip': '{provider} / {model}',
+      'card.model.chip.effort': '{provider} / {model} · {effort}',
+      'card.updatedAt': 'Updated {time}',
+      'card.draft.hint': 'This page has no session context, so AI drafting is unavailable here — open "Add member" from a conversation\'s "+" menu to draft',
     }
 
     /**
@@ -336,6 +386,256 @@ window.__ModuleLoader__.load({
       return h('span', { className: 'agent-roster-error-detail' }, [code, message].filter(Boolean).join(' — '))
     }
 
+    // -------------------------------------------------------------------------
+    // Shared building blocks (Task 8 extraction): the modal of Tasks 6-7 and
+    // the Plugins-page card of Task 8 render the same role fields, the same
+    // ModelRef selector, and run the same client-side draft wait — extracted
+    // here once instead of being duplicated per surface.
+    // -------------------------------------------------------------------------
+
+    /**
+     * The Host model catalog as flat selector rows, loaded once per consumer
+     * (modal open / card form mount). The session face may be absent or fail
+     * (older host, provider outage): rows degrade to [] — callers offer the
+     * default entry only and never block on the catalog (Task 6 review
+     * note 4).
+     * @returns {{ rows: Array<object> }} the flat rows (`key` is the JSON
+     *   [provider, model] pair).
+     */
+    function useModelRows() {
+      const [catalog, setCatalog] = React.useState({ phase: 'loading' })
+      React.useEffect(() => {
+        const face = optRemote('remote.session')
+        if (face?.modelCatalog === undefined) {
+          setCatalog({ phase: 'degraded' })
+          return undefined
+        }
+        let alive = true
+        settle(face.modelCatalog()).then(
+          (value) => { if (alive) setCatalog(Array.isArray(value?.groups) ? { phase: 'ready', value } : { phase: 'degraded' }) },
+          () => { if (alive) setCatalog({ phase: 'degraded' }) },
+        )
+        return () => { alive = false }
+      }, [])
+      const rows = React.useMemo(() => {
+        if (catalog.phase !== 'ready') return []
+        const flat = []
+        for (const group of catalog.value.groups ?? []) {
+          if (group === null || typeof group !== 'object' || typeof group.id !== 'string') continue
+          for (const model of group.models ?? []) {
+            if (typeof model?.id !== 'string') continue
+            flat.push({
+              key: JSON.stringify([group.id, model.id]),
+              provider: group.id,
+              model: model.id,
+              name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id,
+              groupName: typeof group.name === 'string' && group.name !== '' ? group.name : group.id,
+              efforts: Array.isArray(model.reasoning?.efforts) ? model.reasoning.efforts : [],
+            })
+          }
+        }
+        return flat
+      }, [catalog])
+      return { rows }
+    }
+
+    /** Map one flat-row list by row key (JSON [provider, model]). */
+    const rowsByKey = (rows) => new Map(rows.map((row) => [row.key, row]))
+
+    /** Provider-grouped <optgroup> rows over a flat-row list. */
+    function catalogOptgroups(rows) {
+      const groups = []
+      for (const row of rows) {
+        let group = groups.find((entry) => entry.name === row.groupName)
+        if (group === undefined) { group = { name: row.groupName, rows: [] }; groups.push(group) }
+        group.rows.push(row)
+      }
+      return groups.map((group) => h('optgroup', { key: group.name, label: group.name },
+        group.rows.map((row) => h('option', { key: row.key, value: row.key }, row.name))))
+    }
+
+    /**
+     * The model reference of one catalog row: an explicit choice sends
+     * {provider, model[, reasoningEffort]}; the caller's default (no row)
+     * sends null — the modal's spawn then omits agentOptions so the child
+     * inherits the parent's route (lib/spawn.js model precedence), and the
+     * card stores "no default model".
+     * @param {object | undefined} row - the chosen flat row, if any.
+     * @param {string} effort - the chosen reasoning effort ('' = none).
+     */
+    const modelRefOf = (row, effort) => row === undefined ? null : {
+      provider: row.provider,
+      model: row.model,
+      ...(effort !== '' ? { reasoningEffort: effort } : {}),
+    }
+
+    /**
+     * The shared ModelRef editor: a labeled provider-grouped select over the
+     * flat catalog rows with a labeled default entry whose copy is the
+     * caller's (spawn "inherit", card "no default"), plus the optional
+     * reasoning-effort select beside an explicit choice that advertises
+     * efforts. Controlled and hook-free: choice/effort state and the
+     * resulting ModelRef stay with the caller.
+     * @param {any} props - `section` (optional data-agent-roster-section
+     *   value), `id`, `marker` (the select's data attribute), `noneMarker`
+     *   (marker value for the default entry), `label`, `defaultLabel`,
+     *   `effortLabel`, `effortDefaultLabel`, `rows`, `byKey`, `choice`,
+     *   `onChoice`, `effort`, `onEffort` (omit for no effort input),
+     *   `disabled`.
+     */
+    function ModelRefEditor(props) {
+      const {
+        section, id, marker, noneMarker, label, defaultLabel, effortLabel, effortDefaultLabel,
+        rows, byKey, choice, onChoice, effort, onEffort, disabled,
+      } = props
+      const chosen = choice === '' ? undefined : byKey.get(choice)
+      return h('section', {
+        className: 'agent-roster-section',
+        ...(section === undefined ? {} : { 'data-agent-roster-section': section }),
+      },
+        h('label', { className: 'agent-roster-label', htmlFor: id }, label),
+        h('select', {
+          id,
+          className: 'agent-roster-select',
+          [marker]: choice === '' ? noneMarker : choice,
+          value: choice,
+          disabled,
+          onChange: (event) => { onChoice(event.target.value) },
+        },
+          h('option', { value: '' }, defaultLabel),
+          ...catalogOptgroups(rows)),
+        onEffort !== undefined && chosen !== undefined && chosen.efforts.length > 0
+          ? h('div', { className: 'agent-roster-effort' },
+            h('label', { className: 'agent-roster-label', htmlFor: `${id}-effort` }, effortLabel),
+            h('select', {
+              id: `${id}-effort`,
+              className: 'agent-roster-select',
+              'data-agent-roster-effort': '',
+              value: effort,
+              onChange: (event) => { onEffort(event.target.value) },
+            },
+              h('option', { value: '' }, effortDefaultLabel),
+              chosen.efforts.map((item) => h('option', { key: item?.id, value: item?.id }, String(item?.name ?? item?.id)))))
+          : null)
+    }
+
+    /**
+     * The shared role fields — name, description, prompt — of the modal's
+     * custom-role form (Tasks 6-7) and the card's template add/edit forms
+     * (Task 8). Controlled and hook-free; `idPrefix` namespaces the
+     * label/field ids so the two surfaces never collide in one document.
+     * @param {any} props - `t`, `idPrefix`, `name`, `description`, `prompt`,
+     *   `onName`, `onDescription`, `onPrompt`.
+     */
+    function RoleFields(props) {
+      const { t, idPrefix, name, description, prompt, onName, onDescription, onPrompt } = props
+      return h('div', { className: 'agent-roster-role-fields' },
+        h('label', { className: 'agent-roster-label', htmlFor: `${idPrefix}-role-name` }, t('custom.name.label')),
+        h('input', {
+          id: `${idPrefix}-role-name`,
+          type: 'text',
+          className: 'agent-roster-input',
+          'data-agent-roster-role-name': '',
+          value: name,
+          placeholder: t('custom.name.placeholder'),
+          autoComplete: 'off',
+          onChange: (event) => { onName(event.target.value) },
+        }),
+        h('label', { className: 'agent-roster-label', htmlFor: `${idPrefix}-role-description` }, t('custom.description.label')),
+        h('input', {
+          id: `${idPrefix}-role-description`,
+          type: 'text',
+          className: 'agent-roster-input',
+          'data-agent-roster-role-description': '',
+          value: description,
+          placeholder: t('custom.description.placeholder'),
+          autoComplete: 'off',
+          onChange: (event) => { onDescription(event.target.value) },
+        }),
+        h('label', { className: 'agent-roster-label', htmlFor: `${idPrefix}-role-prompt` }, t('custom.prompt.label')),
+        h('textarea', {
+          id: `${idPrefix}-role-prompt`,
+          className: 'agent-roster-input agent-roster-textarea',
+          'data-agent-roster-role-prompt': '',
+          rows: 5,
+          value: prompt,
+          placeholder: t('custom.prompt.placeholder'),
+          onChange: (event) => { onPrompt(event.target.value) },
+        }))
+    }
+
+    /**
+     * The client-side draft wait shared by the modal's AI-draft area and the
+     * card's draft entry. `epoch` is the liveness token that lets an
+     * abandoned wait discard its late resolution; the mounted draft method
+     * declares no transport cancellation (lib/roster-service.js `draft(
+     * input)`, no signal parameter), so abort abandons the CLIENT wait only.
+     * The Host shares ONE draft session per workspace (ADR-0010), so a new
+     * start is refused while one runs.
+     * @param {(key: string, params?: object) => string} t - the locale seat.
+     * @returns {{ draft: object, drafting: boolean, start: (input: object)
+     *   => Promise<void>, abort: () => void }}
+     */
+    function useDraftFlow(t) {
+      const [draft, setDraft] = React.useState({ epoch: 0, phase: 'idle', result: null })
+      const drafting = draft.phase === 'drafting'
+      const start = async (input) => {
+        if (drafting) return
+        const briefText = typeof input?.brief === 'string' ? input.brief.trim() : ''
+        if (briefText === '') return
+        const ns = rosterNs()
+        if (ns?.draft === undefined) {
+          setDraft((prev) => ({ ...prev, epoch: prev.epoch + 1, phase: 'idle', result: { ok: false, error: { code: 'roster/unavailable', message: t('templates.unavailable') } } }))
+          return
+        }
+        const epoch = draft.epoch + 1
+        setDraft({ epoch, phase: 'drafting', result: null })
+        try {
+          const value = await settle(ns.draft({ ...input, brief: briefText }))
+          setDraft((prev) => (prev.epoch === epoch ? { ...prev, phase: 'idle', result: { ok: true, value } } : prev))
+        } catch (error) {
+          setDraft((prev) => (prev.epoch === epoch ? { ...prev, phase: 'idle', result: { ok: false, error } } : prev))
+        }
+      }
+      const abort = () => {
+        if (!drafting) return
+        setDraft((prev) => ({ ...prev, epoch: prev.epoch + 1, phase: 'idle', result: { ok: false, aborted: true } }))
+      }
+      return { draft, drafting, start, abort }
+    }
+
+    /** The flat-row key of one stored ModelRef, or null when malformed. */
+    const refKey = (ref) => ref !== null && typeof ref === 'object'
+      && typeof ref.provider === 'string' && typeof ref.model === 'string'
+      ? JSON.stringify([ref.provider, ref.model])
+      : null
+
+    /**
+     * The editor rows for one stored default model: the catalog rows plus,
+     * when the ref is valid but no catalog row carries it (catalog degraded
+     * or model retired), a synthetic row whose only effort option is the
+     * stored effort — so an open→save round-trip that never touches the
+     * control keeps provider/model/effort intact (the card always sends an
+     * explicit defaultModel, so a missing option would silently null it).
+     */
+    function rowsWithRef(rows, ref) {
+      const key = refKey(ref)
+      if (key === null || rows.some((row) => row.key === key)) return rows
+      const efforts = typeof ref.reasoningEffort === 'string' && ref.reasoningEffort !== ''
+        ? [{ id: ref.reasoningEffort, name: ref.reasoningEffort }]
+        : []
+      return [...rows, { key, provider: ref.provider, model: ref.model, name: `${ref.provider} / ${ref.model}`, groupName: ref.provider, efforts }]
+    }
+
+    /** The default-model chip text of one stored ModelRef (or the none label). */
+    function modelChipText(t, ref) {
+      if (refKey(ref) === null) return t('card.model.none')
+      const params = { provider: ref.provider, model: ref.model }
+      return typeof ref.reasoningEffort === 'string' && ref.reasoningEffort !== ''
+        ? t('card.model.chip.effort', { ...params, effort: ref.reasoningEffort })
+        : t('card.model.chip', params)
+    }
+
     /**
      * The spawn modal. Everything it keeps is local state; nothing outlives
      * the open modal. Body order is the Task 6 contract — team-status banner
@@ -379,7 +679,7 @@ window.__ModuleLoader__.load({
       const [outcome, setOutcome] = React.useState(null)
       const [spawning, setSpawning] = React.useState(false)
       // Model catalog + choices: '' is the inherit default.
-      const [catalog, setCatalog] = React.useState({ phase: 'loading' })
+      const { rows: modelRows } = useModelRows()
       const [modelChoice, setModelChoice] = React.useState('')
       const [effortChoice, setEffortChoice] = React.useState('')
       // Team gating: status + the agent-team rows of the plugin inventory.
@@ -397,11 +697,8 @@ window.__ModuleLoader__.load({
       // null = unset (the live-selection prefill applies); '' = the labeled
       // default chosen explicitly; otherwise the chosen row's key.
       const [draftChoice, setDraftChoice] = React.useState(null)
-      // One draft state object: `epoch` is the liveness token that lets an
-      // abandoned wait discard its late resolution (no useRef — the fake
-      // React of the test harness supports the hook subset above only).
-      const [draft, setDraft] = React.useState({ epoch: 0, phase: 'idle', result: null })
-      const drafting = draft.phase === 'drafting'
+      // The shared client-side draft wait (epoch-guarded, abortable).
+      const { draft, drafting, start: startDraftFlow, abort: abortDraft } = useDraftFlow(t)
 
       // Load the template list once per open. The namespace may be missing
       // (host plugin not loaded) — that degrades to the unavailable line,
@@ -418,23 +715,6 @@ window.__ModuleLoader__.load({
             (result) => { if (alive) setTemplates({ phase: 'ready', list: Array.isArray(unwrap(result)) ? unwrap(result) : [] }) },
             (error) => { if (alive) setTemplates({ phase: 'failed', error }) },
           )
-        return () => { alive = false }
-      }, [])
-
-      // Load the model catalog once per open. The session face may be absent
-      // or fail (older host, provider outage): the selector degrades to the
-      // inherit-only entry and never blocks spawn (Task 6 review note 4).
-      React.useEffect(() => {
-        const face = optRemote('remote.session')
-        if (face?.modelCatalog === undefined) {
-          setCatalog({ phase: 'degraded' })
-          return undefined
-        }
-        let alive = true
-        settle(face.modelCatalog()).then(
-          (value) => { if (alive) setCatalog(Array.isArray(value?.groups) ? { phase: 'ready', value } : { phase: 'degraded' }) },
-          () => { if (alive) setCatalog({ phase: 'degraded' }) },
-        )
         return () => { alive = false }
       }, [])
 
@@ -496,26 +776,7 @@ window.__ModuleLoader__.load({
 
       // Flat catalog rows keyed by JSON [provider, model]; empty when the
       // catalog degraded — the selector then offers the inherit entry only.
-      const modelRows = React.useMemo(() => {
-        if (catalog.phase !== 'ready') return []
-        const rows = []
-        for (const group of catalog.value.groups ?? []) {
-          if (group === null || typeof group !== 'object' || typeof group.id !== 'string') continue
-          for (const model of group.models ?? []) {
-            if (typeof model?.id !== 'string') continue
-            rows.push({
-              key: JSON.stringify([group.id, model.id]),
-              provider: group.id,
-              model: model.id,
-              name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id,
-              groupName: typeof group.name === 'string' && group.name !== '' ? group.name : group.id,
-              efforts: Array.isArray(model.reasoning?.efforts) ? model.reasoning.efforts : [],
-            })
-          }
-        }
-        return rows
-      }, [catalog])
-      const modelByKey = new Map(modelRows.map((row) => [row.key, row]))
+      const modelByKey = rowsByKey(modelRows)
       const chosen = modelChoice === '' ? undefined : modelByKey.get(modelChoice)
       // Draft-picker prefill: while the user has not chosen, the picker
       // starts from the session's LIVE model when the catalog maps it.
@@ -534,64 +795,16 @@ window.__ModuleLoader__.load({
       const effectiveDraftChoice = draftChoice ?? (liveKey !== null && modelByKey.has(liveKey) ? liveKey : '')
       const chosenDraft = effectiveDraftChoice === '' ? undefined : modelByKey.get(effectiveDraftChoice)
 
-      /**
-       * The spawn/draft model reference of one catalog row: an explicit
-       * choice sends {provider, model[, reasoningEffort]}; the inherit
-       * default (no row) sends null — the Host omits agentOptions so the
-       * child inherits the parent's route (lib/spawn.js model precedence).
-       */
-      const modelRefOf = (row, effort) => row === undefined ? null : {
-        provider: row.provider,
-        model: row.model,
-        ...(effort !== '' ? { reasoningEffort: effort } : {}),
-      }
       const modelRef = modelRefOf(chosen, effortChoice)
       const draftModelRef = modelRefOf(chosenDraft, '')
 
-      /** Provider-grouped <optgroup> rows over the flat catalog rows. */
-      const catalogOptgroups = () => {
-        const groups = []
-        for (const row of modelRows) {
-          let group = groups.find((entry) => entry.name === row.groupName)
-          if (group === undefined) { group = { name: row.groupName, rows: [] }; groups.push(group) }
-          group.rows.push(row)
-        }
-        return groups.map((group) => h('optgroup', { key: group.name, label: group.name },
-          group.rows.map((row) => h('option', { key: row.key, value: row.key }, row.name))))
-      }
-
       /**
-       * Start one AI draft. The Host shares ONE draft session per workspace
-       * (ADR-0010), so the button is disabled while one runs; the epoch
-       * token lets abortDraft discard a late resolution. The mounted draft
-       * method declares no transport cancellation (lib/roster-service.js —
-       * `draft(input)`, no signal parameter), so an abort abandons the
-       * CLIENT wait only: the draft session may still finish server-side.
+       * Start one AI draft over the shared wait (useDraftFlow carries the
+       * one-draft-session-per-workspace boundary and the epoch guard): the
+       * result is a PROPOSAL that fills the custom form below; nothing is
+       * saved without the explicit confirm.
        */
-      const startDraft = async () => {
-        if (drafting) return
-        const briefText = brief.trim()
-        if (briefText === '') return
-        const ns = rosterNs()
-        if (ns?.draft === undefined) {
-          setDraft((prev) => ({ ...prev, epoch: prev.epoch + 1, phase: 'idle', result: { ok: false, error: { code: 'roster/unavailable', message: t('templates.unavailable') } } }))
-          return
-        }
-        const epoch = draft.epoch + 1
-        setDraft({ epoch, phase: 'drafting', result: null })
-        try {
-          const value = await settle(ns.draft({ sessionId, brief: briefText, model: draftModelRef }))
-          setDraft((prev) => (prev.epoch === epoch ? { ...prev, phase: 'idle', result: { ok: true, value } } : prev))
-        } catch (error) {
-          setDraft((prev) => (prev.epoch === epoch ? { ...prev, phase: 'idle', result: { ok: false, error } } : prev))
-        }
-      }
-
-      /** Stop waiting on the running draft (see startDraft for the boundary). */
-      const abortDraft = () => {
-        if (!drafting) return
-        setDraft((prev) => ({ ...prev, epoch: prev.epoch + 1, phase: 'idle', result: { ok: false, aborted: true } }))
-      }
+      const startDraft = () => { startDraftFlow({ sessionId, brief, model: draftModelRef }) }
 
       /** Enable Team mode for this session tree, then refresh the status. */
       const enableTeamMode = async () => {
@@ -847,32 +1060,26 @@ window.__ModuleLoader__.load({
             onChange: (event) => { setMemberName(event.target.value) },
           }),
           h('p', { id: 'agent-roster-member-name-hint', className: 'agent-roster-hint' }, t('memberName.hint'))),
-        h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'model' },
-          h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-model' }, t('model.label')),
-          h('select', {
-            id: 'agent-roster-model',
-            className: 'agent-roster-select',
-            'data-agent-roster-model': modelChoice === '' ? 'inherit' : modelChoice,
-            value: modelChoice,
-            onChange: (event) => { setModelChoice(event.target.value); setEffortChoice('') },
-          },
-            h('option', { value: '' }, t('model.inherit')),
-            ...catalogOptgroups()),
-          // The optional reasoning-effort input appears only beside an
-          // explicit choice of a model that advertises efforts.
-          chosen !== undefined && chosen.efforts.length > 0
-            ? h('div', { className: 'agent-roster-effort' },
-              h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-effort' }, t('model.effort.label')),
-              h('select', {
-                id: 'agent-roster-effort',
-                className: 'agent-roster-select',
-                'data-agent-roster-effort': '',
-                value: effortChoice,
-                onChange: (event) => { setEffortChoice(event.target.value) },
-              },
-                h('option', { value: '' }, t('model.effort.default')),
-                chosen.efforts.map((effort) => h('option', { key: effort?.id, value: effort?.id }, String(effort?.name ?? effort?.id)))))
-            : null),
+        // The shared ModelRef editor (Task 8 extraction): the inherit
+        // default sends null so the child inherits the parent route; the
+        // optional reasoning-effort input appears only beside an explicit
+        // choice of a model that advertises efforts.
+        h(ModelRefEditor, {
+          section: 'model',
+          id: 'agent-roster-model',
+          marker: 'data-agent-roster-model',
+          noneMarker: 'inherit',
+          label: t('model.label'),
+          defaultLabel: t('model.inherit'),
+          effortLabel: t('model.effort.label'),
+          effortDefaultLabel: t('model.effort.default'),
+          rows: modelRows,
+          byKey: modelByKey,
+          choice: modelChoice,
+          onChoice: (value) => { setModelChoice(value); setEffortChoice('') },
+          effort: effortChoice,
+          onEffort: setEffortChoice,
+        }),
         h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'task' },
           h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-task' }, t('task.label')),
           h('textarea', {
@@ -920,7 +1127,7 @@ window.__ModuleLoader__.load({
                   onChange: (event) => { setDraftChoice(event.target.value) },
                 },
                   h('option', { value: '' }, t('draft.model.inherit')),
-                  ...catalogOptgroups()),
+                  ...catalogOptgroups(modelRows)),
                 h('button', {
                   type: 'button',
                   className: 'agent-roster-button',
@@ -951,37 +1158,17 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'agent-roster-error-label' }, t('draft.failed')),
                 errorDetail(draft.result.error))
                 : null),
-            h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-custom-name' }, t('custom.name.label')),
-            h('input', {
-              id: 'agent-roster-custom-name',
-              type: 'text',
-              className: 'agent-roster-input',
-              'data-agent-roster-custom-name': '',
-              value: customName,
-              placeholder: t('custom.name.placeholder'),
-              autoComplete: 'off',
-              onChange: (event) => { setCustomName(event.target.value) },
-            }),
-            h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-custom-description' }, t('custom.description.label')),
-            h('input', {
-              id: 'agent-roster-custom-description',
-              type: 'text',
-              className: 'agent-roster-input',
-              'data-agent-roster-custom-description': '',
-              value: customDescription,
-              placeholder: t('custom.description.placeholder'),
-              autoComplete: 'off',
-              onChange: (event) => { setCustomDescription(event.target.value) },
-            }),
-            h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-custom-prompt' }, t('custom.prompt.label')),
-            h('textarea', {
-              id: 'agent-roster-custom-prompt',
-              className: 'agent-roster-input agent-roster-textarea',
-              'data-agent-roster-custom-prompt': '',
-              rows: 5,
-              value: customPrompt,
-              placeholder: t('custom.prompt.placeholder'),
-              onChange: (event) => { setCustomPrompt(event.target.value) },
+            // The shared role fields (Task 8 extraction — the card's
+            // add/edit forms render the same components).
+            h(RoleFields, {
+              t,
+              idPrefix: 'agent-roster',
+              name: customName,
+              description: customDescription,
+              prompt: customPrompt,
+              onName: setCustomName,
+              onDescription: setCustomDescription,
+              onPrompt: setCustomPrompt,
             }),
             h('label', { className: 'agent-roster-toggle' },
               h('input', {
@@ -1013,6 +1200,366 @@ window.__ModuleLoader__.load({
         return () => { if (modalOpeners.get(sessionId) === opener) modalOpeners.delete(sessionId) }
       }, [sessionId])
       return open ? h(RosterModal, { sessionId, close: () => { setOpen(false) }, t, useProjection }) : null
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 8 — the Plugins-page settings card (roster manager).
+    // -------------------------------------------------------------------------
+
+    /**
+     * The bundle's settings card, registered in `plugins.bundle.config`
+     * keyed by the package name (the airboard client.js:1055-1058 pattern).
+     * The Plugins page renders this seat on the bundle's page between its
+     * description and its rows with owner props `{ view: 'page' }` ONLY —
+     * `plugins.bundle.config` is a keyed ROOT-scope slot whose owner props
+     * are PluginConfigViewProps `{ view, form? }` with no session identity
+     * (packages/client/ui-plugin-manager/src/client/slot-contract.ts:159;
+     * the generated catalog packages/extensions/cordis-client-runner/src/
+     * client/slot-catalog.ts:3478-3522; the render call
+     * PluginManagerPage.tsx:848). The roster data therefore comes from the
+     * module-level rosterNs() lookup — never from a config `form`, which
+     * the page does not pass for bundle config anyway.
+     *
+     * Session-context resolution for the AI-draft entry: the Host `draft`
+     * resolves the shared draft session's cwd FROM the requesting session
+     * and hard-requires its id (lib/drafter.js:241-244), while this seat
+     * carries no session — so the entry renders DISABLED with a bilingual
+     * hint pointing at the in-session "+" flow, and the enabled path runs
+     * only when a `sessionId` prop actually reaches the card (no current
+     * host passes one; the branch exists so a future seat that does is
+     * correct, and tests exercise both variants).
+     */
+    function RosterCard(props) {
+      const { view, t, sessionId } = props
+      if (view !== 'page') return null
+      return h(RosterCardPage, { t, sessionId })
+    }
+
+    /**
+     * The card body (hook-bearing, mounted only for the page view so the
+     * wrapper stays hook-order-stable): the template list with per-row
+     * edit/delete and the add button, or one open editor form. Every write
+     * goes through the service; failures render bilingual reasons and the
+     * list re-reads after each successful write.
+     * @param {any} props - the locale seat's `t` and the (usually absent)
+     *   `sessionId` seat prop.
+     */
+    function RosterCardPage(props) {
+      const { t, sessionId } = props
+      const [templates, setTemplates] = React.useState({ phase: 'loading' })
+      // null = list view; { mode: 'add' } | { mode: 'edit', template } = the open form.
+      const [editor, setEditor] = React.useState(null)
+      // The armed (confirm-pending) delete row id — the modal's
+      // confirm-then-act pattern for destructive actions.
+      const [armed, setArmed] = React.useState(null)
+      const [deleting, setDeleting] = React.useState(false)
+      const [deleteError, setDeleteError] = React.useState(null)
+
+      const loadTemplates = React.useCallback(() => {
+        const ns = rosterNs()
+        if (ns?.listTemplates === undefined) {
+          setTemplates({ phase: 'unavailable' })
+          return undefined
+        }
+        return settle(ns.listTemplates()).then(
+          (value) => { setTemplates({ phase: 'ready', list: Array.isArray(value) ? value : [] }) },
+          (error) => { setTemplates({ phase: 'failed', error }) },
+        )
+      }, [])
+      React.useEffect(() => { loadTemplates() }, [loadTemplates])
+
+      /** Delete one template after its row's two-click confirm. */
+      const removeTemplate = async (id) => {
+        if (deleting) return
+        const ns = rosterNs()
+        if (ns?.deleteTemplate === undefined) {
+          setDeleteError({ code: 'roster/unavailable', message: t('templates.unavailable') })
+          return
+        }
+        setDeleting(true)
+        setDeleteError(null)
+        try {
+          await settle(ns.deleteTemplate(id))
+          setArmed(null)
+          await loadTemplates()
+        } catch (error) {
+          setDeleteError(error)
+          setArmed(null)
+        } finally {
+          setDeleting(false)
+        }
+      }
+
+      const list = templates.phase === 'ready' ? templates.list : []
+
+      const rowOf = (tpl) => h('div', {
+        key: String(tpl?.id ?? ''),
+        className: 'agent-roster-card-row',
+        'data-agent-roster-row': String(tpl?.id ?? ''),
+      },
+        h('div', { className: 'agent-roster-card-row-head' },
+          h('span', { className: 'agent-roster-card-row-name', 'data-agent-roster-row-name': '' }, String(tpl?.name ?? '')),
+          h('div', { className: 'agent-roster-card-meta' },
+            h('span', { className: 'agent-roster-card-chip', 'data-agent-roster-row-model': '' }, modelChipText(t, tpl?.defaultModel ?? null)),
+            h('span', { className: 'agent-roster-card-row-updated', 'data-agent-roster-row-updated': '' },
+              t('card.updatedAt', { time: String(tpl?.updatedAt ?? '') })))),
+        tpl?.description ? h('span', { className: 'agent-roster-card-row-desc', 'data-agent-roster-row-desc': '' }, String(tpl.description)) : null,
+        h('div', { className: 'agent-roster-card-row-actions' },
+          h('button', {
+            type: 'button',
+            className: 'agent-roster-button',
+            'data-agent-roster-row-edit': tpl?.id,
+            onClick: () => { setArmed(null); setEditor({ mode: 'edit', template: tpl }) },
+          }, t('card.edit')),
+          h('button', {
+            type: 'button',
+            className: 'agent-roster-button',
+            'data-agent-roster-row-delete': tpl?.id,
+            disabled: deleting,
+            onClick: () => {
+              if (armed === tpl?.id) { void removeTemplate(tpl?.id) } else { setArmed(tpl?.id) }
+            },
+          }, deleting && armed === tpl?.id ? t('card.deleting') : armed === tpl?.id ? t('card.delete.confirm') : t('card.delete'))))
+
+      return h('div', { className: 'agent-roster-card', 'data-agent-roster-card': '' },
+        deleteError === null ? null : h('div', {
+          className: 'agent-roster-banner agent-roster-banner-error',
+          'data-agent-roster-card-error': '',
+          'data-agent-roster-error': typeof deleteError.code === 'string' ? deleteError.code : '',
+          role: 'alert',
+        },
+        h('span', { className: 'agent-roster-error-label' }, t('card.deleteFailed')),
+        errorDetail(deleteError)),
+        editor === null
+          ? h('div', { className: 'agent-roster-card-list' },
+            h('div', { className: 'agent-roster-card-head' },
+              h('span', { className: 'agent-roster-label' }, t('card.title')),
+              h('button', {
+                type: 'button',
+                className: 'agent-roster-button agent-roster-button-confirm',
+                'data-agent-roster-card-add': '',
+                onClick: () => { setArmed(null); setEditor({ mode: 'add' }) },
+              }, t('card.add'))),
+            templates.phase === 'loading'
+              ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'loading' }, t('templates.loading')) : null,
+            templates.phase === 'unavailable'
+              ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-note': 'unavailable' }, t('templates.unavailable')) : null,
+            templates.phase === 'failed'
+              ? h('div', {
+                className: 'agent-roster-note agent-roster-error',
+                'data-agent-roster-note': 'error',
+                'data-agent-roster-error': typeof templates.error?.code === 'string' ? templates.error.code : '',
+              },
+              h('span', { className: 'agent-roster-error-label' }, t('templates.error')),
+              errorDetail(templates.error)) : null,
+            templates.phase === 'ready' && list.length === 0
+              ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'empty' }, t('templates.empty')) : null,
+            templates.phase === 'ready'
+              ? h('div', { className: 'agent-roster-card-rows' }, list.map(rowOf))
+              : null)
+          : h(RosterCardForm, {
+            key: editor.mode === 'edit' ? `edit:${editor.template?.id ?? ''}` : 'add',
+            mode: editor.mode,
+            template: editor.mode === 'edit' ? editor.template : null,
+            t,
+            sessionId,
+            close: () => { setEditor(null) },
+            saved: () => { setEditor(null); void loadTemplates() },
+          }))
+    }
+
+    /**
+     * The card's add/edit form: the add-mode AI-draft entry above the shared
+     * RoleFields and the shared ModelRefEditor (default = no default model).
+     * Saves go through saveTemplate — `id` on edit, none on add — with the
+     * full explicit field set (patch semantics not relied upon, so clearing
+     * a field actually clears it); a failure stays in-form with its
+     * bilingual reason, a success closes the form and refreshes the list.
+     * @param {any} props - `mode` ('add' | 'edit'), `template` (edit only),
+     *   `t`, `sessionId` (usually absent — gates the draft entry),
+     *   `close()`, `saved()`.
+     */
+    function RosterCardForm(props) {
+      const { mode, template, t, sessionId, close, saved } = props
+      const storedModel = mode === 'edit' ? (template?.defaultModel ?? null) : null
+      // The add form's draft wait; kept mounted in edit mode too so the
+      // hook order never shifts between modes.
+      const { draft, drafting, start: startDraftFlow, abort: abortDraft } = useDraftFlow(t)
+      const { rows } = useModelRows()
+      const startKey = refKey(storedModel)
+      const startEffort = storedModel !== null && typeof storedModel.reasoningEffort === 'string' ? storedModel.reasoningEffort : ''
+      const [name, setName] = React.useState(typeof template?.name === 'string' ? template.name : '')
+      const [description, setDescription] = React.useState(typeof template?.description === 'string' ? template.description : '')
+      const [prompt, setPrompt] = React.useState(typeof template?.prompt === 'string' ? template.prompt : '')
+      const [modelChoice, setModelChoice] = React.useState(startKey ?? '')
+      const [effortChoice, setEffortChoice] = React.useState(startEffort)
+      const [brief, setBrief] = React.useState('')
+      const [saving, setSaving] = React.useState(false)
+      const [outcome, setOutcome] = React.useState(null)
+      // A draft result fills the form ONCE per result (result-identity
+      // keyed): an abandoned wait's epoch bump leaves state untouched,
+      // while a re-draft deliberately overwrites manual edits — the same
+      // contract as the modal's draft fill.
+      React.useEffect(() => {
+        if (draft.result?.ok !== true) return
+        const value = draft.result.value ?? {}
+        setName(typeof value.name === 'string' ? value.name : '')
+        setDescription(typeof value.description === 'string' ? value.description : '')
+        setPrompt(typeof value.prompt === 'string' ? value.prompt : '')
+      }, [draft.result])
+
+      // Lossless model editing: the stored ref rides as a synthetic row
+      // when the catalog does not carry it, so an untouched open→save
+      // round-trip keeps provider/model/effort intact. When the catalog
+      // DOES carry the model but does not advertise the stored effort, the
+      // effort input stays hidden while the stored effort still rides the
+      // saved ref (modelRefOf forwards effortChoice unchanged).
+      const editRows = React.useMemo(() => rowsWithRef(rows, storedModel), [rows, storedModel])
+      const byKey = React.useMemo(() => rowsByKey(editRows), [editRows])
+
+      const sessionReachable = typeof sessionId === 'string' && sessionId !== ''
+      const nameText = name.trim()
+      const descriptionText = description.trim()
+      const promptText = prompt.trim()
+      const complete = nameText !== '' && promptText !== ''
+      const chosen = modelChoice === '' ? undefined : byKey.get(modelChoice)
+      const modelRef = modelRefOf(chosen, effortChoice)
+
+      /** Save through saveTemplate; failures stay in-form for a fix. */
+      const confirmSave = async () => {
+        if (!complete || saving) return
+        const ns = rosterNs()
+        setSaving(true)
+        setOutcome(null)
+        if (ns?.saveTemplate === undefined) {
+          setOutcome({ ok: false, error: { code: 'roster/unavailable', message: t('templates.unavailable') } })
+          setSaving(false)
+          return
+        }
+        try {
+          await settle(ns.saveTemplate({
+            ...(mode === 'edit' ? { id: template?.id } : {}),
+            name: nameText,
+            description: descriptionText,
+            prompt: promptText,
+            defaultModel: modelRef,
+          }))
+          saved()
+        } catch (error) {
+          setOutcome({ ok: false, error })
+        } finally {
+          setSaving(false)
+        }
+      }
+
+      // The AI-draft entry (add mode only): disabled with the no-session
+      // hint — this seat has no session, and the Host draft resolves the
+      // draft session's cwd from the requesting session's id. The click
+      // guard is real (not just the disabled prop) because a disabled
+      // control is advisory only under test fakes.
+      const draftArea = mode !== 'add' ? null : h('div', { className: 'agent-roster-draft-area', 'data-agent-roster-card-draft-area': '' },
+        h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-card-brief' }, t('draft.label')),
+        h('textarea', {
+          id: 'agent-roster-card-brief',
+          className: 'agent-roster-input agent-roster-textarea',
+          'data-agent-roster-card-brief': '',
+          rows: 2,
+          value: brief,
+          placeholder: t('draft.placeholder'),
+          disabled: drafting || !sessionReachable,
+          onChange: (event) => { setBrief(event.target.value) },
+        }),
+        h('div', { className: 'agent-roster-draft-controls' },
+          h('button', {
+            type: 'button',
+            className: 'agent-roster-button',
+            'data-agent-roster-card-draft': '',
+            disabled: !sessionReachable || brief.trim() === '' || drafting,
+            onClick: () => {
+              if (!sessionReachable || drafting) return
+              startDraftFlow({ sessionId, brief, model: null })
+            },
+          }, drafting ? t('draft.inflight') : t('draft.action')),
+          drafting
+            ? h('button', {
+              type: 'button',
+              className: 'agent-roster-button',
+              'data-agent-roster-card-draft-abort': '',
+              onClick: abortDraft,
+            }, t('draft.abort'))
+            : null),
+        sessionReachable
+          ? null
+          : h('div', { className: 'agent-roster-note', 'data-agent-roster-card-draft-hint': '' }, t('card.draft.hint')),
+        draft.result?.ok === true && draft.result.value?.parsed !== true
+          ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-note': 'draft-unparsed' }, t('draft.unparsed'))
+          : null,
+        draft.result?.aborted === true
+          ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'draft-aborted' }, t('draft.aborted'))
+          : null,
+        draft.result?.ok === false && draft.result.aborted !== true
+          ? h('div', {
+            className: 'agent-roster-note agent-roster-error',
+            'data-agent-roster-card-draft-error': '',
+            'data-agent-roster-error': typeof draft.result.error?.code === 'string' ? draft.result.error.code : '',
+          },
+          h('span', { className: 'agent-roster-error-label' }, t('draft.failed')),
+          errorDetail(draft.result.error))
+          : null)
+
+      return h('div', { className: 'agent-roster-card-form', 'data-agent-roster-card-form': '' },
+        h('div', { className: 'agent-roster-card-head' },
+          h('span', { className: 'agent-roster-label' }, mode === 'edit' ? t('card.edit') : t('card.add'))),
+        draftArea,
+        h(RoleFields, {
+          t,
+          idPrefix: 'agent-roster-card',
+          name,
+          description,
+          prompt,
+          onName: setName,
+          onDescription: setDescription,
+          onPrompt: setPrompt,
+        }),
+        h(ModelRefEditor, {
+          id: 'agent-roster-card-model',
+          marker: 'data-agent-roster-card-model',
+          noneMarker: 'none',
+          label: t('card.defaultModel'),
+          defaultLabel: t('card.model.none'),
+          effortLabel: t('model.effort.label'),
+          effortDefaultLabel: t('model.effort.default'),
+          rows: editRows,
+          byKey,
+          choice: modelChoice,
+          onChoice: (value) => { setModelChoice(value); setEffortChoice('') },
+          effort: effortChoice,
+          onEffort: setEffortChoice,
+        }),
+        outcome === null ? null : h('div', {
+          className: 'agent-roster-banner agent-roster-banner-error',
+          'data-agent-roster-card-form-error': '',
+          'data-agent-roster-error': typeof outcome.error?.code === 'string' ? outcome.error.code : '',
+          role: 'alert',
+        },
+        h('span', { className: 'agent-roster-error-label' }, t('card.saveFailed')),
+        errorDetail(outcome.error)),
+        complete || saving ? null : h('p', { className: 'agent-roster-hint', 'data-agent-roster-card-save-hint': '' }, t('card.incomplete')),
+        h('div', { className: 'agent-roster-footer' },
+          h('button', {
+            type: 'button',
+            className: 'agent-roster-button agent-roster-button-confirm',
+            'data-agent-roster-card-save': '',
+            disabled: !complete || saving,
+            onClick: () => { void confirmSave() },
+          }, saving ? t('card.saving') : t('card.save')),
+          h('button', {
+            type: 'button',
+            className: 'agent-roster-button',
+            'data-agent-roster-card-cancel': '',
+            disabled: saving || drafting,
+            onClick: close,
+          }, t('card.cancel'))))
     }
 
     /** Scoped sheet, appended once per activation and removed with the plugin. */
@@ -1054,6 +1601,20 @@ window.__ModuleLoader__.load({
 .agent-roster-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .agent-roster-button:disabled { opacity: 0.5; cursor: default; }
 .agent-roster-button-confirm { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+/* Task 8 — the Plugins-page roster card. */
+[data-agent-roster-card] { display: flex; flex-direction: column; gap: 12px; color: var(--dsw-alias-label-primary); }
+.agent-roster-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-roster-card-rows { display: flex; flex-direction: column; gap: 8px; }
+.agent-roster-card-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); }
+.agent-roster-card-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-roster-card-row-name { font-size: 13px; font-weight: 600; }
+.agent-roster-card-row-desc { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.agent-roster-card-meta { display: flex; align-items: center; gap: 8px; }
+.agent-roster-card-chip { font-size: 11px; font-family: var(--dsw-alias-font-mono, monospace); padding: 2px 6px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); }
+.agent-roster-card-row-updated { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.agent-roster-card-row-actions { display: flex; gap: 8px; }
+.agent-roster-card-form { display: flex; flex-direction: column; gap: 10px; }
+.agent-roster-role-fields { display: flex; flex-direction: column; gap: 8px; }
 `
 
     function injectStyles() {
@@ -1090,6 +1651,15 @@ window.__ModuleLoader__.load({
           },
           RosterModalSeat,
         )), 'dsh-agent-roster: spawn modal seat')
+        // The Plugins-page settings card: keyed by the package name, the
+        // airboard client.js:1055-1058 pattern. `name` is the SlotMap key
+        // (slot-catalog.ts:31-32 "SlotMap key passed as the register call's
+        // `name`"); `key` is this bundle's package name the page dispatches
+        // (PluginManagerPage.tsx:848 entryKey: pkg.name).
+        ctx.effect(() => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
+          { name: 'plugins.bundle.config', key: ID, locale: NS },
+          RosterCard,
+        )), 'dsh-agent-roster: roster card')
         ctx.effect(() => injectStyles(), 'dsh-agent-roster: styles')
       },
     }
