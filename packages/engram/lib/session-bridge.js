@@ -28,6 +28,25 @@
 const RENEW_TTL_MS = 4 * 60 * 1000 // ensureSession debounce window
 
 /**
+ * Prefix the daemon knows a DSH session under: every session this bridge
+ * registers is `dsh-` + the DSH session id, and EVERY later reference to that
+ * session must use the same id. The 2026-11-23 incident: registration used the
+ * prefixed id while engram_save posted the raw one, so the daemon answered
+ * `404: session not found` to every save (a fake daemon that did not check
+ * session references hid it — AGENTS.md §1).
+ */
+export const ENGRAM_SESSION_PREFIX = 'dsh-'
+
+/**
+ * The engram session id of one DSH session id; empty for an empty DSH id so
+ * callers can still distinguish "no session" from a real one.
+ * @param {unknown} dshSessionId
+ * @returns {string}
+ */
+export function engramSessionIdOf(dshSessionId) {
+  return typeof dshSessionId === 'string' && dshSessionId !== '' ? ENGRAM_SESSION_PREFIX + dshSessionId : ''
+}
+/**
  * deps:
  *  - client: { get, post, del } (Task 2).
  *  - resolveProject: (agent) => Promise<{ project, source }> — ASYNC; the
@@ -63,7 +82,7 @@ export function registerSessionBridge(rootCtx, deps) {
       note('bridge-no-session-id')
       return false
     }
-    const id = 'dsh-' + dshSessionId
+    const id = engramSessionIdOf(dshSessionId)
     // The resolver is ASYNC (Task 4: `async resolve(session, explicit?)`
     // returns a Promise<{ project, source }>). It must be awaited inside the
     // try/catch — both to get the real project (a sync read would POST
@@ -114,7 +133,7 @@ export function registerSessionBridge(rootCtx, deps) {
         // registerSession and re-checked via ensureSession on first save.
         registerSession(agent)
         const dshSessionId = sessionIdOf(agent)
-        const id = 'dsh-' + dshSessionId
+        const id = engramSessionIdOf(dshSessionId)
         // Teardown runs on agent fiber disposal (cordis effect semantics).
         return () => endSession(id)
       })

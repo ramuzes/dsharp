@@ -21,6 +21,7 @@
  * project resolution contract.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { engramSessionIdOf } from './session-bridge.js'
 import { EngramError } from './engram-api.js'
 import { ProjectAmbiguousError, ProjectExplicitRequiredError } from './project-resolution.js'
 
@@ -174,7 +175,9 @@ export function registerAgentTools(ctx, deps) {
         const { project } = await resolve(exec, args.project)
         await registerSessionWithRetry(exec)
         const body = {
-          session_id: sessionId,
+          // The id the bridge registered this session under (`dsh-` + DSH id);
+          // the daemon rejects any other spelling with `session not found`.
+          session_id: engramSessionIdOf(sessionId),
           title: args.title,
           content: args.content,
           type: args.type,

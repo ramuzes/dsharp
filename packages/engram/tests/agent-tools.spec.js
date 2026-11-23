@@ -11,6 +11,7 @@ import {
   ProjectExplicitRequiredError,
 } from '../lib/project-resolution.js'
 import { registerAgentTools, ENGRAM_PROMPT_TEXT } from '../lib/agent-tools.js'
+import { registerSessionBridge } from '../lib/session-bridge.js'
 
 /** Fake ctx with only tools + systemPrompt. */
 function makeCtx() {
@@ -126,7 +127,8 @@ test('save happy path: operation_id is exec.callId and project is resolved', asy
   assert.equal(client.calls.post.length, 1)
   const { path, body, signal } = client.calls.post[0]
   assert.equal(path, '/observations')
-  assert.equal(body.session_id, 'sess-1')
+  // The session is referenced under the id the bridge registered (dsh- + DSH id).
+  assert.equal(body.session_id, 'dsh-sess-1')
   assert.equal(body.title, 'T')
   assert.equal(body.content, 'C')
   assert.equal(body.type, 'decision')
@@ -227,4 +229,76 @@ test('engram_save with no session context fails fast with a model-readable messa
   assert.ok(result.includes('no session context available'), result)
   assert.ok(result.includes('cannot associate the observation'), result)
   assert.equal(client.calls.post.length, 0, 'guard fires before any POST')
+})
+
+// ---------------------------------------------------------------------------
+// Session integrity across the REAL bridge and the REAL tools
+// ---------------------------------------------------------------------------
+
+/**
+ * A strict fake daemon: an observation may only reference a session that was
+ * registered through POST /sessions, exactly like the real daemon, which
+ * answers `404: session not found` otherwise. The 2026-11-23 incident: the
+ * bridge registered `dsh-<id>` while engram_save posted the raw `<id>`, so
+ * EVERY live save failed while the permissive fakes above kept the suite
+ * green (AGENTS.md §1: fakes must replicate real strictness).
+ */
+function strictDaemon() {
+  const sessions = new Set()
+  const observations = []
+  return {
+    sessions,
+    observations,
+    async get() { return {} },
+    async post(path, body) {
+      if (path === '/sessions') {
+        sessions.add(body.id)
+        return { id: body.id, status: 'created' }
+      }
+      if (path === '/observations') {
+        if (!sessions.has(body.session_id)) {
+          throw new EngramError('engram/http', `engram/http: POST /observations -> 404: session not found (${body.session_id})`)
+        }
+        const saved = { id: `obs-${observations.length + 1}`, session_id: body.session_id, project: body.project }
+        observations.push(body)
+        return saved
+      }
+      return {}
+    },
+    async del() { return {} },
+  }
+}
+
+test('engram_save references the session under the id the bridge registered (real bridge, strict daemon)', async () => {
+  const daemon = strictDaemon()
+  // index.js wiring, reproduced: the tools' ensureSession IS the bridge's.
+  const bridge = registerSessionBridge({ on: () => () => {} }, {
+    client: daemon,
+    resolveProject: async () => ({ project: 'proj-x', source: 'map' }),
+    note: (message) => { throw new Error(`unexpected bridge note: ${message}`) },
+  })
+  const ctx = makeCtx()
+  registerAgentTools(ctx, {
+    client: daemon,
+    resolveProject: async () => ({ project: 'proj-x', source: 'map' }),
+    ensureReady: async () => {},
+    ensureSession: (exec) => bridge.ensureSession(exec?.agent),
+  })
+  const agent = { session: { id: 'sess-live' } }
+  const out = await toolOf(ctx, 'engram_save').execute(
+    { title: 'T', content: 'C', type: 'fact' },
+    { callId: 'call-9', agent },
+  )
+
+  assert.deepEqual([...daemon.sessions], ['dsh-sess-live'], 'the bridge registered the prefixed id')
+  assert.equal(daemon.observations.length, 1, 'the save reached the daemon')
+  assert.equal(daemon.observations[0].session_id, 'dsh-sess-live', 'the save names the registered id')
+  assert.equal(daemon.observations[0].project, 'proj-x')
+  assert.equal(JSON.parse(out).session_id, 'dsh-sess-live')
+
+  // The fake is strict by construction: the raw spelling is NOT a known session.
+  await assert.rejects(
+    () => daemon.post('/observations', { session_id: 'sess-live', content: 'C' }),
+    /session not found/,
+  )
 })
