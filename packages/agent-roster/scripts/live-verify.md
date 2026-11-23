@@ -1,5 +1,76 @@
 # dsh-agent-roster Live-Host Verification Runbook
 
+## 2026-11-23 · 0.2.0 — agent-driven creation (ADR-0011), verified on the live profile
+
+This round's shape changed completely (the "+" flow now injects an instruction
+and the lead agent calls `roster_spawn`), so the pass criterion changed too:
+prove the **model-facing** path end to end on the real host — template save,
+spawn, and a real member under the caller's tree — not a driver bundle
+calling removed remotes.
+
+Environment: profile `web` (the user's live profile, `~/.dsh/profiles/web`),
+host `http://127.0.0.1:3080`, bundle `dsh-agent-roster-0.2.0.tgz`, DSH
+checkout `/home/ramuz/deepseek-harness`. Bash runs inside a bwrap sandbox with
+its own PID namespace, so the host process and its HTTP surface are not
+reachable from the shell (`curl` returns nothing); the boot evidence therefore
+comes from the plugin's own stage record, which the host writes at mount time.
+
+### Host half: mount and tool registration
+
+`~/.dsh/agent-roster-status.json` immediately after the reinstall:
+
+```json
+{ "stage": "tools-registered", "detail": { "authoring": true }, "at": "2026-11-23T08:52:07.877Z" }
+```
+
+`tools-registered` is written from **inside** the `ctx.inject(['tools',
+'subagents'], …)` callback, so its presence proves both services were
+available and `toolScope.subagents` resolved — the inject-list bug this round
+(roster_spawn touching `subagents` from a `tools`-only callback) would have
+failed before this record. `detail.authoring: true` records that the
+`exposeAgentTools` toggle was on, so all three tools registered.
+
+### Model-facing path: end-to-end, on the live host
+
+Driven by a real subagent on this host (the same agent runtime the product
+uses), with the exact tool arguments a lead agent would pick:
+
+1. `roster_template_save({ name: "Live Probe", description: "Temporary probe
+   role", prompt: "You are a probe member. When asked to greet, reply with the
+   single word PROBE-OK." })` →
+   `{"id":"94329332eb","name":"Live Probe","updatedAt":"2026-11-23T08:52:42.679Z"}`
+   — the template persisted through the storage domain.
+2. `roster_spawn({ template: "Live Probe", task: "Greet me." })` →
+   `{"created":"live-probe","template":"Live Probe","model":"inherited from the parent agent"}`
+   — name resolved by **exact display name** (not id), the member created, and
+   the spawn reported model inheritance as designed (template had no model).
+3. `list_agents` shows the member in the live tree: `live-probe [inactive] —
+   Live Probe`. A real subagent, not a simulated record.
+4. The member's own answer came back as `PROBE-OK` — the standing prompt it
+   was spawned with was the frozen template text, so the prompt truly rides as
+   the child's first user message.
+
+Not verified live (user acceptance in the GUI): the "+" modal's rendering, the
+instruction preview text, and the injection hop itself
+(`sessions.using → prompt`), which need a driven browser; the client suite
+covers them against real React, and the composer-equivalent path is the same
+one a typed message takes.
+
+### Cleanup
+
+Two live artifacts remain from the probe and are the user's to remove: the
+template **Live Probe** (Settings > Agent roster → delete) and the inactive
+member `live-probe` (the Subagents panel keeps it; DSH has no member delete).
+
+---
+
+## 2026-11-23 · 0.1.0 — historical (the client-side spawn era, superseded)
+
+The notes below describe the **removed** architecture: the `spawnMember` /
+`teamStatus` / `draft` remotes, the draft session, and team-mode gating. They
+are kept as the record of the previous round's evidence and methodology; every
+method named in them no longer exists in the plugin.
+
 Date: 2026-11-23 · bundle `dsh-agent-roster-0.1.0.tgz` (shasum
 `5781e96ef4fa413fbc1b13f90700687160642ea3`) · DSH checkout
 `/home/ramuz/deepseek-harness` (release 0.2.2-rc.5, commit 2e39e70) ·
