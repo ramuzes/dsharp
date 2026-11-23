@@ -114,6 +114,7 @@ window.__ModuleLoader__.load({
       'memberName.hint': '成员在其会话树中的名字；留空时由模板名称派生',
       'model.label': '模型',
       'model.inherit': '继承当前会话模型',
+      'model.inherit.clear': '继承当前会话模型（不用模板默认模型）',
       'model.effort.label': '推理力度（可选）',
       'model.effort.default': '模型默认',
       'task.label': '首个任务（可选）',
@@ -188,6 +189,7 @@ window.__ModuleLoader__.load({
       'memberName.hint': "The member's name in its session tree; blank derives from the template name",
       'model.label': 'Model',
       'model.inherit': 'Inherit the current session model',
+      'model.inherit.clear': 'Inherit the current session model (skip the template default)',
       'model.effort.label': 'Reasoning effort (optional)',
       'model.effort.default': 'Model default',
       'task.label': 'First task (optional)',
@@ -268,12 +270,6 @@ window.__ModuleLoader__.load({
 
     /** Optional roster namespace lookup; undefined until $mount lands. */
     const rosterNs = () => optRemote('remote.agentRoster')
-
-    /** Unwrap a RemoteResult ({ok, value}) or pass a raw object through. */
-    function unwrap(result) {
-      if (result !== null && typeof result === 'object' && 'ok' in result) return result.ok ? result.value : undefined
-      return result
-    }
 
     /**
      * Await one RemoteResult-shaped call and yield its value: `{ok: true}`
@@ -710,11 +706,10 @@ window.__ModuleLoader__.load({
           return undefined
         }
         let alive = true
-        Promise.resolve().then(() => ns.listTemplates())
-          .then(
-            (result) => { if (alive) setTemplates({ phase: 'ready', list: Array.isArray(unwrap(result)) ? unwrap(result) : [] }) },
-            (error) => { if (alive) setTemplates({ phase: 'failed', error }) },
-          )
+        settle(ns.listTemplates()).then(
+          (value) => { if (alive) setTemplates({ phase: 'ready', list: Array.isArray(value) ? value : [] }) },
+          (error) => { if (alive) setTemplates({ phase: 'failed', error }) },
+        )
         return () => { alive = false }
       }, [])
 
@@ -766,6 +761,13 @@ window.__ModuleLoader__.load({
       const effectiveId = (selectedId !== null && list.some((tpl) => tpl.id === selectedId)
         ? selectedId
         : list[0]?.id) ?? null
+      // The template behind the current selection: its optional defaultModel
+      // (SPEC) drives the spawn selector's prefill and the default entry's
+      // truthful copy. Null in custom-only states and for templates without
+      // one; a malformed stored ref counts as absent (refKey null).
+      const selectedTemplate = list.find((tpl) => tpl.id === effectiveId) ?? null
+      const templateDefault = selectedTemplate?.defaultModel ?? null
+      const templateHasDefault = refKey(templateDefault) !== null
       // Custom-role fields (trimmed; the Host re-validates anyway) gate the
       // confirm exactly like a selectable template does.
       const customNameText = customName.trim()
@@ -777,7 +779,13 @@ window.__ModuleLoader__.load({
       // Flat catalog rows keyed by JSON [provider, model]; empty when the
       // catalog degraded — the selector then offers the inherit entry only.
       const modelByKey = rowsByKey(modelRows)
-      const chosen = modelChoice === '' ? undefined : modelByKey.get(modelChoice)
+      // Lossless spawn rows: the selected template's default rides as a
+      // synthetic row when the catalog does not carry it (the card editor's
+      // rowsWithRef machinery), so the prefill maps and an untouched
+      // open→confirm round-trip sends the stored ref whole.
+      const spawnRows = React.useMemo(() => rowsWithRef(modelRows, templateDefault), [modelRows, templateDefault])
+      const spawnByKey = rowsByKey(spawnRows)
+      const chosen = modelChoice === '' ? undefined : spawnByKey.get(modelChoice)
       // Draft-picker prefill: while the user has not chosen, the picker
       // starts from the session's LIVE model when the catalog maps it.
       // Server-side, `model: null` is NOT "the current session's model"
@@ -786,14 +794,28 @@ window.__ModuleLoader__.load({
       // 305-316), so the labeled default must say what null really does
       // and the live selection must be sent explicitly. Unmapped, absent,
       // or null `next` — and any explicit user choice — uses the labeled
-      // default instead. (The SPAWN selector's null is different and
-      // correct: it omits agentOptions so the child inherits the parent's
-      // route — lib/spawn.js model precedence.)
+      // default instead. (The SPAWN selector's null is different: for a
+      // default-bearing template it is an EXPLICIT CLEAR of the template
+      // default; otherwise it omits agentOptions so the child inherits the
+      // parent's route — lib/spawn.js model precedence.)
       const liveKey = liveNext !== null && typeof liveNext.provider === 'string' && typeof liveNext.model === 'string'
         ? JSON.stringify([liveNext.provider, liveNext.model])
         : null
       const effectiveDraftChoice = draftChoice ?? (liveKey !== null && modelByKey.has(liveKey) ? liveKey : '')
       const chosenDraft = effectiveDraftChoice === '' ? undefined : modelByKey.get(effectiveDraftChoice)
+
+      // SPEC — a template's optional defaultModel pre-fills the model
+      // selector. The prefill follows the SELECTION (it re-applies whenever
+      // another template becomes effective, so the selector always tells
+      // the truth about what will spawn); an explicit user choice after a
+      // selection wins until the selection changes again. Toggling the
+      // custom form does not touch the selection, so whatever the selector
+      // shows stays — visible, and therefore truthful — for custom spawns
+      // too.
+      React.useEffect(() => {
+        setModelChoice(templateHasDefault ? refKey(templateDefault) : '')
+        setEffortChoice(templateHasDefault && typeof templateDefault.reasoningEffort === 'string' ? templateDefault.reasoningEffort : '')
+      }, [effectiveId])
 
       const modelRef = modelRefOf(chosen, effortChoice)
       const draftModelRef = modelRefOf(chosenDraft, '')
@@ -954,10 +976,12 @@ window.__ModuleLoader__.load({
       }
 
       // Close (Escape, mask, header X — everything the Modal primitive
-      // routes through onClose) is gated while a spawn or draft is in
-      // flight: closing would drop the in-flight result and invite a
-      // duplicate spawn into the shared tree (Task 6 review note 1).
-      const guardedClose = () => { if (!spawning && !drafting) close() }
+      // routes through onClose) is gated while a spawn, draft, or team
+      // action is in flight: closing would drop the in-flight result,
+      // invite a duplicate spawn into the shared tree, or strand a team
+      // write's refresh (Task 6 review note 1; team-busy per the whole-
+      // branch review).
+      const guardedClose = () => { if (!spawning && !drafting && !teamBusy) close() }
 
       // A hint rides along whenever confirm is disabled but not merely
       // busy (Task 6 review note 2).
@@ -979,7 +1003,7 @@ window.__ModuleLoader__.load({
           type: 'button',
           className: 'agent-roster-button',
           'data-agent-roster-cancel': '',
-          disabled: spawning || drafting,
+          disabled: spawning || drafting || teamBusy,
           onClick: guardedClose,
         }, t('action.cancel')))
 
@@ -1060,21 +1084,24 @@ window.__ModuleLoader__.load({
             onChange: (event) => { setMemberName(event.target.value) },
           }),
           h('p', { id: 'agent-roster-member-name-hint', className: 'agent-roster-hint' }, t('memberName.hint'))),
-        // The shared ModelRef editor (Task 8 extraction): the inherit
-        // default sends null so the child inherits the parent route; the
-        // optional reasoning-effort input appears only beside an explicit
-        // choice of a model that advertises efforts.
+        // The shared ModelRef editor (Task 8 extraction): for a template
+        // with a defaultModel the default entry's copy names what reverting
+        // really does — null is an EXPLICIT CLEAR of that default
+        // (lib/spawn.js:210-216 precedence); without one (or in custom
+        // mode) it stays the plain inherit copy. The optional effort input
+        // appears only beside an explicit choice of a model that advertises
+        // efforts.
         h(ModelRefEditor, {
           section: 'model',
           id: 'agent-roster-model',
           marker: 'data-agent-roster-model',
           noneMarker: 'inherit',
           label: t('model.label'),
-          defaultLabel: t('model.inherit'),
+          defaultLabel: !custom && templateHasDefault ? t('model.inherit.clear') : t('model.inherit'),
           effortLabel: t('model.effort.label'),
           effortDefaultLabel: t('model.effort.default'),
-          rows: modelRows,
-          byKey: modelByKey,
+          rows: spawnRows,
+          byKey: spawnByKey,
           choice: modelChoice,
           onChoice: (value) => { setModelChoice(value); setEffortChoice('') },
           effort: effortChoice,
@@ -1262,7 +1289,13 @@ window.__ModuleLoader__.load({
           return undefined
         }
         return settle(ns.listTemplates()).then(
-          (value) => { setTemplates({ phase: 'ready', list: Array.isArray(value) ? value : [] }) },
+          (value) => {
+            setTemplates({ phase: 'ready', list: Array.isArray(value) ? value : [] })
+            // A successful refresh retires any stale delete-failure banner
+            // (whole-branch review: the banner must not outlive the state
+            // it describes).
+            setDeleteError(null)
+          },
           (error) => { setTemplates({ phase: 'failed', error }) },
         )
       }, [])
@@ -1309,7 +1342,7 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'agent-roster-button',
             'data-agent-roster-row-edit': tpl?.id,
-            onClick: () => { setArmed(null); setEditor({ mode: 'edit', template: tpl }) },
+            onClick: () => { setArmed(null); setDeleteError(null); setEditor({ mode: 'edit', template: tpl }) },
           }, t('card.edit')),
           h('button', {
             type: 'button',
@@ -1338,7 +1371,7 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'agent-roster-button agent-roster-button-confirm',
                 'data-agent-roster-card-add': '',
-                onClick: () => { setArmed(null); setEditor({ mode: 'add' }) },
+                onClick: () => { setArmed(null); setDeleteError(null); setEditor({ mode: 'add' }) },
               }, t('card.add'))),
             templates.phase === 'loading'
               ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'loading' }, t('templates.loading')) : null,

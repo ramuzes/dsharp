@@ -13,6 +13,7 @@ no build step, so no `allowBuilds` authorization is needed.
 | [`packages/airboard`](packages/airboard) | Read-only AirBoard viewer for the web GUI: a right-Sidebar tab over a host-side `/airboard` proxy (configurable service address + token) |
 | [`packages/feishu-gateway`](packages/feishu-gateway) | Feishu (Lark) bot gateway: bind a p2p bot chat to a workspace session — messages run tasks, questions/approvals round-trip as interactive cards |
 | [`packages/gitlab`](packages/gitlab) | Agent-facing GitLab tools: REST API (MR/issues/milestones/releases/pipelines/schedules) + token-injected git over HTTPS (clone/fetch/push/pull, merged-only branch cleanup); the token stays host-side |
+| [`packages/agent-roster`](packages/agent-roster) | Profile-wide roster of role templates turned into one-click team building: "+"-menu member spawn modal (per-member model, AI-drafted roles), model-facing roster tools, and a Plugins-page roster manager |
 
 ## Install from this repo
 

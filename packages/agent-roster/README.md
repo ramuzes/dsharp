@@ -30,7 +30,9 @@ Every mount writes its stage progression to
 `~/.dsh/agent-roster-status.json` — the file keeps only the latest record,
 so it always names the stage the mount currently sits at:
 `apply → wire-ready → (storage-degraded when the host exposes no
-storageDomain) → service-registered → done → tools-registered |
+storageDomain; storage-open-failed when the domain's open() rejects — the
+mount proceeds but store operations then fail loudly, and the record carries
+the error text) → service-registered → done → tools-registered |
 tools-skipped | tools-failed`, or a `wire-failed` record carrying the error
 text. Point `AGENT_ROSTER_STATUS_FILE` elsewhere for tests or
 multi-instance setups — the target resolves at write time, and the writer

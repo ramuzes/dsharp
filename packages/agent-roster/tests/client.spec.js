@@ -1332,3 +1332,156 @@ test('an explicit draft-picker choice overrides the prefill, including back to t
   await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
   assert.deepEqual(record.drafted[1].model, { provider: 'deepseek', model: 'chat' })
 })
+
+// ---------------------------------------------------------------------------
+// Review fix wave — the template defaultModel reaches the spawn flow, the
+// template-load failure line, team-busy close gating, card banner hygiene.
+// ---------------------------------------------------------------------------
+
+/** A default-bearing template: the card's chip advertises its defaultModel. */
+const SCOUT_TEMPLATE = {
+  id: 'tpl-scout', name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.',
+  defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
+  createdAt: '2026-11-20T08:00:00.000Z', updatedAt: '2026-11-21T08:00:00.000Z',
+}
+
+/** Open the modal over the scout template (auto-selected first) plus a plain one. */
+async function openScoutModal({ extras } = {}) {
+  const spawned = []
+  const view = await openModal({
+    roster: {
+      listTemplates: async () => ({ ok: true, value: [SCOUT_TEMPLATE, TEMPLATES[0]] }),
+      spawnMember: async (input) => { spawned.push(input); return { ok: true, value: { name: 'spawned-member' } } },
+      teamStatus: async () => ({ ok: true, value: HEALTHY_TEAM }),
+    },
+    extras,
+  })
+  view.scoutSpawned = spawned
+  return view
+}
+
+test('a template defaultModel prefills the spawn selector and is sent (lossless without a catalog)', async () => {
+  const reasonerKey = JSON.stringify(['deepseek', 'reasoner'])
+  // With a catalog: the prefill maps to the catalog row; effort included.
+  const view = await openScoutModal({ extras: { session: { modelCatalog: catalogFace } } })
+  const select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.equal(select.props.value, reasonerKey, 'the selector prefills the template default')
+  assert.equal(select.props['data-agent-roster-model'], reasonerKey)
+  const effort = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
+  assert.equal(effort.props.value, 'high', 'the stored effort prefills too')
+  let modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.deepEqual(view.scoutSpawned[0].model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+  // Without a catalog: the stored ref rides as a synthetic row and is still
+  // sent whole (no silent null/clear of the template default).
+  const view2 = await openScoutModal()
+  const select2 = find(view2.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.equal(select2.props.value, reasonerKey)
+  modal = find(view2.vdom, (node) => node.type === Modal)
+  await view2.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.deepEqual(view2.scoutSpawned[0].model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+})
+
+test('an explicit spawn-selector choice overrides the template prefill; a new selection re-applies its own default', async () => {
+  const chatKey = JSON.stringify(['deepseek', 'chat'])
+  const view = await openScoutModal({ extras: { session: { modelCatalog: catalogFace } } })
+  await view.interact(() => {
+    find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+      .props.onChange({ target: { value: chatKey } })
+  })
+  let modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.deepEqual(view.scoutSpawned[0].model, { provider: 'deepseek', model: 'chat' }, 'the explicit choice wins')
+  // Switching to the plain template re-applies ITS default (none): inherit.
+  await view.interact(() => {
+    find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-researcher').props.onClick()
+  })
+  const select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.equal(select.props.value, '', 'the prefill follows the selection')
+  assert.equal(select.props['data-agent-roster-model'], 'inherit')
+  modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.equal(view.scoutSpawned[1].model, null)
+})
+
+test('reverting to inherit sends null — an explicit clear — and the default option says so', async () => {
+  const view = await openScoutModal({ extras: { session: { modelCatalog: catalogFace } } })
+  // Default-bearing template: the default entry's copy names the clear.
+  const select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.ok(texts(select.children[0]).join(' ').includes('t:model.inherit.clear'), 'the clear copy renders')
+  await view.interact(() => { select.props.onChange({ target: { value: '' } }) })
+  const modal = find(view.vdom, (node) => node.type === Modal)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  assert.equal(view.scoutSpawned[0].model, null, 'revert sends null (explicit clear, not the template fallback)')
+  // A template WITHOUT a default keeps the plain inherit copy.
+  const plain = await openModal()
+  const plainSelect = find(plain.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  const label = texts(plainSelect.children[0]).join(' ')
+  assert.ok(label.includes('t:model.inherit'))
+  assert.equal(label.includes('t:model.inherit.clear'), false, 'no clear copy without a template default')
+})
+
+test('a not-ok listTemplates result renders the failure line, not the empty note', async () => {
+  const view = await openModal({ roster: {
+    listTemplates: async () => ({ ok: false, error: { code: 'roster/store-read', message: 'domain read failed / 域读取失败' } }),
+    spawnMember: async () => ({ ok: true, value: { name: 'x' } }),
+    teamStatus: async () => ({ ok: true, value: HEALTHY_TEAM }),
+  } })
+  const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
+  assert.ok(note, 'the failure note renders')
+  const line = texts(note).join(' ')
+  assert.ok(line.includes('t:templates.error'))
+  assert.ok(line.includes('roster/store-read — domain read failed / 域读取失败'))
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty'), undefined)
+})
+
+test('modal close is gated while a team action is in flight', async () => {
+  let resolveEnable
+  const view = await openModal({
+    roster: rosterWithTeam({ teamMode: false, isRoot: true, canEnable: true }),
+    extras: { agentTeams: { setEnabled: () => new Promise((resolve) => { resolveEnable = resolve }) } },
+  })
+  await view.interact(() => {
+    find(view.vdom, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined).props.onClick()
+  })
+  let modal = find(view.vdom, (node) => node.type === Modal)
+  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined).props.disabled, true)
+  modal.props.onClose()
+  await view.interact()
+  assert.ok(find(view.vdom, (node) => node.type === Modal), 'the modal survives close while a team action runs')
+  resolveEnable({ ok: true, value: undefined })
+  await view.interact()
+  modal = find(view.vdom, (node) => node.type === Modal)
+  modal.props.onClose()
+  await view.interact()
+  assert.equal(find(view.vdom, (node) => node.type === Modal), undefined, 'close works again once the team action settles')
+})
+
+test('card delete-failure banner clears on editor open and on a successful delete', async () => {
+  let failFirst = true
+  const deletedIds = []
+  const view = await mountCard({ roster: {
+    listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES.filter((tpl) => !deletedIds.includes(tpl.id)) }),
+    deleteTemplate: async (id) => {
+      if (failFirst) {
+        failFirst = false
+        throw Object.assign(new Error('store write failed / 存储写入失败'), { code: 'roster/store-write' })
+      }
+      deletedIds.push(id)
+      return { ok: true, value: { deleted: true } }
+    },
+  } })
+  const del = () => find(view.vdom, (node) => node.props?.['data-agent-roster-row-delete'] === 'tpl-researcher')
+  await view.interact(() => { del().props.onClick() })
+  await view.interact(() => { del().props.onClick() })
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-error'] !== undefined), 'the failure banner renders')
+  // Opening any editor clears the stale banner.
+  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick() })
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-error'] !== undefined), undefined)
+  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-card-cancel'] !== undefined).props.onClick() })
+  // A successful delete leaves no banner either, and the row is gone.
+  await view.interact(() => { del().props.onClick() })
+  await view.interact(() => { del().props.onClick() })
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-error'] !== undefined), undefined)
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-row'] === 'tpl-researcher'), undefined)
+})
