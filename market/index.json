@@ -16,11 +16,11 @@
       "versions": [
         {
           "version": "0.2.0",
-          "publishTimestamp": 1795446724,
+          "publishTimestamp": 1795448910,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "a9e4186636c07d278e4ef413e988c76594409169",
+            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
             "path": "packages/agent-roster"
           },
           "engines": {
@@ -43,11 +43,11 @@
       "versions": [
         {
           "version": "0.2.3",
-          "publishTimestamp": 1795446724,
+          "publishTimestamp": 1795448910,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "a9e4186636c07d278e4ef413e988c76594409169",
+            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
             "path": "packages/airboard"
           }
         }
@@ -67,11 +67,11 @@
       "versions": [
         {
           "version": "0.1.2",
-          "publishTimestamp": 1795446724,
+          "publishTimestamp": 1795448910,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "a9e4186636c07d278e4ef413e988c76594409169",
+            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
             "path": "packages/chrome-cdp"
           }
         }
@@ -90,12 +90,12 @@
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgPCEtLSBvcmlnaW5hbCBhcnR3b3JrOiBhIG1lbW9yeSBub2RlIGdyYXBoIOKAlCBvbmUgaHViIG5ldXJvbiB3aXRoIGxpbmtlZCBzYXRlbGxpdGVzIC0tPgogIDxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjMuNCIvPgogIDxjaXJjbGUgY3g9IjQuNSIgY3k9IjYiIHI9IjEuNyIvPgogIDxjaXJjbGUgY3g9IjE5LjUiIGN5PSI2IiByPSIxLjciLz4KICA8Y2lyY2xlIGN4PSI0LjUiIGN5PSIxOCIgcj0iMS43Ii8+CiAgPGNpcmNsZSBjeD0iMTkuNSIgY3k9IjE4IiByPSIxLjciLz4KICA8cGF0aCBkPSJNNS45IDcuMSA5LjUgOS45TTE4LjEgNy4xIDE0LjUgOS45TTUuOSAxNi45IDkuNSAxNC4xTTE4LjEgMTYuOSAxNC41IDE0LjEiLz4KPC9zdmc+Cg==",
       "versions": [
         {
-          "version": "0.1.6",
-          "publishTimestamp": 1795446724,
+          "version": "0.1.7",
+          "publishTimestamp": 1795448910,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "a9e4186636c07d278e4ef413e988c76594409169",
+            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
             "path": "packages/engram"
           },
           "engines": {
@@ -118,11 +118,11 @@
       "versions": [
         {
           "version": "0.1.3",
-          "publishTimestamp": 1795446724,
+          "publishTimestamp": 1795448910,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "a9e4186636c07d278e4ef413e988c76594409169",
+            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
             "path": "packages/feishu-gateway"
           }
         }
@@ -142,11 +142,11 @@
       "versions": [
         {
           "version": "0.2.4",
-          "publishTimestamp": 1795446724,
+          "publishTimestamp": 1795448910,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "a9e4186636c07d278e4ef413e988c76594409169",
+            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
             "path": "packages/gitlab"
           }
         }
@@ -165,11 +165,11 @@
       "versions": [
         {
           "version": "0.2.2",
-          "publishTimestamp": 1795446724,
+          "publishTimestamp": 1795448910,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "a9e4186636c07d278e4ef413e988c76594409169",
+            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
             "path": "packages/workspace-env"
           }
         }
