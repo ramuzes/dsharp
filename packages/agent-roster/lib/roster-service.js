@@ -1,6 +1,8 @@
 /**
  * Agent roster Remote service: the `agentRoster` Typert namespace the client
- * half (settings card, spawn modal) and later tasks call for template CRUD.
+ * half (the Settings roster manager) calls for template CRUD. Member creation
+ * is NOT here: it is the `roster_spawn` agent tool (ADR-0011), so the remote
+ * surface stays read/write-only on templates.
  *
  * TypertRemoteService precedent: chrome-cdp lib/status.js:15-40 — the class
  * extends TypertRemoteService from @deepseek-ai/dsh-typert-protocol (static
@@ -15,10 +17,8 @@
  * (modal error lines, settings card rows).
  */
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { readBoolean, readString } from './wire.js'
+import { readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
-import { spawnFromRoster, teamStatusOf } from './spawn.js'
-import { runDraft } from './drafter.js'
 
 /** Prototype marker key the protocol reads (REMOTE_METHOD_DESCRIPTOR). */
 const REMOTE_METHODS = '@deepseek-ai/dsh-typert-protocol/remote-methods'
@@ -30,38 +30,10 @@ export class AgentRosterService extends TypertRemoteService {
    *   tests drive methods via Object.create(prototype), the feishu
    *   diagnostics.spec precedent).
    * @param {ReturnType<typeof import('./store.js').openRosterStore>} store
-   * @param {{ draftEnabled?: unknown, draftModelProvider?: unknown, draftModelId?: unknown, draftReasoningEffort?: unknown }} [config]
-   *   validated row config (fields may arrive as reactive wrappers); owns
-   *   the AI-draft gate and the configured draft model (Settings page).
    */
-  constructor(ctx, store, config = {}) {
+  constructor(ctx, store) {
     super(ctx, 'agentRoster', { namespace: 'agentRoster' })
     this.store = store
-    this.config = config
-  }
-
-  /**
-   * Resolve the effective draft model from Settings: an explicit input model
-   * wins; otherwise the configured one; the feature is gated on the toggle.
-   * @param {{ sessionId: string, brief: string, model?: import('./store.js').ModelRef | null }} input
-   * @returns {Promise<import('./store.js').ModelRef | null>}
-   */
-  resolveDraftModel(input) {
-    if (readBoolean(this.config?.draftEnabled) !== true) {
-      throw new RemoteError('roster/draft-disabled', 'AI-assisted drafting is disabled. Enable it in Settings > Agent roster. / AI 代笔未开启，请先在 设置 > Agent roster 中开启。')
-    }
-    const provider = readString(this.config?.draftModelProvider)
-    const modelId = readString(this.config?.draftModelId)
-    const effort = readString(this.config?.draftReasoningEffort)
-    const configured = provider !== '' && modelId !== ''
-      ? { provider, model: modelId, ...(effort !== '' ? { reasoningEffort: effort } : {}) }
-      : null
-    const explicit = input?.model === null || input?.model === undefined ? null : input.model
-    const effective = explicit ?? configured
-    if (effective === null) {
-      throw new RemoteError('roster/draft-model-unset', 'No draft model configured. Pick one in Settings > Agent roster. / 尚未配置草稿模型，请到 设置 > Agent roster 选择。')
-    }
-    return effective
   }
 
   /** Every stored template, insertion order. @Remote */
@@ -137,49 +109,6 @@ export class AgentRosterService extends TypertRemoteService {
     return { deleted: true }
   }
 
-  /**
-   * Spawn one roster member into the current session's subagent tree
-   * (ADR-0008). The optional host services are resolved from the service's
-   * ctx at CALL time through the sanctioned get() name lookup — the same
-   * optional-service rule lib/store.js applies to storageDomain — so a host
-   * without sessionController/subagents answers with typed
-   * `roster/no-session-controller` / `roster/no-subagents` errors instead of
-   * crashing. Semantics and citations live in lib/spawn.js.
-   * @param {{ sessionId: string, templateId?: string, custom?: { name: string, description: string, prompt: string }, memberName?: string, model?: import('./store.js').ModelRef | null, task?: string }} input
-   * @returns {Promise<{ name: string, childSessionId?: string }>}
-   * @Remote
-   */
-  async spawnMember(input) {
-    return spawnFromRoster(this.ctx, { store: this.store }, input)
-  }
-
-  /**
-   * Report Team status for one session: `teamMode` (the selection shared by
-   * its subagent tree), `isRoot`, and `canEnable = agentTeams present &&
-   * isRoot` — enabling Team mode requires the root (agent-team
-   * TEAM_LEAD_REQUIRED), so a member session can never offer it.
-   * @param {{ sessionId: string }} input
-   * @returns {Promise<{ teamMode: boolean, isRoot: boolean, canEnable: boolean }>}
-   * @Remote
-   */
-  async teamStatus(input) {
-    return teamStatusOf(this.ctx, {}, input)
-  }
-
-  /**
-   * Draft one member definition with model assistance over the reusable
-   * per-workspace draft session (ADR-0010). The result is a PROPOSAL: this
-   * call never saves anything — the user reviews and saves (or drops) it in
-   * the modal. Semantics, host-interface citations, and the timeout live in
-   * lib/drafter.js.
-   * @param {{ sessionId: string, brief: string, model?: import('./store.js').ModelRef | null }} input
-   * @returns {Promise<{ name: string, description: string, prompt: string, parsed: boolean }>}
-   * @Remote
-   */
-  async draft(input) {
-    const model = this.resolveDraftModel(input)
-    return runDraft(this.ctx, { store: this.store }, { ...input, model })
-  }
 }
 
 // Manual remote-method markers: decorator syntax is unavailable in plain
@@ -195,9 +124,6 @@ export class AgentRosterService extends TypertRemoteService {
         Object.freeze({ method: 'listTemplates', invocation: direct }),
         Object.freeze({ method: 'saveTemplate', invocation: direct }),
         Object.freeze({ method: 'deleteTemplate', invocation: direct }),
-        Object.freeze({ method: 'spawnMember', invocation: direct }),
-        Object.freeze({ method: 'teamStatus', invocation: direct }),
-        Object.freeze({ method: 'draft', invocation: direct }),
       ]),
     }),
   })

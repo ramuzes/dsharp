@@ -42,26 +42,14 @@ export function setServiceFactoryForTests(factory) { serviceFactory = factory }
  */
 export const Config = Schema.object({
   exposeAgentTools: Schema.boolean().default(true)
-    .description('Expose roster_template_save and roster_template_list tools to the model'),
-  // Volatile = live-editable AND persisted (ADR-0005): the Settings section
-  // stages these through the settings mutate path and they apply without a
-  // plugin reload. The AI-draft toggle defaults OFF (user opt-in, 2026-11-23
-  // UX ruling) and the model stays deliberately unset until configured.
-  draftEnabled: Schema.boolean().default(false).volatile()
-    .description('Enable AI-assisted template drafting'),
-  draftModelProvider: Schema.string().default('').volatile()
-    .description('Provider of the configured draft model (empty = unset)'),
-  draftModelId: Schema.string().default('').volatile()
-    .description('Model id of the configured draft model (empty = unset)'),
-  draftReasoningEffort: Schema.string().default('').volatile()
-    .description('Optional reasoning effort of the configured draft model (empty = unset)'),
+    .description('Expose the roster_template_save / roster_template_list authoring tools to the model (roster_spawn is always on)'),
 })
 
 /**
  * Mount the plugin. Stage sequence (status file, engram pattern): apply →
  * wire-ready → (storage-degraded when the host exposes no storageDomain) →
  * service-registered → done → tools-registered (from the tools inject
- * callback, when exposeAgentTools reads true), tools-skipped (false), or
+ * callback; its detail records whether the authoring pair was included), or
  * tools-failed with the error text (a contained registration failure,
  * rethrown) — or wire-failed with the error text, rethrown
  * so a dead mount stays loud rather than silently degrading
@@ -93,14 +81,18 @@ export function apply(ctx, config) {
       // self-registers with ctx and its lifecycle follows the fiber (the
       // chrome-cdp registerStatus / feishu apply construction pattern).
       store = openRosterStore(ctx, status)
-      const factory = serviceFactory ?? ((ctx2, store2) => new AgentRosterService(ctx2, store2, config))
+      const factory = serviceFactory ?? ((ctx2, store2) => new AgentRosterService(ctx2, store2))
       const roster = factory(ctx, store)
       status.write('service-registered')
       status.write('done')
 
-      // ---- Task 5: model-facing tools behind the toggle -------------------
-      // The toggle is structural (non-volatile Config): edits apply after a
-      // plugin reload, not live. 'tools' is injected on purpose — accessing
+      // ---- model-facing tools ---------------------------------------------
+      // `roster_spawn` is ALWAYS registered: the "+" flow injects an
+      // instruction that asks the agent to call it (ADR-0011), so gating it
+      // would break member creation. Only the authoring pair follows the
+      // `exposeAgentTools` toggle, which is structural (non-volatile Config):
+      // edits apply after a plugin reload, not live. 'tools' is injected on
+      // purpose — accessing
       // it on a scope that did not inject it throws in cordis ("cannot get
       // property ... without inject") — the airboard/engram registration
       // pattern (packages/airboard/index.js:245, packages/engram/index.js:122).
@@ -108,8 +100,8 @@ export function apply(ctx, config) {
       // runs the returned disposer at that inject fiber's disposal, so the
       // tools unregister with the plugin even though they outlive this
       // effect body.
-      if (exposeAgentTools) {
-        ctx.inject(['tools'], (toolScope) => {
+      {
+        ctx.inject(['tools', 'subagents'], (toolScope) => {
           // Containment on this entry point (AGENTS.md): a registration
           // failure (duplicate tool name, invalid definition) names its
           // stage with the error text, then rethrows — the status file is
@@ -117,16 +109,14 @@ export function apply(ctx, config) {
           // never sit at `done` over a dead registration (engram
           // index.js:257-259 / airboard index.js:262-265 pattern).
           try {
-            const offTools = registerRosterTools(toolScope, roster)
-            status.write('tools-registered')
+            const offTools = registerRosterTools(toolScope, roster, { store, subagents: toolScope.subagents }, { authoring: exposeAgentTools })
+            status.write('tools-registered', { authoring: exposeAgentTools })
             return () => { offTools() }
           } catch (error) {
             status.write('tools-failed', String(error))
             throw error
           }
         })
-      } else {
-        status.write('tools-skipped')
       }
 
       // Release the opened domain with this fiber (caller-owns-handle,

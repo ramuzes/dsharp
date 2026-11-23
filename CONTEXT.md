@@ -106,7 +106,7 @@ _Avoid_: auto-save, capture-all
 
 ### Role template (角色模板)
 
-A persisted, reusable blueprint for a team member: display name, one-line description, a standing prompt (the role's duties and constraints), and an optional default model preference. Configured once per profile, instantiable in any session.
+A persisted, reusable blueprint for a team member: display name, one-line description, a standing prompt (the role's duties and constraints), and an optional default model preference. It is exactly what the user would otherwise type to the lead agent when asking for that member, configured once per profile and instantiable in any session.
 _Avoid_: agent preset (DSH's own composition mechanism, a different layer), assistant (CherryStudio's term), persona (vague)
 
 ### Roster (成员名册)
@@ -116,10 +116,10 @@ _Avoid_: team (DSH team mode is the per-session coordination flag), library, reg
 
 ### Member spawn (成员生成)
 
-Creating a team member by instantiating a role template (or an ad-hoc custom role typed on the spot) as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. The standing prompt rides as the child's first user message, exactly as a model-driven spawn would carry it.
-_Avoid_: agent creation (that is sessionController's ordinary-session path), preset selection
+Creating a team member by instantiating a role template as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. Creation is agent-driven: the "+" flow injects the template's instruction into the conversation and the lead agent calls the `roster_spawn` tool. The standing prompt rides as the child's first user message (frozen — the model never rewrites it), exactly as a model-driven spawn would carry it.
+_Avoid_: agent creation (that is sessionController's ordinary-session path), preset selection, direct client-side spawn
 
-### Draft session (草稿会话)
+### Member instruction (成员指令)
 
-The dedicated, reusable ordinary session that turns a one-line brief into a full role-template draft; one per workspace, user-inspectable, and the only sanctioned surface for model-assisted template writing. A draft never enters the library until the user reviews and saves it.
-_Avoid_: helper agent, background agent, hidden call
+The exact user message the "+" flow injects into the current conversation: the template's name, description and frozen standing prompt, the optional task, and the instruction to create the member through `roster_spawn`. Previewed before sending and visible in the session log after.
+_Avoid_: system prompt (the child's system prompt comes from its own composition, never from the template), task description (that is only the optional part)

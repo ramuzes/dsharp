@@ -1,62 +1,29 @@
 /**
- * Member spawn and team status: the pure naming/prompt helpers plus the
- * orchestrators the `agentRoster` remote calls (ADR-0008 — members are
- * ordinary subagents started through the subagent runtime, never a parallel
- * mechanism).
+ * Agent-driven member creation (ADR-0011): the `roster_spawn` tool renders a
+ * role template into one ordinary subagent through the subagent runtime.
  *
- * Every host interface below was verified against the dsh source
- * (/home/ramuz/deepseek-harness, AGENTS.md 2b: the source is the single
- * source of truth for in-process consumers):
+ * Why a plugin tool rather than the model's own `subagent` call: DSH limits
+ * explicit child-model selection made through the `subagent` tool to the
+ * parent's current route unless the Host configures an allowlist policy
+ * (packages/subagent/tool-subagent/src/model-selection.ts:167-190,
+ * MODEL_ROUTE_NOT_ALLOWED), and letting the model rewrite the standing prompt
+ * per spawn would reintroduce the drift templates exist to prevent. The tool
+ * therefore owns the deterministic part and the agent loop owns the context.
  *
- * - `sessionController.resolveAgent(sessionId)` returns `{ agent }` or
- *   `{ error: RemoteError<'session/not-found'|...> }`
- *   (packages/api/session-controller/src/agent.ts:87-92). The schedule
- *   precedent rethrows `resolved.error` as-is
- *   (packages/schedule/schedule/src/index.ts:250-257) — followed verbatim.
- * - `subagents.rootOf(caller)` resolves an exact live Agent's subagent tree
- *   root (packages/subagent/subagent/src/index.ts:296-302); ordinary Session
- *   forks lead independent trees, so spawning parents at the ROOT keeps one
- *   tree's members siblings.
- * - `subagents.startActivation(spec)` is host-side only (no Remote create
- *   API — ADR-0008; implementation index.ts:267-292). `SubagentActivationSpec`
- *   (packages/subagent/subagent/src/types.ts:29-46) requires `provider`
- *   (registered backend name; the in-process provider registers under `spawn`
- *   by default — subagent-spawn-in-process/src/index.ts:24-28,58),
- *   `label`, `signal: AbortSignal`, `delivery: 'parent'|'caller'`, and a
- *   `prompt: ContentBlock[]` — the workflow plugin passes text blocks as
- *   `[{ type: 'text', text }]` (packages/workflow/workflow-ptc/src/host.ts:
- *   218-233), the exact shape used here. `agentOptions?: AgentOptions` fields
- *   are `provider`, `model`, `reasoningEffort`, `maxTokens` —
- *   resolveChildAgentOptions merges them over the parent's options
- *   (packages/subagent/subagent/src/child-agent.ts:98-119), so omitting the
- *   member entirely inherits the parent's current route (ADR-0008).
- * - Child-name uniqueness is enforced per creator among the creator's
- *   committed catalog names plus in-flight reservations
- *   (manager.ts reserveName → names.ts SiblingNameReservations.reserve:
- *   `/^[a-z][a-z0-9-]{0,31}$/` other than `lead`, the root's fixed name).
- *   `subagents.listDescendants(rootSessionId)` exposes the committed rows
- *   (index.ts:421-433; entries carry `kind`/`depth`/`path` — control-types.ts
- *   :42-47 + list-children.ts:17-24): depth-1 `path`s are exactly the root's
- *   direct-child names the runtime compares against. A concurrent spawn that
- *   races this listing loses loudly: the runtime's own reservation throws
- *   `DUPLICATE_AGENT_NAME` rather than silently aliasing.
- * - `agentTeams.isEnabled(caller)` reads the Team selection shared by the
- *   caller's subagent tree (packages/team/agent-team/src/index.ts:93-97); it
- *   is legal from a descendant (it roots internally), while enabling requires
- *   the root (TEAM_LEAD_REQUIRED) — which is why `canEnable` is
- *   `agentTeams present && isRoot`.
+ * Mechanism (unchanged from ADR-0008): resolve the caller's tree root via the
+ * subagents runtime (`rootOf`, packages/subagent/subagent/src/index.ts:300),
+ * allocate a free sibling name, then `startActivation` with parent delivery —
+ * the identical path the `subagent` tool uses. `prompt` becomes the child's
+ * FIRST USER MESSAGE, not its system prompt (manager.ts:406-412); the system
+ * prompt comes from the child's own composition. The render is frozen: the
+ * template's standing prompt is passed verbatim.
  */
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import { readString } from './wire.js'
 import { ModelRef } from './store.js'
+import { readString } from './wire.js'
 
-/**
- * The subagent backend members spawn on. The in-process provider registers
- * under `spawn` unless its host row renames it (subagent-spawn-in-process
- * Config.providerName, default `spawn`); an unavailable/replaced backend
- * fails `startActivation` loudly (PROVIDER_CHANGED) rather than degrading.
- */
-export const SPAWN_PROVIDER = 'spawn'
+/** In-process spawn provider name (subagent-spawn-in-process default). */
+const SPAWN_PROVIDER = 'spawn'
 
 /** The subagent tree root's fixed, unallocatable name (names.ts ROOT_AGENT_NAME). */
 const ROOT_AGENT_NAME = 'lead'
@@ -88,7 +55,7 @@ export function slugify(name) {
  * name, which no child may take — becomes `lead-member`. A suffixed variant
  * is length-fitted so every emitted name stays within the runtime's 1–32
  * character name grammar (names.ts NAME_PATTERN) even when the base fills it.
- * @param {unknown} base - requested base (display name or memberName).
+ * @param {unknown} base - requested base (template display name).
  * @param {string[]} taken - names already used among the creator's children.
  * @returns {string} a name absent from `taken`.
  */
@@ -110,14 +77,16 @@ export function allocateName(base, taken = []) {
  * Assemble the child's initial prompt: the standing instructions alone, or
  * the standing instructions plus the kickoff task under the exact separator
  * contract pinned by the plan (verbatim).
- * @param {string} standing - the template's or custom member's standing prompt.
+ * @param {string} standing - the template's standing prompt.
  * @param {string} [task] - optional task assigned by the user at spawn time.
  * @returns {string} `standing`, or `${standing}\n\n---\n\nInitial task
  *   (assigned by the user at spawn time):\n${task}`.
  */
 export function assembleSpawnPrompt(standing, task) {
   const base = readString(standing)
-  const kickoff = readString(task)
+  // Trim: the task now arrives from a model's tool call, which routinely
+  // pads arguments; the child should not inherit stray whitespace.
+  const kickoff = readString(task).trim()
   return kickoff === ''
     ? base
     : `${base}\n\n---\n\nInitial task (assigned by the user at spawn time):\n${kickoff}`
@@ -135,119 +104,98 @@ export function assembleSpawnPrompt(standing, task) {
 const service = (scope, deps, name) => (deps?.[name] !== undefined ? deps[name] : scope?.get?.(name))
 
 /**
- * Spawn one roster member into the current session's subagent tree (ADR-0008).
+ * Resolve a template by record id or by EXACT display name — the two forms a
+ * model may pass (it sees ids from `roster_template_list` and names from the
+ * injected instruction).
+ * @param {{ all(): Promise<Array<{ id: string, name: string }>>, byId(id: string): Promise<object | undefined> }} store
+ * @param {unknown} reference - id or exact name.
+ * @returns {Promise<object>} the matching template record.
+ * @throws {RemoteError} `roster/bad-request` (empty), `roster/not-found`,
+ *   `roster/ambiguous-name`.
+ */
+export async function resolveTemplateRef(store, reference) {
+  const ref = readString(reference)
+  if (ref === '') {
+    throw new RemoteError('roster/bad-request', 'template is required / template 不能为空', { field: 'template' })
+  }
+  const byId = await store.byId(ref)
+  if (byId !== undefined) return byId
+  const matches = (await store.all()).filter((template) => template.name === ref)
+  if (matches.length === 1) return matches[0]
+  if (matches.length > 1) {
+    throw new RemoteError('roster/ambiguous-name',
+      `${matches.length} templates are named ${JSON.stringify(ref)}; pass the template id instead / 有 ${matches.length} 个同名模板，请改用模板 id`,
+      { name: ref, ids: matches.map((template) => template.id) })
+  }
+  throw new RemoteError('roster/not-found', `Template ${JSON.stringify(ref)} not found / 未找到模板 ${JSON.stringify(ref)}`, { template: ref })
+}
+
+/**
+ * Spawn one roster member for the CALLING agent (ADR-0011): root the caller's
+ * tree, allocate a free sibling name, and hand the rendered template to
+ * `subagents.startActivation` with parent delivery.
  *
- * Resolution order mirrors the remote contract: validate input shapes
- * (`roster/bad-request`), load the template (`roster/not-found`), resolve the
- * session's live Agent, root it, allocate a free sibling name, and hand the
- * rendered member to `subagents.startActivation` with parent delivery — the
- * same semantics a model-driven spawn produces. The activation's `result`
- * promise is owned by the runtime for parent delivery; the manager itself
- * acknowledges it (manager.ts:897 `void activation.result.promise.catch`),
+ * The child's model is the template's `defaultModel` when present, otherwise
+ * omitted so the child inherits the parent's current route. The activation's
+ * `result` promise is owned by the runtime for parent delivery; the manager
+ * acknowledges it itself (manager.ts:897 `void activation.result.promise.catch`),
  * so not awaiting it here cannot dangle an unhandled rejection.
  *
  * @param {object} scope - plugin ctx; only its get() name lookup is touched.
- * @param {{ store: object, sessionController?: object, subagents?: object, agentTeams?: object }} deps
- *   - the roster store (required) and optional host services; `agentTeams` is
- *   part of the single service bag but is not consulted by the spawn path.
- * @param {{ sessionId: string, templateId?: string, custom?: { name: string, description: string, prompt: string }, memberName?: string, model?: import('./store.js').ModelRef | null, task?: string }} input
- * @returns {Promise<{ name: string, childSessionId?: string }>} the
- *   activation's model-facing name and (for session-backed children) its
- *   durable child session id.
- * @throws {RemoteError} `roster/bad-request`, `roster/not-found`,
- *   `roster/no-session-controller`, `roster/no-subagents`; the session's own
- *   typed error when the session cannot be resolved; the runtime's typed
- *   SubagentError when the activation is rejected.
+ * @param {{ subagents?: object }} deps - optional host services (test seam/DI).
+ * @param {{ agent?: object, template: object, task?: unknown }} input - the
+ *   calling agent, the resolved template record, and the optional task.
+ * @returns {Promise<{ name: string, childSessionId?: string, model: object | null }>}
+ *   the activation's model-facing name, the child session id when exposed,
+ *   and the applied model (null = inherited).
+ * @throws {RemoteError} `roster/no-subagents`, `roster/bad-request`.
+ * @throws {Error} when `input.agent` is absent (tool misuse, not a data error).
  */
-export async function spawnFromRoster(scope, deps, input) {
-  const store = deps?.store
-  if (store === undefined) throw new Error('spawnFromRoster: the roster store is required')
-  const sessionController = service(scope, deps, 'sessionController')
+export async function spawnFromTemplate(scope, deps, input) {
   const subagents = service(scope, deps, 'subagents')
-  if (sessionController === undefined) {
-    throw new RemoteError('roster/no-session-controller',
-      'sessionController is unavailable — cannot resolve the session to spawn into / sessionController 不可用，无法解析要加入的会话')
-  }
   if (subagents === undefined) {
     throw new RemoteError('roster/no-subagents',
-      'subagents runtime is unavailable — cannot spawn team members / subagents 运行时不可用，无法创建成员')
+      'subagents runtime is unavailable — cannot create team members / subagents 运行时不可用，无法创建成员')
+  }
+  const agent = input?.agent
+  if (agent === undefined || agent === null) throw new Error('roster_spawn requires a calling agent')
+  const template = input?.template
+  if (template === undefined || template === null) {
+    throw new RemoteError('roster/bad-request', 'template is required / template 不能为空', { field: 'template' })
   }
 
-  const sessionId = readString(input?.sessionId)
-  if (sessionId === '') {
-    throw new RemoteError('roster/bad-request', 'sessionId is required / sessionId 不能为空', { field: 'sessionId' })
-  }
-  const templateId = readString(input?.templateId)
-  const custom = input?.custom
-  // custom xor templateId — exactly one member source.
-  if ((templateId !== '') === (custom !== undefined)) {
-    throw new RemoteError('roster/bad-request',
-      'exactly one of templateId or custom is required / templateId 与 custom 必须二选一', { field: 'templateId' })
-  }
-
-  /** @type {import('zod').z.infer<typeof import('./store.js').RoleTemplate> | undefined} */
-  let template = undefined
-  /** @type {{ name: string, prompt: string }} */
-  let source
-  if (templateId !== '') {
-    template = await store.byId(templateId)
-    if (template === undefined) {
-      throw new RemoteError('roster/not-found', `Template ${templateId} not found / 未找到模板 ${templateId}`, { id: templateId })
-    }
-    source = { name: template.name, prompt: template.prompt }
-  } else {
-    const name = readString(custom?.name)
-    const prompt = readString(custom?.prompt)
-    if (name === '' || prompt === '') {
-      throw new RemoteError('roster/bad-request',
-        'custom member requires a non-empty name and prompt / custom 成员需要非空的 name 与 prompt', { field: 'custom' })
-    }
-    source = { name, prompt }
-  }
-
-  // Model precedence: an explicit input (including null, which clears) beats
-  // the template's defaultModel; none → omit agentOptions entirely so the
-  // child inherits the parent's current route (ADR-0008).
-  const requestedModel = input?.model === undefined ? template?.defaultModel ?? null : input.model
+  // The template's model, validated defensively (stored data can predate a
+  // schema change). An invalid stored ref degrades to "inherit" — a spawn
+  // must not fail because a model was retired.
   /** @type {{ provider: string, model: string, reasoningEffort?: string } | null} */
   let model = null
-  if (requestedModel !== null && requestedModel !== undefined) {
-    const parsed = ModelRef.safeParse(requestedModel)
-    if (!parsed.success) {
-      const issues = parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
-      throw new RemoteError('roster/bad-request',
-        `model rejected / 模型不合法: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`, { issues })
-    }
-    model = parsed.data
+  if (template.defaultModel !== null && template.defaultModel !== undefined) {
+    const parsed = ModelRef.safeParse(template.defaultModel)
+    // Empty provider/model strings are schema-legal but not a usable route;
+    // treating them as a selection would send the child a broken route.
+    if (parsed.success && parsed.data.provider !== '' && parsed.data.model !== '') model = parsed.data
   }
 
-  // Resolve the live Agent, then the tree root it belongs to. schedule
-  // precedent: a typed session error rethrows as-is (schedule/src/index.ts:
-  // 250-257).
-  const resolved = await sessionController.resolveAgent(sessionId)
-  if ('error' in resolved) throw resolved.error
-  const root = subagents.rootOf(resolved.agent)
-
+  const root = subagents.rootOf(agent)
   // Free-name allocation against the root's committed direct-child names
   // (listDescendants depth-1 paths — the exact sibling set the runtime's own
-  // reservation checks; see file header).
+  // reservation checks; the list is advisory, the runtime reservation is
+  // authoritative and fails loudly on a race).
   const descendants = await subagents.listDescendants(root.id)
   const taken = descendants
     .filter((entry) => entry?.kind === 'child' && entry.depth === 1 && typeof entry.path === 'string')
     .map((entry) => entry.path)
-  const memberName = readString(input?.memberName)
-  const name = allocateName(memberName !== '' ? memberName : source.name, taken)
+  const name = allocateName(template.name, taken)
 
   // `signal` is a required spec member (types.ts:43) owning cancellation
-  // BEFORE publication; the Remote spawn call has no cancellation channel, so
-  // each spawn carries its own never-fired signal — post-publication
-  // cancellation belongs to the activation's dispose, owned by the runtime.
-  const signal = new AbortController().signal
-  const prompt = assembleSpawnPrompt(source.prompt, input?.task)
+  // BEFORE publication. A tool call has a caller signal; when it fires, the
+  // spawn is abandoned before publication.
+  const signal = input?.signal instanceof AbortSignal ? input.signal : new AbortController().signal
+  const prompt = assembleSpawnPrompt(template.prompt, input?.task)
   const activation = await subagents.startActivation({
     provider: SPAWN_PROVIDER,
     parent: root,
-    label: source.name,
+    label: readString(template.name),
     name,
     prompt: [{ type: 'text', text: prompt }],
     ...(model !== null
@@ -267,44 +215,6 @@ export async function spawnFromRoster(scope, deps, input) {
   return {
     name: activation.name,
     ...(activation.childId !== undefined ? { childSessionId: activation.childId } : {}),
+    model,
   }
-}
-
-/**
- * Report the Team status of one session: whether Team mode is enabled for its
- * subagent tree, whether the session is that tree's root, and whether the
- * caller may therefore enable Team mode (`agentTeams present && isRoot` —
- * enabling from a descendant is impossible by construction, agent-team
- * TEAM_LEAD_REQUIRED).
- *
- * @param {object} scope - plugin ctx; only its get() name lookup is touched.
- * @param {{ sessionController?: object, subagents?: object, agentTeams?: object }} deps
- *   - optional host services (test seam / DI); each falls back to the scope.
- * @param {{ sessionId: string }} input
- * @returns {Promise<{ teamMode: boolean, isRoot: boolean, canEnable: boolean }>}
- * @throws {RemoteError} `roster/bad-request`, `roster/no-session-controller`,
- *   `roster/no-subagents`, or the session's own typed resolution error.
- */
-export async function teamStatusOf(scope, deps, input) {
-  const sessionController = service(scope, deps, 'sessionController')
-  const subagents = service(scope, deps, 'subagents')
-  if (sessionController === undefined) {
-    throw new RemoteError('roster/no-session-controller',
-      'sessionController is unavailable — cannot resolve the session / sessionController 不可用，无法解析会话')
-  }
-  if (subagents === undefined) {
-    throw new RemoteError('roster/no-subagents',
-      'subagents runtime is unavailable — cannot inspect the session tree / subagents 运行时不可用，无法检查会话树')
-  }
-  const sessionId = readString(input?.sessionId)
-  if (sessionId === '') {
-    throw new RemoteError('roster/bad-request', 'sessionId is required / sessionId 不能为空', { field: 'sessionId' })
-  }
-  const resolved = await sessionController.resolveAgent(sessionId)
-  if ('error' in resolved) throw resolved.error
-  const root = subagents.rootOf(resolved.agent)
-  const isRoot = root === resolved.agent
-  const agentTeams = service(scope, deps, 'agentTeams')
-  const teamMode = agentTeams === undefined ? false : agentTeams.isEnabled(resolved.agent) === true
-  return { teamMode, isRoot, canEnable: agentTeams !== undefined && isRoot }
 }

@@ -1,17 +1,18 @@
 /**
- * Browser-half contract tests.
+ * Client-half specs (ADR-0011 shape): the "+" modal composes one instruction
+ * from a role template and injects it into the current session through the
+ * composer-equivalent path; the Settings section manages templates; the plugin
+ * itself spawns nothing.
  *
- * client.js is one self-contained script in the client module system's
- * factory format, so the suite boots it against a stub __ModuleLoader__,
- * feeds the factory a stub require (fake React + the primitives subset the
- * plugin uses — mirroring the real export set), and exercises the returned
- * cordis plugin: its registration surface against a STRICT ctx double (only
- * the injected services resolve; anything else throws, as cordis does), and
- * the spawn modal's data flow through a tiny hook harness with a fake
- * `remote.agentRoster` namespace.
+ * Harness notes: real React + react-test-renderer (per-fiber hook state for the
+ * conditional dropdowns — the hand-written fake could not model it), fakes that
+ * mirror real strictness (the Remote mount enforces strict codecs; the ctx
+ * double throws on non-injected access), no DOM (so portaled menus render
+ * inline and `document` is absent except where a test installs a double).
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 // Real React + the DOM-less test renderer: the plugin's hook-heavy nested
 // tree (conditional ModelMenus, effects, portals) exceeded what a hand
 // fake could model faithfully — real fiber semantics end that class of bug.
@@ -20,9 +21,15 @@ import TestRenderer, { act } from 'react-test-renderer'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-/** Capture the load() registration the script performs on import. */
+/** Everything the factory's module-loader call hands back. */
 const loaded = []
-globalThis.window = { __ModuleLoader__: { load: (entry) => loaded.push(entry) } }
+globalThis.window = {
+  __ModuleLoader__: {
+    load: (module) => { loaded.push(module) },
+  },
+}
+
+// Import LAST: the module calls window.__ModuleLoader__.load at evaluation.
 await import('../client.js')
 
 /** Stand-in for the shared Modal primitive (ui-primitives index.ts:51):
@@ -93,29 +100,56 @@ function createHarness() {
   }
 }
 
-/** All string children of a vdom subtree, in order. */
+/** All string children under a node, including prop-borne trees (Modal footer). */
 function texts(node, out = []) {
   if (node === null || node === undefined) return out
-  if (typeof node !== 'object') { out.push(String(node)); return out }
-  for (const child of node.children ?? []) texts(child, out)
+  if (typeof node === 'string') { out.push(node); return out }
+  if (typeof node === 'number') { out.push(String(node)); return out }
+  if (Array.isArray(node)) { for (const child of node) texts(child, out); return out }
+  if (typeof node !== 'object') return out
+  for (const value of Object.values(node.props ?? {})) {
+    if (typeof value === 'string' || Array.isArray(value) || (typeof value === 'object' && value !== null && value.type !== undefined)) {
+      texts(value, out)
+    }
+  }
+  texts(node.children, out)
   return out
 }
 
-/** First node in the subtree satisfying the predicate. */
+/** Depth-first find of the first node matching predicate. */
 function find(node, predicate) {
   if (node === null || node === undefined || typeof node !== 'object') return undefined
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = find(child, predicate)
+      if (hit !== undefined) return hit
+    }
+    return undefined
+  }
   if (predicate(node)) return node
-  for (const child of node.children ?? []) {
-    const hit = find(child, predicate)
-    if (hit !== undefined) return hit
+  const nested = find(node.children, predicate)
+  if (nested !== undefined) return nested
+  for (const value of Object.values(node.props ?? {})) {
+    if (value !== null && typeof value === 'object') {
+      const hit = find(value, predicate)
+      if (hit !== undefined) return hit
+    }
   }
   return undefined
 }
 
+/** Depth-first collect of every node matching predicate. */
 function findAll(node, predicate, out = []) {
   if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) {
+    for (const child of node) findAll(child, predicate, out)
+    return out
+  }
   if (predicate(node)) out.push(node)
-  for (const child of node.children ?? []) findAll(child, predicate, out)
+  findAll(node.children, predicate, out)
+  for (const value of Object.values(node.props ?? {})) {
+    if (value !== null && typeof value === 'object') findAll(value, predicate, out)
+  }
   return out
 }
 
@@ -129,88 +163,67 @@ function inModal(modal, predicate) {
 
 /**
  * A translating t that prefixes keys and, unlike airboard's, SURFACES params
- * — `t:key(k=v,…)` — so tests can prove a value (the spawned member's name)
- * reached the interpolating call rather than being dropped by the stub.
+ * — `t:key(k=v,…)` — so tests can prove a value reached the interpolating call.
  */
 function makeT() {
-  return (key, params) => `t:${key}` + (params === undefined || Object.keys(params).length === 0
-    ? ''
-    : `(${Object.entries(params).map(([name, value]) => `${name}=${String(value)}`).join(',')})`)
+  return (key, params = {}) => {
+    const pairs = Object.entries(params)
+    return pairs.length === 0 ? `t:${key}` : `t:${key}(${pairs.map(([k, v]) => `${k}=${v}`).join(',')})`
+  }
 }
 
-/** Flat key list of a locale dictionary, for zh/en parity. */
+/** Every leaf key of a locale object. */
 function keys(value, prefix = '') {
-  return Object.entries(value).flatMap(([key, inner]) => (
-    typeof inner === 'object' && inner !== null ? keys(inner, `${prefix}${key}.`) : [`${prefix}${key}`]
-  )).sort()
-}
-
-/** The {param} names a dictionary value interpolates, sorted. */
-function placeholders(value) {
-  return [...String(value).matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort()
+  const out = []
+  for (const [key, child] of Object.entries(value)) {
+    const path = prefix === '' ? key : `${prefix}.${key}`
+    if (child !== null && typeof child === 'object') out.push(...keys(child, path))
+    else out.push(path)
+  }
+  return out
 }
 
 /**
- * A cordis ctx double recording every registration the plugin makes, and
- * STRICT about services: only names the plugin declares in its inject list
- * resolve (commandUi / locale / slots / remote); any other service property
- * access throws, exactly like cordis ("cannot get property ... without
- * inject" — AGENTS.md fakes-must-replicate-real-strictness rule).
- * `roster` installs a fake `remote.agentRoster` namespace that ctx.get()
- * hands out once $mount runs (null / undefined = namespace absent).
- * `extras` installs additional client Remote faces under
- * `remote.<name>` (session, agentTeams, pluginInventory, pluginManager) the
- * way the real boot graph mounts them; they answer RemoteResult shapes —
- * `{ ok: true, value }` / `{ ok: false, error }` — mirroring the generated
- * faces' actual wire contract (ui-agent-team browser-plugin.client.spec.ts
- * :100-106), never a more forgiving shape.
+ * The fake ctx: inject-list strictness (unknown property access throws, the
+ * AGENTS.md rule), a `$mount` that mirrors the REAL gateway validation, and a
+ * `sessions` fake recording the composer-equivalent injection.
  */
-function makeCtx({ roster, extras, settings } = {}) {
-  const recorded = { commands: [], injects: [], registers: [], namespaces: [], mounts: [], configKeys: [] }
+function makeCtx({ roster, extras, sessions: sessionsConfig } = {}) {
+  const recorded = { commands: [], injects: [], registers: [], namespaces: [], mounts: [] }
   const remoteNamespaces = {}
   for (const [name, face] of Object.entries(extras ?? {})) remoteNamespaces[`remote.${name}`] = face
-  // The fake ConfigForm mirrors the real contract (config-form.ts:104-160):
-  // getSnapshot/subscribe for reads, queued set/unset/mutate for writes,
-  // answered as RemoteResult. Values are plain JSON like the real mirror,
-  // and accepted writes notify subscribers (mirror.acceptView → store →
-  // listeners) so mounted readers re-read — a silent fake here made
-  // disabled-state assertions pass for the wrong reason.
-  const formValues = {
-    draftEnabled: false,
-    draftModelProvider: '',
-    draftModelId: '',
-    draftReasoningEffort: '',
-    ...(settings ?? {}),
-  }
-  const listeners = new Set()
-  const notify = () => { for (const listener of listeners) listener() }
-  const form = {
-    writes: { sets: [], unsets: [], mutations: [] },
-    getSnapshot: () => ({ status: 'ready', revision: 0, value: formValues }),
-    subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
-    set: async (field, value) => { form.writes.sets.push([field, value]); formValues[field] = value; notify(); return true },
-    unset: async (field) => { form.writes.unsets.push(field); delete formValues[field]; notify(); return true },
-    mutate: async (ops) => {
-      form.writes.mutations.push(ops)
-      for (const op of ops) if (op.op === 'set') formValues[op.path[0]] = op.value
-      notify()
-      return true
+  // The sessions fake mirrors the real contract: using(target, options,
+  // operation) hands back a reference whose binding.session.prompt(content,
+  // mode) is the composer-equivalent admission. Both hops are recorded.
+  const sessionCalls = []
+  const sessions = {
+    calls: sessionCalls,
+    fail: sessionsConfig?.fail ?? null,
+    promptResult: sessionsConfig?.promptResult ?? { ok: true, value: { accepted: true } },
+    promptError: sessionsConfig?.promptError ?? null,
+    using: async (target, options, operation) => {
+      sessionCalls.push({ target, options })
+      if (sessions.fail !== null) throw sessions.fail
+      return operation({
+        binding: {
+          session: {
+            prompt: async (content, mode) => {
+              sessionCalls.push({ content, mode })
+              if (sessions.promptError !== null) throw sessions.promptError
+              return sessions.promptResult
+            },
+          },
+        },
+      })
     },
   }
   const services = {
-    // The settings namespace is the LOADER ROW id 'agent-roster'
-    // (settings/src/index.ts:315,327 ns: entry.options.id) — NOT the
-    // package name. Strict: any other key resolves undefined, exactly
-    // like the real configForms (the 2026-11-23 incident passed because
-    // an earlier fake accepted the package name).
-    configForms: {
-      get: (id) => { recorded.configKeys.push(id); return id === 'agent-roster' ? form : undefined },
-    },
     commandUi: { register: (contribution) => { recorded.commands.push(contribution); return () => {} } },
     locale: {
       bind: () => makeT(),
       register: (ns, dicts) => { recorded.namespaces.push({ ns, dicts }) },
     },
+    sessions,
     slots: {
       inject: (name, begin) => { recorded.injects.push(name); return begin() },
       register: (declaration, Component) => { recorded.registers.push({ declaration, Component }); return () => {} },
@@ -219,12 +232,9 @@ function makeCtx({ roster, extras, settings } = {}) {
       $mount: (contribution) => {
         // Mirror the REAL gateway validation, not a more forgiving one
         // (AGENTS.md §1): dsh packages/api/gateway/src/client/index.ts
-        // validateContribution (:283-330) — requireStrictInputs (:299-303 →
-        // requireStrictCodec :341-346) rejects any parameter whose codec
-        // mode is not 'strict', and duplicate (namespace, method) pairs
-        // reject. The 2026-11-23 live incident: src-json parameter codecs
-        // passed this fake and died at real mount, leaving the namespace
-        // silently absent. The fake must reject first.
+        // validateContribution (:283-330) — requireStrictInputs rejects any
+        // parameter whose codec mode is not 'strict', and duplicate
+        // (namespace, method) pairs reject.
         const seen = new Set()
         for (const descriptor of contribution.descriptors) {
           const endpoint = `${descriptor.namespace}/${descriptor.method}`
@@ -248,12 +258,6 @@ function makeCtx({ roster, extras, settings } = {}) {
   }
   const ctx = new Proxy({
     effect(fn) { return fn() ?? undefined },
-    // Real cordis semantics: get(name) resolves any service the plugin
-    // injected. The namespaces the $mount installs land in remoteNamespaces;
-    // injected client services (configForms) resolve from the services
-    // table — returning undefined for configForms made the settings look
-    // permanently 'loading' and let disabled-state tests pass for the
-    // wrong reason.
     get(name) { return remoteNamespaces[name] ?? services[name] },
   }, {
     get(target, prop) {
@@ -263,7 +267,7 @@ function makeCtx({ roster, extras, settings } = {}) {
       throw new Error(`cannot get property ${String(prop)} without inject`)
     },
   })
-  return [ctx, recorded, form]
+  return [ctx, recorded, sessions]
 }
 
 /** Install a document double around a callback. */
@@ -280,7 +284,7 @@ function withDocument(double, run) {
 
 /** Boot the browser plugin against a fresh harness. */
 function bootPlugin() {
-  const harness = createHarness({ leaves: [Modal, IconPlusOutlineRegular] })
+  const harness = createHarness()
   const require = (specifier) => {
     if (specifier === 'react') return harness.React
     if (specifier === 'react-dom') {
@@ -300,16 +304,16 @@ function bootPlugin() {
   return { harness, plugin: loaded[0].factory(require) }
 }
 
-/** Apply the plugin against a strict ctx and return the harness, the recordings, and the style node. */
-function applyPlugin({ roster, extras, settings } = {}) {
+/** Apply the plugin against a strict ctx and return the harness, recordings, and style node. */
+function applyPlugin({ roster, extras, sessions } = {}) {
   const { harness, plugin } = bootPlugin()
-  const [ctx, recorded, form] = makeCtx({ roster, extras, settings })
+  const [ctx, recorded, sessionsFake] = makeCtx({ roster, extras, sessions })
   const style = { dataset: {}, textContent: '', remove() {} }
   withDocument(
     { createElement: () => style, head: { append() {} } },
     () => plugin.apply(ctx),
   )
-  return { harness, recorded, style, form }
+  return { harness, recorded, style, sessions: sessionsFake }
 }
 
 /** Two templates the fake roster serves. */
@@ -318,298 +322,68 @@ const TEMPLATES = [
   { id: 'tpl-reviewer', name: 'Reviewer', description: 'Reviews code diffs', prompt: 'You review diffs critically.', defaultModel: null, createdAt: '2026-11-21T08:00:00.000Z', updatedAt: '2026-11-21T08:00:00.000Z' },
 ]
 
+/** The healthy roster face: CRUD only — the plugin's whole remote surface. */
+function healthyRoster(overrides = {}) {
+  const saved = []
+  const deleted = []
+  const face = {
+    saved,
+    deleted,
+    listTemplates: async () => ({ ok: true, value: TEMPLATES }),
+    saveTemplate: async (input) => {
+      saved.push(input)
+      return { ok: true, value: { ...TEMPLATES[0], ...input, id: input.id ?? 'tpl-new' } }
+    },
+    deleteTemplate: async (id) => { deleted.push(id); return { ok: true, value: { deleted: true } } },
+    ...overrides,
+  }
+  return face
+}
+
 /**
  * Boot, apply, mount the overlay seat, and open the modal through the
- * registered command's run(session) — the exact production path. Returns a
- * view over the seat's vdom (vdom + interact) plus the fake roster's
- * recorded spawn calls. `roster: null` leaves the remote namespace absent;
- * `extras` passes client Remote faces through to the ctx double;
- * `useProjection` installs a fake standard-props projection hook on the
- * seat (the plain-function shape ui-agent-team's team-mode.client.spec.tsx
- * :20 fakes; omitted = a host whose seat props predate the standard).
+ * registered command's run(session) — the exact production path.
+ * `roster: null` leaves the remote namespace absent.
  */
-async function openModal({ roster, extras, settings } = {}) {
-  const spawned = []
-  const rosterFake = roster === undefined
-    ? {
-      listTemplates: async () => ({ ok: true, value: TEMPLATES }),
-      spawnMember: async (input) => { spawned.push(input); return { ok: true, value: { name: 'spawned-member' } } },
-      // Healthy team: Team mode already on → the modal renders no banner.
-      teamStatus: async () => ({ ok: true, value: { teamMode: true, isRoot: true, canEnable: true } }),
-    }
-    : roster
-  // AI drafting defaults to ON with a configured model so the modal's draft
-  // flows exercise their happy path; gating tests pass their own settings.
-  const withDraft = { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'chat', ...(settings ?? {}) }
-  const { harness, recorded, form } = applyPlugin({ roster: rosterFake, extras, settings: withDraft })
+async function openModal({ roster, extras, sessions } = {}) {
+  const rosterFake = roster === undefined ? healthyRoster() : roster
+  const { harness, recorded, sessions: sessionsFake } = applyPlugin({ roster: rosterFake, extras, sessions })
   const seat = recorded.registers.find(({ declaration }) => declaration.name === 'conversation.input.overlay')
   assert.ok(seat, 'the overlay seat is registered')
-  const props = {
-    t: makeT(),
-    ...seat.declaration.inject('sess-1'),
-  }
-  const view = { vdom: undefined, spawned, harness, form }
+  const props = { t: makeT(), ...seat.declaration.inject('sess-1') }
+  const view = { vdom: undefined, harness, sessions: sessionsFake, roster: rosterFake }
   const render = () => { view.vdom = harness.render(seat.Component, props) }
   render()
   await harness.settle()
   render()
-  /** Apply a gesture, let its promises settle, and re-render into view.vdom. */
   view.interact = async (gesture) => {
     if (gesture !== undefined) gesture()
     await harness.settle()
     render()
-    return view.vdom
   }
   recorded.commands[0].ui.run({ sessionId: 'sess-1' })
   await view.interact()
   return view
 }
 
-test('client.js registers one module named dsh-agent-roster in the factory format', () => {
-  assert.equal(loaded.length, 1)
-  assert.equal(loaded[0].id, 'dsh-agent-roster')
-  assert.equal(typeof loaded[0].factory, 'function')
-})
-
-test('the factory returns a plugin injecting the documented services only', () => {
-  const { plugin } = bootPlugin()
-  assert.deepEqual(plugin.inject, ['commandUi', 'configForms', 'locale', 'slots', 'remote'])
-  assert.equal(typeof plugin.apply, 'function')
-})
-
-test('boots and applies with an inject-only scope, registering command, seat, dictionaries, and scoped styles', () => {
-  const { recorded, style } = applyPlugin()
-  // Dictionaries: one namespace.
-  assert.equal(recorded.namespaces.length, 1)
-  assert.equal(recorded.namespaces[0].ns, 'agent-roster')
-  // One commandUi contribution with kind action and localized copy.
-  assert.equal(recorded.commands.length, 1)
-  const command = recorded.commands[0]
-  assert.equal(command.name, 'add-agent-member')
-  assert.equal(command.ui.kind, 'action')
-  assert.equal(typeof command.ui.run, 'function')
-  assert.equal(typeof command.icon, 'function')
-  assert.equal(command.available({ sessionId: 'sess-1' }), true)
-  assert.equal(command.label(), 't:command.label')
-  assert.equal(command.description(), 't:command.description')
-  // One conversation.input.overlay seat (the ui-message-feedback placement).
-  assert.ok(recorded.injects.includes('conversation.input.overlay'))
-  const seat = recorded.registers.find(({ declaration }) => declaration.name === 'conversation.input.overlay')
-  assert.ok(seat, 'the overlay seat is registered')
-  assert.equal(seat.declaration.id, 'roster-modal')
-  assert.equal(seat.declaration.locale, 'agent-roster')
-  assert.equal(typeof seat.declaration.inject, 'function')
-  assert.equal(typeof seat.Component, 'function')
-  // Styles: injected once, scoped by attribute.
-  assert.match(style.textContent, /\[data-agent-roster/)
-})
-
-test('locale dictionaries have zh/en key parity and interpolate {param}', () => {
-  const { recorded } = applyPlugin()
-  const { dicts } = recorded.namespaces[0]
-  assert.deepEqual(keys(dicts.zh), keys(dicts.en))
-  assert.ok(keys(dicts.zh).length >= 20)
-  // Every value's {placeholder} set matches across languages.
-  for (const [key, value] of Object.entries(dicts.zh)) {
-    assert.deepEqual(placeholders(value), placeholders(dicts.en[key]), key)
+/** Render just the Settings section (its own registration seat). */
+async function mountSection({ roster, extras } = {}) {
+  const rosterFake = roster === undefined ? healthyRoster() : roster
+  const { harness, recorded } = applyPlugin({ roster: rosterFake, extras })
+  const entry = recorded.registers.find(({ declaration }) => declaration.name === 'settings.section')
+  assert.ok(entry, 'the settings.section entry is registered')
+  const view = { vdom: undefined, harness, roster: rosterFake }
+  const props = { id: 'agent-roster', close: () => {}, t: makeT(), ...entry.declaration.inject?.('agent-roster') }
+  const render = () => { view.vdom = harness.render(entry.Component, props) }
+  render()
+  await harness.settle()
+  render()
+  view.interact = async (gesture) => {
+    if (gesture !== undefined) gesture()
+    await harness.settle()
+    render()
   }
-  // The success banner interpolates the spawned member's name.
-  assert.deepEqual(placeholders(dicts.zh['spawn.success']), ['name'])
-})
-
-test('apply mounts the agentRoster remote namespace with all six method descriptors', () => {
-  const { recorded } = applyPlugin()
-  assert.equal(recorded.mounts.length, 1)
-  const contribution = recorded.mounts[0]
-  assert.equal(contribution.package, 'dsh-agent-roster')
-  const byMethod = new Map(contribution.descriptors.map((descriptor) => [descriptor.method, descriptor]))
-  assert.deepEqual([...byMethod.keys()].sort(),
-    ['deleteTemplate', 'draft', 'listTemplates', 'saveTemplate', 'spawnMember', 'teamStatus'])
-  for (const descriptor of contribution.descriptors) {
-    assert.equal(descriptor.id, `dsh-agent-roster#agentRoster/${descriptor.method}`)
-    assert.equal(descriptor.service, 'agentRoster')
-    assert.equal(descriptor.namespace, 'agentRoster')
-    assert.deepEqual(descriptor.invocation, { kind: 'direct' })
-    assert.deepEqual(descriptor.result, { mode: 'src-json' })
-  }
-  // The host signatures (lib/roster-service.js): object-input methods carry
-  // their input parameter; deleteTemplate the id string; listTemplates none.
-  // Every parameterized method carries the ONE frozen strict codec (the
-  // src-json parameter codec was the 2026-11-23 live-mount failure; strict
-  // is the gateway's requirement and the fake $mount now enforces it).
-  const strictCodecs = new Set()
-  for (const descriptor of contribution.descriptors) {
-    for (const parameter of descriptor.parameters) {
-      assert.equal(parameter.codec.mode, 'strict')
-      assert.equal(parameter.codec.typeSymbol, '@local/dsh-agent-roster/json-value')
-      assert.equal(typeof parameter.codec.create, 'function')
-      strictCodecs.add(parameter.codec)
-    }
-  }
-  assert.equal(strictCodecs.size, 1, 'one shared frozen codec instance')
-  const inputParameter = (descriptor) => [{ name: 'input', wire: 'input', source: 'json', codec: descriptor.parameters[0].codec }]
-  assert.deepEqual(byMethod.get('listTemplates').parameters, [])
-  assert.deepEqual(byMethod.get('saveTemplate').parameters, inputParameter(byMethod.get('saveTemplate')))
-  assert.deepEqual(byMethod.get('deleteTemplate').parameters,
-    [{ name: 'id', wire: 'id', source: 'json', codec: byMethod.get('deleteTemplate').parameters[0].codec }])
-  assert.deepEqual(byMethod.get('spawnMember').parameters, inputParameter(byMethod.get('spawnMember')))
-  assert.deepEqual(byMethod.get('teamStatus').parameters, inputParameter(byMethod.get('teamStatus')))
-  assert.deepEqual(byMethod.get('draft').parameters, inputParameter(byMethod.get('draft')))
-})
-
-test('run(session) opens the spawn modal through the overlay seat and cancel closes it', async () => {
-  const view = await openModal()
-  // The modal opened: shared chrome carries the localized title and close copy.
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  assert.ok(modal, 'the modal is open')
-  assert.equal(modal.props['data-fake-modal'], 'open')
-  assert.equal(modal.props.title, 't:modal.title')
-  assert.equal(modal.props.closeLabel, 't:modal.close')
-  assert.equal(typeof modal.props.onClose, 'function')
-  // Body sections render in the briefed order.
-  const root = find(view.vdom, (node) => node.props?.['data-agent-roster'] !== undefined)
-  assert.ok(root, 'the scoped root renders')
-  assert.deepEqual(root.children.map((child) => child.props['data-agent-roster-section']),
-    ['banner', 'templates', 'member-name', 'model', 'task', 'custom'])
-  // The model selector is a ModelMenu since the host-picker rework: the
-  // trigger is enabled with the inherit entry as its value. No session face
-  // is installed here, so the catalog-less degrade applies: opening shows
-  // exactly the inherit row.
-  const modelTrigger = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.ok(modelTrigger, 'the model menu trigger renders')
-  assert.equal(modelTrigger.props['aria-haspopup'], 'menu')
-  assert.ok(modelTrigger.props.disabled !== true)
-  assert.equal(modelTrigger.props['data-agent-roster-menu-value'], '')
-  await view.interact(() => { modelTrigger.props.onClick() })
-  const rows = findAll(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] !== undefined)
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-menu-option']), [''])
-  assert.ok(texts(rows[0]).includes('t:model.inherit'))
-  // The custom-role toggle renders (its form is Task 7).
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-toggle'] !== undefined))
-  // Cancel (in the Modal footer prop) closes: no modal node remains.
-  const cancel = inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined)
-  await view.interact(() => { cancel.props.onClick() })
-  assert.equal(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), undefined)
-})
-
-test('happy-path spawn: pick template, type task, confirm sends the exact payload and shows the success banner', async () => {
-  const view = await openModal()
-  const dbgSection = find(view.vdom, (n) => n.props?.['data-agent-roster-section'] === 'templates')
-  console.log('DBG rows:', JSON.stringify(findAll(view.vdom, (n) => n.props?.['data-agent-roster-template'] !== undefined).map((n) => n.props['data-agent-roster-template'])))
-  // Templates render from listTemplates with the first auto-selected.
-  const rows = findAll(view.vdom, (node) => typeof node.props?.['data-agent-roster-template'] === 'string')
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-template']), ['tpl-researcher', 'tpl-reviewer'])
-  assert.equal(rows[0].props['aria-selected'], 'true')
-  assert.equal(rows[1].props['aria-selected'], 'false')
-  assert.ok(texts(rows[0]).includes('Researcher'))
-  // Type a first task; leave the member name blank.
-  const task = find(view.vdom, (node) => node.props?.['data-agent-roster-task'] !== undefined)
-  assert.equal(task.type, 'textarea')
-  await view.interact(() => { task.props.onChange({ target: { value: 'Survey the market for rivals' } }) })
-  // Confirm (in the Modal footer prop): the exact spawnMember wire input, model null = inherit.
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  await view.interact(() => { confirm.props.onClick() })
-  assert.deepEqual(view.spawned, [{
-    sessionId: 'sess-1',
-    templateId: 'tpl-researcher',
-    model: null,
-    task: 'Survey the market for rivals',
-  }])
-  // Success banner interpolates the spawned member's name; the modal stays open.
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success')
-  assert.ok(texts(banner).join(' ').includes('t:spawn.success(name=spawned-member)'))
-  assert.ok(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node))
-})
-
-test('spawn failure renders the bilingual error line with whatever code arrived', async () => {
-  const view = await openModal({ roster: {
-    listTemplates: async () => ({ ok: true, value: TEMPLATES }),
-    // A NON-roster typed error (SubagentError shape: code + message) must
-    // render as-is — the client never assumes roster/* codes.
-    spawnMember: async () => {
-      throw Object.assign(new Error('member name rejected / 成员名称被拒绝'), { code: 'INVALID' })
-    },
-  } })
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  await view.interact(() => { confirm.props.onClick() })
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'error')
-  assert.ok(banner, 'the error banner renders')
-  assert.equal(banner.props['data-agent-roster-error'], 'INVALID')
-  const line = texts(banner).join(' ')
-  assert.ok(line.includes('t:spawn.failed'))
-  assert.ok(line.includes('INVALID — member name rejected / 成员名称被拒绝'))
-  // The modal stays open and the confirm re-enables for a retry.
-  const modalAfter = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  assert.ok(modalAfter)
-  const confirmAfter = inModal(modalAfter, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  assert.equal(confirmAfter.props.disabled, false)
-})
-
-test('a missing roster namespace degrades to the unavailable line, never a crash', async () => {
-  const view = await openModal({ roster: null })
-  const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'unavailable')
-  assert.ok(note)
-  assert.ok(texts(note).join(' ').includes('t:templates.unavailable'))
-  // No selection is possible, so confirm stays disabled.
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  assert.equal(confirm.props.disabled, true)
-})
-
-test('a failed template load renders the error line with the upstream message', async () => {
-  const view = await openModal({ roster: {
-    listTemplates: async () => { throw Object.assign(new Error('store read failed / 存储读取失败'), { code: 'roster/store-read' }) },
-    spawnMember: async () => ({ ok: true, value: { name: 'x' } }),
-  } })
-  const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
-  assert.ok(note)
-  const line = texts(note).join(' ')
-  assert.ok(line.includes('t:templates.error'))
-  assert.ok(line.includes('roster/store-read — store read failed / 存储读取失败'))
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.disabled, true)
-})
-
-// ---------------------------------------------------------------------------
-// Task 7 — modal completeness: custom role, AI draft, model selector, gating.
-// ---------------------------------------------------------------------------
-
-/** Healthy team status: Team mode on, so no banner renders. */
-const HEALTHY_TEAM = { teamMode: true, isRoot: true, canEnable: true }
-
-/** One provider-grouped catalog the fake session face serves (session-controller types.ts:103-135). */
-const CATALOG = {
-  default: { provider: 'deepseek', model: 'chat' },
-  routableProviders: ['deepseek'],
-  groups: [{
-    id: 'deepseek',
-    name: 'DeepSeek',
-    models: [
-      { id: 'chat', name: 'DeepSeek Chat' },
-      { id: 'reasoner', name: 'DeepSeek Reasoner', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' } },
-    ],
-  }],
-  failures: [],
-}
-
-/** A roster fake with a controllable teamStatus and recording spawn/save. */
-function rosterWithTeam(status, record = { spawned: [], saved: [], drafted: [] }) {
-  return {
-    listTemplates: async () => ({ ok: true, value: TEMPLATES }),
-    spawnMember: async (input) => { record.spawned.push(input); return { ok: true, value: { name: 'spawned-member' } } },
-    saveTemplate: async (input) => { record.saved.push(input); return { ok: true, value: { id: 'tpl-new', ...input } } },
-    draft: async (input) => { record.drafted.push(input); return { ok: true, value: { name: 'Drafted', description: 'Drafted role', prompt: 'You were drafted.', parsed: true } } },
-    teamStatus: async (input) => ({ ok: true, value: typeof status === 'function' ? status(input) : status }),
-  }
-}
-
-/** Flip the custom-role toggle on. */
-async function enableCustomRole(view) {
-  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-custom-toggle'] !== undefined)
-  await view.interact(() => { toggle.props.onChange({ target: { checked: true } }) })
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-custom-form'] !== undefined), 'the custom form renders')
+  return view
 }
 
 /** Open one ModelMenu (click its trigger) and pick one option row. */
@@ -623,926 +397,326 @@ async function pickMenuOption(view, triggerMarker, optionKey) {
   await view.interact(() => { option.props.onClick() })
 }
 
-/** Type into one field marked with a data-agent-roster-* attribute (checkbox-safe). */
+/** Type into one field marked with a data-agent-roster-* attribute. */
 async function typeInto(view, marker, value) {
-  const field = find(view.vdom, (node) => node.props?.[marker] !== undefined)
-  assert.ok(field, `${marker} renders`)
-  await view.interact(() => { field.props.onChange({ target: { value, checked: value } }) })
+  const field = find(view.vdom, (node) => typeof node.props?.[marker] === 'string')
+  assert.ok(field, `the ${marker} field renders`)
+  await view.interact(() => { field.props.onChange({ target: { value } }) })
 }
 
-test('custom spawn payload (custom xor templateId)', async () => {
-  const record = { spawned: [], saved: [], drafted: [] }
-  const view = await openModal({ roster: rosterWithTeam(HEALTHY_TEAM, record) })
-  await enableCustomRole(view)
-  // Incomplete custom form: confirm disabled with an explanatory hint.
-  let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  let confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  assert.equal(confirm.props.disabled, true)
-  let hint = find(view.vdom, (node) => node.props?.['data-agent-roster-confirm-hint'] !== undefined)
-  assert.ok(hint, 'a hint renders while confirm is disabled')
-  assert.ok(texts(hint).join(' ').includes('t:custom.incomplete'))
-  // Fill name, prompt, description → hint gone, confirm enabled.
-  await typeInto(view, 'data-agent-roster-role-name', 'Market Scout')
-  await typeInto(view, 'data-agent-roster-role-prompt', 'You scout markets.')
-  await typeInto(view, 'data-agent-roster-role-description', 'Scans markets')
-  modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  assert.equal(confirm.props.disabled, false)
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-confirm-hint'] !== undefined), undefined)
-  await view.interact(() => { confirm.props.onClick() })
-  // custom xor templateId: the payload carries custom and NO templateId key.
-  assert.equal(record.spawned.length, 1)
-  assert.equal('templateId' in record.spawned[0], false)
-  assert.deepEqual(record.spawned[0], {
-    sessionId: 'sess-1',
-    custom: { name: 'Market Scout', description: 'Scans markets', prompt: 'You scout markets.' },
-    model: null,
-  })
-  // The save-as-template box was unchecked: nothing was saved.
-  assert.deepEqual(record.saved, [])
-})
-
-test('draft fills form, save happens only on confirm', async () => {
-  const record = { spawned: [], saved: [], drafted: [] }
-  const order = []
-  const view = await openModal({ roster: {
-    ...rosterWithTeam(HEALTHY_TEAM, record),
-    spawnMember: async (input) => { order.push(['spawn', input]); return { ok: true, value: { name: 'market-scout' } } },
-    saveTemplate: async (input) => { order.push(['save', input]); return { ok: true, value: { id: 'tpl-x', ...input } } },
-    draft: async (input) => { record.drafted.push(input); return { ok: true, value: { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', parsed: true } } },
-  } })
-  await enableCustomRole(view)
-  await typeInto(view, 'data-agent-roster-brief', 'A role that scans markets')
-  // Draft: exact wire payload, model null = keep the draft session's own.
-  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  await view.interact(() => { draftButton.props.onClick() })
-  assert.deepEqual(record.drafted, [{ sessionId: 'sess-1', brief: 'A role that scans markets', model: null }])
-  // The result filled the FORM FIELDS ONLY — nothing was saved or spawned.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, 'Market Scout')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-description'] !== undefined).props.value, 'Scans markets')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-prompt'] !== undefined).props.value, 'You scan markets.')
-  assert.deepEqual(order, [])
-  // Explicit confirm with save-as-template checked: saveTemplate BEFORE the
-  // custom spawn (a save failure must surface while still fixable in-form).
-  await typeInto(view, 'data-agent-roster-save-template', true)
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  await view.interact(() => { confirm.props.onClick() })
-  assert.deepEqual(order.map(([kind]) => kind), ['save', 'spawn'])
-  assert.deepEqual(order[0][1], { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', defaultModel: null })
-  assert.equal('templateId' in order[1][1], false)
-  assert.deepEqual(order[1][1].custom, { name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.' })
-})
-
-test('an unparsed draft is visibly flagged and leaves confirm gated', async () => {
-  const view = await openModal({ roster: {
-    ...rosterWithTeam(HEALTHY_TEAM),
-    draft: async () => ({ ok: true, value: { name: '', description: '', prompt: 'not json at all', parsed: false } }),
-  } })
-  await enableCustomRole(view)
-  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
-  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  await view.interact(() => { draftButton.props.onClick() })
-  const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'draft-unparsed')
-  assert.ok(note, 'the unparsed flag renders')
-  assert.ok(texts(note).join(' ').includes('t:draft.unparsed'))
-  // The raw text landed in prompt; name stays empty so confirm stays gated.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-prompt'] !== undefined).props.value, 'not json at all')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, '')
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.disabled, true)
-})
-
-test('model selector lists catalog with current-model default; explicit choice sends ModelRef, default sends null', async () => {
-  const record = { spawned: [], saved: [], drafted: [] }
-  const view = await openModal({
-    roster: rosterWithTeam(HEALTHY_TEAM, record),
-    extras: { session: { modelCatalog: async () => ({ ok: true, value: CATALOG }) } },
-  })
-  const chatKey = JSON.stringify(['deepseek', 'chat'])
-  const reasonerKey = JSON.stringify(['deepseek', 'reasoner'])
-  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.ok(trigger.props.disabled !== true)
-  assert.equal(trigger.props['data-agent-roster-model'], 'inherit')
-  assert.equal(trigger.props['data-agent-roster-menu-value'], '')
-  // Open: the none row first, then provider-grouped catalog rows.
-  await view.interact(() => { trigger.props.onClick() })
-  const rows = findAll(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] !== undefined)
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-menu-option']), ['', chatKey, reasonerKey])
-  assert.ok(texts(rows[0]).includes('t:model.inherit'))
-  const groups = findAll(view.vdom, (node) => node.props?.['data-agent-roster-fake-group'] !== undefined)
-  assert.deepEqual(groups.map((group) => group.props['data-agent-roster-fake-group']), ['DeepSeek'])
-  // Regression (2026-11-23 empty-rows incident): catalog rows carry `name`,
-  // not `label` — the row text must actually render the model name.
-  const chatRow = find(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] === chatKey)
-  assert.ok(texts(chatRow).includes('DeepSeek Chat'), 'catalog row text renders the model name')
-  // Close with a re-found trigger (the pre-open closure would reopen).
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined).props.onClick()
-  })
-  // The trigger label mirrors the chosen row's name once picked.
-  await pickMenuOption(view, 'data-agent-roster-model', chatKey)
-  const triggerAfter = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.ok(texts(triggerAfter).includes('DeepSeek Chat'), 'the trigger shows the chosen model name')
-  await pickMenuOption(view, 'data-agent-roster-model', '')
-  // Default: confirm sends model null (explicit inherit).
-  let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.equal(record.spawned[0].model, null)
-  // Explicit reasoning model: the effort menu appears beside it only now.
-  await pickMenuOption(view, 'data-agent-roster-model', reasonerKey)
-  const effort = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
-  assert.ok(effort, 'the effort menu renders beside an explicit reasoning model')
-  await view.interact(() => { effort.props.onClick() })
-  assert.deepEqual(findAll(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] !== undefined)
-    .map((row) => row.props['data-agent-roster-menu-option']), ['', 'low', 'high'])
-  // Close with a re-found trigger before the pick reopens it.
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined).props.onClick()
-  })
-  await pickMenuOption(view, 'data-agent-roster-effort', 'high')
-  modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.deepEqual(record.spawned[1].model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
-  // A model without reasoning metadata: the effort area stays mounted but
-  // hidden and disabled (always-mounted rule), and no reasoningEffort key.
-  await pickMenuOption(view, 'data-agent-roster-model', chatKey)
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), undefined)
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined).props.disabled, true)
-  modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.deepEqual(record.spawned[2].model, { provider: 'deepseek', model: 'chat' })
-})
-
-test('a failed or absent modelCatalog degrades to the inherit-only selector and never blocks spawn', async () => {
-  const record = { spawned: [], saved: [], drafted: [] }
-  // Absent face (no session remote at all).
-  const view = await openModal({ roster: rosterWithTeam(HEALTHY_TEAM, record) })
-  let trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.ok(trigger.props.disabled !== true)
-  await view.interact(() => { trigger.props.onClick() })
-  let rows = findAll(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] !== undefined)
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-menu-option']), [''])
-  assert.ok(texts(rows[0]).includes('t:model.inherit'))
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined).props.onClick()
-  })
-  let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.equal(record.spawned[0].model, null)
-  // A not-ok RemoteResult degrades the same way.
-  const record2 = { spawned: [], saved: [], drafted: [] }
-  const view2 = await openModal({
-    roster: rosterWithTeam(HEALTHY_TEAM, record2),
-    extras: { session: { modelCatalog: async () => ({ ok: false, error: { code: 'session/provider-models-unavailable', message: 'no key' } }) } },
-  })
-  trigger = find(view2.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  await view2.interact(() => { trigger.props.onClick() })
-  rows = findAll(view2.vdom, (node) => node.props?.['data-agent-roster-menu-option'] !== undefined)
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-menu-option']), [''])
-  await view2.interact(() => {
-    find(view2.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined).props.onClick()
-  })
-  modal = find(view2.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view2.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.equal(record2.spawned[0].model, null)
-  // A rejecting call degrades the same way.
-  const record3 = { spawned: [], saved: [], drafted: [] }
-  const view3 = await openModal({
-    roster: rosterWithTeam(HEALTHY_TEAM, record3),
-    extras: { session: { modelCatalog: async () => { throw Object.assign(new Error('gateway down'), { code: 'gateway/internal' }) } } },
-  })
-  trigger = find(view3.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  await view3.interact(() => { trigger.props.onClick() })
-  rows = findAll(view3.vdom, (node) => node.props?.['data-agent-roster-menu-option'] !== undefined)
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-menu-option']), [''])
-  modal = find(view3.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view3.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.equal(record3.spawned[0].model, null)
-})
-
-test('enable button appears only when canEnable && !teamMode, calls setEnabled then refreshes', async () => {
-  // Healthy (teamMode true): no banner at all, so no button either.
-  const healthy = await openModal()
-  assert.equal(find(healthy.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined), undefined)
-  // canEnable && !teamMode: explanation plus the Enable button.
-  const enabled = []
-  const teamCalls = []
-  const view = await openModal({
-    roster: {
-      ...rosterWithTeam(HEALTHY_TEAM),
-      teamStatus: async (input) => { teamCalls.push(input); return { ok: true, value: { teamMode: false, isRoot: true, canEnable: true } } },
-    },
-    extras: { agentTeams: { setEnabled: async (sessionId, on) => { enabled.push([sessionId, on]); return { ok: true, value: undefined } } } },
-  })
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
-  assert.equal(banner.props['data-agent-roster-team'], 'enable')
-  assert.ok(texts(banner).join(' ').includes('t:team.enable.explain'))
-  const button = find(banner, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined)
-  assert.ok(button, 'the Enable button renders')
-  // Click → setEnabled(sessionId, true), then teamStatus re-read (refresh).
-  const before = teamCalls.length
-  await view.interact(() => { button.props.onClick() })
-  assert.deepEqual(enabled, [['sess-1', true]])
-  assert.deepEqual(teamCalls.slice(before), [{ sessionId: 'sess-1' }], 'teamStatus is re-read after enabling')
-})
-
-test('non-root shows explanation and no button', async () => {
-  const view = await openModal({
-    roster: rosterWithTeam({ teamMode: false, isRoot: false, canEnable: false }),
-    extras: {
-      agentTeams: { setEnabled: async () => { throw new Error('must not be called') } },
-      pluginManager: { setPluginEnabled: async () => { throw new Error('must not be called') } },
-    },
-  })
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
-  assert.equal(banner.props['data-agent-roster-team'], 'nonroot')
-  assert.ok(texts(banner).join(' ').includes('t:team.nonroot'))
-  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined), undefined)
-  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined), undefined)
-})
-
-test('rows-disabled offers enable for both rows after confirm', async () => {
-  const toggles = []
-  const lists = []
-  const teamCalls = []
-  const view = await openModal({
-    roster: {
-      ...rosterWithTeam(() => { teamCalls.push(1); return { teamMode: false, isRoot: true, canEnable: false } }),
-    },
-    extras: {
-      pluginInventory: { list: async () => { lists.push(1); return { ok: true, value: { entries: [
-        { entryId: 'agent-team', moduleName: '@deepseek-ai/dsh-agent-team', enabled: false },
-        { entryId: 'tool-agent-team', moduleName: '@deepseek-ai/dsh-tool-agent-team', enabled: false },
-        { entryId: 'llm-deepseek', moduleName: '@deepseek-ai/dsh-llm-deepseek-api-key', enabled: true },
-      ], managementAvailable: true } } } },
-      pluginManager: { setPluginEnabled: async (entryId, on) => { toggles.push([entryId, on]); return { ok: true, value: { application: 'applied' } } } },
-    },
-  })
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
-  assert.equal(banner.props['data-agent-roster-team'], 'rows')
-  assert.ok(texts(banner).join(' ').includes('t:team.rows.explain'))
-  const button = find(banner, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined)
-  assert.ok(button)
-  assert.ok(texts(button).includes('t:team.rows.action'))
-  // First click arms the confirmation only; nothing toggles yet.
-  await view.interact(() => { button.props.onClick() })
-  assert.deepEqual(toggles, [])
-  const armed = find(view.vdom, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined)
-  assert.ok(texts(armed).includes('t:team.rows.confirm'))
-  // Second click enables BOTH rows and refreshes status + inventory.
-  await view.interact(() => { armed.props.onClick() })
-  assert.deepEqual(toggles, [['agent-team', true], ['tool-agent-team', true]])
-  assert.ok(lists.length >= 2, 'the inventory is re-read after enabling')
-  assert.ok(teamCalls.length >= 2, 'teamStatus is re-read after enabling')
-})
-
-test('absent remote shows guidance without throwing', async () => {
-  // Roster namespace absent entirely: guidance text, no buttons, no crash.
-  const view = await openModal({ roster: null })
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
-  assert.equal(banner.props['data-agent-roster-team'], 'guidance')
-  assert.ok(texts(banner).join(' ').includes('t:team.guidance'))
-  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined), undefined)
-  assert.equal(find(banner, (node) => node.props?.['data-agent-roster-team-rows'] !== undefined), undefined)
-  // canEnable but no agentTeams client face: the button cannot work, so the
-  // banner degrades to guidance text only.
-  const view2 = await openModal({ roster: rosterWithTeam({ teamMode: false, isRoot: true, canEnable: true }) })
-  const banner2 = find(view2.vdom, (node) => node.props?.['data-agent-roster-team'] !== undefined)
-  assert.equal(banner2.props['data-agent-roster-team'], 'guidance')
-  assert.equal(find(banner2, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined), undefined)
-})
-
-test('modal close is gated while a spawn or draft is in flight', async () => {
-  // Spawn in flight: Escape/mask close (onClose) and Cancel are gated.
-  let resolveSpawn
-  const view = await openModal({ roster: {
-    ...rosterWithTeam(HEALTHY_TEAM),
-    spawnMember: () => new Promise((resolve) => { resolveSpawn = resolve }),
-  } })
-  let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  assert.ok(modal)
-  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined).props.disabled, true)
-  modal.props.onClose()
-  await view.interact()
-  assert.ok(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), 'the modal survives close while spawning')
-  resolveSpawn({ ok: true, value: { name: 'late-member' } })
-  await view.interact()
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success'), 'the in-flight result lands')
-  modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  modal.props.onClose()
-  await view.interact()
-  assert.equal(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), undefined, 'close works again once settled')
-  // Draft in flight: gated the same way.
-  let resolveDraft
-  const view2 = await openModal({ roster: {
-    ...rosterWithTeam(HEALTHY_TEAM),
-    draft: () => new Promise((resolve) => { resolveDraft = resolve }),
-  } })
-  await enableCustomRole(view2)
-  await typeInto(view2, 'data-agent-roster-brief', 'Make a role')
-  const draftButton = find(view2.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  await view2.interact(() => { draftButton.props.onClick() })
-  let modal2 = find(view2.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  modal2.props.onClose()
-  await view2.interact()
-  assert.ok(find(view2.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), 'the modal survives close while drafting')
-  resolveDraft({ ok: true, value: { name: 'Late', description: 'd', prompt: 'p', parsed: true } })
-  await view2.interact()
-  assert.equal(find(view2.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, 'Late')
-})
-
-test('draft button disabled while drafting; stop abandons the wait and discards the late answer', async () => {  let resolveDraft
-  const drafted = []
-  const view = await openModal({ roster: {
-    ...rosterWithTeam(HEALTHY_TEAM, { spawned: [], saved: [], drafted }),
-    draft: (input) => { drafted.push(input); return new Promise((resolve) => { resolveDraft = resolve }) },
-  } })
-  await enableCustomRole(view)
-  await typeInto(view, 'data-agent-roster-brief', 'Make me a role')
-  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  await view.interact(() => { draftButton.props.onClick() })
-  // In flight: the Draft button is disabled (one draft session per cwd) and
-  // the stop control appears.
-  const inFlight = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  assert.equal(inFlight.props.disabled, true)
-  assert.ok(texts(inFlight).includes('t:draft.inflight'))
-  const stop = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-abort'] !== undefined)
-  assert.ok(stop)
-  // Stop: the wait is abandoned; a second draft could start.
-  await view.interact(() => { stop.props.onClick() })
-  const after = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  assert.equal(after.props.disabled, false)
-  assert.ok(texts(after).includes('t:draft.action'))
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'draft-aborted'))
-  // The late answer is discarded: the fields stay empty, nothing crashes.
-  resolveDraft({ ok: true, value: { name: 'Late', description: 'd', prompt: 'p', parsed: true } })
-  await view.interact()
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, '')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-prompt'] !== undefined).props.value, '')
-})
-
-test('a failed draft renders its error line inline and re-enables the Draft button', async () => {
-  const view = await openModal({ roster: {
-    ...rosterWithTeam(HEALTHY_TEAM),
-    draft: async () => ({ ok: false, error: { code: 'roster/draft-timeout', message: 'The draft turn did not finish / 草稿生成未完成' } }),
-  } })
-  await enableCustomRole(view)
-  await typeInto(view, 'data-agent-roster-brief', 'Make a role')
-  const draftButton = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  await view.interact(() => { draftButton.props.onClick() })
-  const error = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-error'] !== undefined)
-  assert.ok(error, 'the draft error line renders')
-  assert.equal(error.props['data-agent-roster-error'], 'roster/draft-timeout')
-  const line = texts(error).join(' ')
-  assert.ok(line.includes('t:draft.failed'))
-  assert.ok(line.includes('roster/draft-timeout — The draft turn did not finish / 草稿生成未完成'))
-  // Nothing filled; the button is re-armed for a retry.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, '')
-  const retry = find(view.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  assert.equal(retry.props.disabled, false)
-})
-
-test('a failed team action renders the action-failed line without losing the banner', async () => {
-  const view = await openModal({
-    roster: rosterWithTeam({ teamMode: false, isRoot: true, canEnable: true }),
-    extras: { agentTeams: { setEnabled: async () => ({ ok: false, error: { code: 'gateway/internal', message: 'connection failed' } }) } },
-  })
-  const button = find(view.vdom, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined)
-  assert.ok(button)
-  await view.interact(() => { button.props.onClick() })
-  const error = find(view.vdom, (node) => node.props?.['data-agent-roster-team'] === 'error')
-  assert.ok(error, 'the team action-failed line renders')
-  const line = texts(error).join(' ')
-  assert.ok(line.includes('t:team.actionFailed'))
-  assert.ok(line.includes('gateway/internal — connection failed'))
-  // The enable banner stays for a retry.
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-team'] === 'enable'))
-})
-
-/** The fake session face serving the catalog. */
+/** The model catalog face (remote.session.modelCatalog shape). */
+const CATALOG = {
+  groups: [
+    { id: 'deepseek', name: 'DeepSeek', models: [
+      { id: 'chat', name: 'DeepSeek Chat' },
+      { id: 'reasoner', name: 'DeepSeek Reasoner', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } },
+    ] },
+  ],
+}
 const catalogFace = () => ({ ok: true, value: CATALOG })
 
-test('the draft area follows the Settings configuration, never a per-draft picker', async () => {
-  const drafted = []
-  const roster = {
-    listTemplates: async () => ({ ok: true, value: TEMPLATES }),
-    spawnMember: async () => ({ ok: true, value: { name: 'x' } }),
-    teamStatus: async () => ({ ok: true, value: { teamMode: true, isRoot: true, canEnable: true } }),
-    draft: async (input) => { drafted.push(input); return { ok: true, value: { name: 'D', description: 'd', prompt: 'p', parsed: true } } },
-  }
-  // Disabled → configure hint, button disabled, no draft possible.
-  const off = await openModal({ roster, settings: { draftEnabled: false } })
-  await enableCustomRole(off)
-  const offLine = find(off.vdom, (node) => node.props?.['data-agent-roster-draft-model-line'] === 'configure')
-  assert.ok(offLine, 'the configure-first hint renders')
-  assert.ok(texts(offLine).includes('t:draft.configure.hint'))
-  const offButton = find(off.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined)
-  assert.equal(offButton.props.disabled, true)
-  // Enabled without a model → still the configure hint (enabling requires
-  // picking a model — the 2026-11-23 ruling).
-  const unconfigured = await openModal({ roster, settings: { draftEnabled: true, draftModelProvider: '', draftModelId: '' } })
-  await enableCustomRole(unconfigured)
-  assert.ok(find(unconfigured.vdom, (node) => node.props?.['data-agent-roster-draft-model-line'] === 'configure'))
-  assert.equal(find(unconfigured.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.disabled, true)
-  // Enabled + configured → the uses line names the model and the draft
-  // sends model: null (Settings owns the model; the host resolves it).
-  const on = await openModal({ roster, settings: { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'chat' } })
-  await enableCustomRole(on)
-  const uses = find(on.vdom, (node) => node.props?.['data-agent-roster-draft-model-line'] === 'ready')
-  assert.ok(uses, 'the uses line renders')
-  assert.ok(texts(uses).includes('t:draft.uses(model=chat)'))
-  await typeInto(on, 'data-agent-roster-brief', 'A role')
-  await on.interact(() => { find(on.vdom, (node) => node.props?.['data-agent-roster-draft'] !== undefined).props.onClick() })
-  assert.deepEqual(drafted, [{ sessionId: 'sess-1', brief: 'A role', model: null }])
-})
-
-
 // ---------------------------------------------------------------------------
-// Task 8 — Plugins-page settings card (roster manager).
+// Module shape, locale, mount
 // ---------------------------------------------------------------------------
 
-/**
- * The section contract (verified in the checkout): `settings.section` is a
- * list ROOT-scope slot whose entries render through the Settings page's
- * `settings.section.view` factory with `{ id, close }` owner props
- * (packages/client/ui-settings/src/client/contract/slots.ts:17-27; the
- * ui-settings-models registration precedent client/index.ts:143-152).
- * mountSection therefore renders the registered component with `{ t }`
- * alone — no session identity exists on this surface.
- */
-async function mountSection({ roster, extras, settings } = {}) {
-
-  const calls = { saved: [], deleted: [], listed: 0 }
-  const rosterFake = roster === undefined ? {
-    listTemplates: async () => { calls.listed += 1; return { ok: true, value: CARD_TEMPLATES } },
-    saveTemplate: async (input) => { calls.saved.push(input); return { ok: true, value: { id: input?.id ?? 'tpl-new', ...input } } },
-    deleteTemplate: async (id) => { calls.deleted.push(id); return { ok: true, value: { deleted: true } } },
-  } : roster
-  const { harness, recorded, form } = applyPlugin({ roster: rosterFake, extras, settings })
-  const section = recorded.registers.find(({ declaration }) => declaration.name === 'settings.section')
-  assert.ok(section, 'the settings section is registered')
-  const seatProps = { t: makeT() }
-  const view = { vdom: undefined, calls, harness, form, recorded }
-  const render = () => { view.vdom = harness.render(section.Component, seatProps) }
-  render()
-  await harness.settle()
-  render()
-  view.interact = async (gesture) => {
-    if (gesture !== undefined) gesture()
-    await harness.settle()
-    render()
-    return view.vdom
-  }
-  return view
-}
-
-/** Templates the card fake serves: one without and one with a default model. */
-const CARD_TEMPLATES = [
-  { id: 'tpl-researcher', name: 'Researcher', description: 'Finds and reads sources', prompt: 'You research topics thoroughly.', defaultModel: null, createdAt: '2026-11-19T08:00:00.000Z', updatedAt: '2026-11-20T08:00:00.000Z' },
-  { id: 'tpl-scout', name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.', defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' }, createdAt: '2026-11-20T08:00:00.000Z', updatedAt: '2026-11-21T10:00:00.000Z' },
-]
-
-test('the roster manager registers one settings.section entry', () => {
-  const { recorded } = applyPlugin()
-  assert.ok(recorded.injects.includes('settings.section'))
-  const section = recorded.registers.find(({ declaration }) => declaration.name === 'settings.section')
-  assert.ok(section, 'the settings section is registered')
-  assert.equal(section.declaration.id, 'agent-roster')
-  assert.equal(section.declaration.order, 40)
-  assert.equal(section.declaration.locale, 'agent-roster')
-  assert.equal(typeof section.declaration.label, 'function')
-  assert.equal(section.declaration.label(), 't:settings.nav')
-  assert.equal(typeof section.Component, 'function')
-  // The Plugins-page card is GONE: the row shows the settings entry instead
-  // (the shell lists a bundle row's section when it registers no config).
-  assert.equal(recorded.injects.includes('plugins.bundle.config'), false)
+test('client.js registers one module named dsh-agent-roster in the factory format', () => {
+  assert.equal(loaded.length, 1)
+  assert.equal(loaded[0].id, 'dsh-agent-roster')
+  assert.equal(typeof loaded[0].factory, 'function')
 })
 
-test('card renders records from listTemplates with model chip and updatedAt', async () => {
-  const view = await mountSection()
-  const rows = findAll(view.vdom, (node) => typeof node.props?.['data-agent-roster-row'] === 'string')
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-row']), ['tpl-researcher', 'tpl-scout'])
-  const first = rows[0]
-  assert.ok(texts(find(first, (node) => node.props?.['data-agent-roster-row-name'] !== undefined)).includes('Researcher'))
-  assert.ok(texts(find(first, (node) => node.props?.['data-agent-roster-row-desc'] !== undefined)).includes('Finds and reads sources'))
-  assert.ok(texts(find(first, (node) => node.props?.['data-agent-roster-row-model'] !== undefined)).includes('t:card.model.none'))
-  assert.ok(texts(find(first, (node) => node.props?.['data-agent-roster-row-updated'] !== undefined)).join(' ')
-    .includes('t:card.updatedAt(time=2026-11-20T08:00:00.000Z)'))
-  const second = rows[1]
-  const chip = find(second, (node) => node.props?.['data-agent-roster-row-model'] !== undefined)
-  assert.ok(texts(chip).join(' ').includes('t:card.model.chip.effort(provider=deepseek,model=reasoner,effort=high)'))
-  // Every row carries edit + delete controls; the header carries the add one.
-  assert.ok(find(second, (node) => node.props?.['data-agent-roster-row-edit'] === 'tpl-scout'))
-  assert.ok(find(second, (node) => node.props?.['data-agent-roster-row-delete'] === 'tpl-scout'))
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined))
+test('the factory returns a plugin injecting the documented services only', () => {
+  const { plugin } = bootPlugin()
+  assert.deepEqual(plugin.inject, ['commandUi', 'locale', 'sessions', 'slots', 'remote'])
+  assert.equal(typeof plugin.apply, 'function')
 })
 
-test('card edit prefills the shared fields and saves through saveTemplate with id', async () => {
-  const view = await mountSection({ extras: { session: { modelCatalog: catalogFace } } })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] === 'tpl-scout').props.onClick()
+test('apply registers the command, the overlay seat, dictionaries, and scoped styles', () => {
+  const { recorded, style } = applyPlugin({})
+  assert.equal(recorded.commands.length, 1)
+  assert.equal(recorded.commands[0].name, 'add-agent-member')
+  assert.equal(recorded.namespaces.length, 1)
+  assert.deepEqual(Object.keys(recorded.namespaces[0].dicts).sort(), ['en', 'zh'])
+  assert.equal(recorded.injects.includes('conversation.input.overlay'), true)
+  assert.equal(recorded.injects.includes('settings.section'), true)
+  assert.match(style.textContent, /\[data-agent-roster\]/)
+})
+
+test('locale dictionaries have zh/en key parity and interpolate {param}', () => {
+  const { recorded } = applyPlugin({})
+  const { zh, en } = recorded.namespaces[0].dicts
+  assert.deepEqual(keys(zh).sort(), keys(en).sort())
+  const t = makeT()
+  assert.equal(t('inject.sent', { name: 'Reviewer' }), 't:inject.sent(name=Reviewer)')
+})
+
+test('apply mounts the agentRoster remote namespace with exactly three method descriptors', () => {
+  const { recorded } = applyPlugin({})
+  assert.equal(recorded.mounts.length, 1)
+  const mount = recorded.mounts[0]
+  assert.equal(mount.package, 'dsh-agent-roster')
+  assert.deepEqual(mount.descriptors.map((d) => d.method).sort(), ['deleteTemplate', 'listTemplates', 'saveTemplate'])
+})
+
+// ---------------------------------------------------------------------------
+// The "+" modal — instruction composition and injection
+// ---------------------------------------------------------------------------
+
+test('run(session) opens the modal through the overlay seat and cancel closes it', async () => {
+  const view = await openModal()
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  assert.ok(modal, 'the modal is open')
+  assert.equal(modal.props['data-fake-modal'], 'open')
+  assert.equal(modal.props.title, 't:modal.title')
+  assert.equal(modal.props.closeLabel, 't:modal.close')
+  const root = find(view.vdom, (node) => node.props?.['data-agent-roster'] !== undefined)
+  assert.ok(root, 'the scoped root renders')
+  assert.deepEqual(root.children.map((child) => child.props['data-agent-roster-section']),
+    ['templates', 'preview', 'task'])
+  const cancel = inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined)
+  await view.interact(() => { cancel.props.onClick() })
+  assert.equal(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), undefined)
+})
+
+test('the modal lists templates, auto-selects the first, and previews the exact instruction', async () => {
+  const view = await openModal()
+  const rows = findAll(view.vdom, (node) => typeof node.props?.['data-agent-roster-template'] === 'string')
+  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-template']), ['tpl-researcher', 'tpl-reviewer'])
+  assert.equal(rows[0].props['aria-selected'], 'true')
+  assert.equal(rows[1].props['aria-selected'], 'false')
+  const preview = find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined)
+  assert.ok(preview, 'the instruction preview renders')
+  const instruction = preview.children[0]
+  // Pinned shape (SPEC §Design): template identity, frozen standing prompt,
+  // the exact tool call, and the no-rewrite instruction. No task line yet.
+  assert.ok(instruction.startsWith('Use the agent-roster template «Researcher» to create a team member for me.'))
+  assert.ok(instruction.includes('Template description: Finds and reads sources'))
+  assert.ok(instruction.includes('Standing instruction the member must run with (do not rewrite it):\n---\nYou research topics thoroughly.\n---'))
+  assert.ok(instruction.includes('Call the roster_spawn tool with template: "tpl-researcher" (omit task).'))
+  assert.ok(instruction.includes('Do not describe the member in chat instead of creating it'))
+  assert.equal(instruction.includes('Current task for this member:'), false)
+})
+
+test('picking another template re-renders the preview for that template', async () => {
+  const view = await openModal()
+  const reviewer = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
+  await view.interact(() => { reviewer.props.onClick() })
+  const preview = find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined)
+  const instruction = preview.children[0]
+  assert.ok(instruction.includes('«Reviewer»'))
+  assert.ok(instruction.includes('template: "tpl-reviewer"'))
+  assert.ok(instruction.includes('You review diffs critically.'))
+})
+
+test('the task field is appended to the instruction and to the tool-call line', async () => {
+  const view = await openModal()
+  await typeInto(view, 'data-agent-roster-task', '  review the payments module  ')
+  const preview = find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined)
+  const instruction = preview.children[0]
+  assert.ok(instruction.includes('Current task for this member: review the payments module'))
+  assert.ok(instruction.includes('and the current task text above as task'))
+  assert.equal(instruction.includes('(omit task)'), false)
+})
+
+test('confirm injects the instruction through sessions.using → prompt(queue) and reports success', async () => {
+  const view = await openModal()
+  await typeInto(view, 'data-agent-roster-task', 'review the payments module')
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
+  assert.equal(confirm.props.disabled, false)
+  await view.interact(() => { confirm.props.onClick() })
+  const calls = view.sessions.calls
+  assert.equal(calls.length, 2, 'using() plus the prompt() call')
+  assert.equal(calls[0].target, 'sess-1')
+  assert.deepEqual(calls[0].options, { source: 'agent-roster' })
+  assert.equal(calls[1].mode, 'queue')
+  assert.equal(calls[1].content.length, 1)
+  assert.equal(calls[1].content[0].type, 'text')
+  assert.ok(calls[1].content[0].text.includes('template: "tpl-researcher"'))
+  assert.ok(calls[1].content[0].text.includes('Current task for this member: review the payments module'))
+  // Success banner names the template; no spawn happened plugin-side.
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success')
+  assert.ok(banner, 'the success banner renders')
+  assert.ok(texts(banner).some((line) => line === 't:inject.sent(name=Researcher)'))
+  assert.equal(view.roster.saveTemplate === undefined, false)
+})
+
+test('a rejected prompt renders the error line and keeps the modal open', async () => {
+  const view = await openModal({ sessions: { promptResult: { ok: false, error: { code: 'session/agent-busy', message: 'agent busy' } } } })
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'error')
+  assert.ok(banner, 'the error banner renders')
+  assert.equal(banner.props['data-agent-roster-error'], 'session/agent-busy')
+  assert.ok(texts(banner).some((line) => line.includes('t:inject.failed')))
+  assert.ok(texts(banner).some((line) => line.includes('agent busy')))
+  assert.ok(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), 'still open')
+})
+
+test('an unavailable sessions service degrades to the unavailable error, never a crash', async () => {
+  const view = await openModal({ sessions: { fail: new Error('sessions unavailable') } })
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'error')
+  assert.ok(banner, 'the error banner renders')
+  assert.ok(texts(banner).some((line) => line.includes('t:inject.failed')))
+})
+
+test('a missing roster namespace degrades to the unavailable line, never a crash', async () => {
+  const view = await openModal({ roster: null })
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'unavailable'))
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
+  assert.equal(confirm.props.disabled, true, 'nothing to inject without a template')
+})
+
+test('a failed template load renders the error line with the upstream message', async () => {
+  const view = await openModal({
+    roster: healthyRoster({ listTemplates: async () => ({ ok: false, error: { code: 'roster/storage-degraded', message: 'storage closed' } }) }),
   })
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined), 'the edit form opens')
-  // Prefill: the shared role fields and the default-model editor + effort.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-name'] !== undefined).props.value, 'Market Scout')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-description'] !== undefined).props.value, 'Scans markets')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-role-prompt'] !== undefined).props.value, 'You scan markets.')
-  const model = find(view.vdom, (node) => node.props?.['data-agent-roster-card-model'] !== undefined)
-  assert.equal(model.props['data-agent-roster-menu-value'], JSON.stringify(['deepseek', 'reasoner']))
-  assert.equal(model.props['data-agent-roster-card-model'], JSON.stringify(['deepseek', 'reasoner']))
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined).props['data-agent-roster-menu-value'], 'high')
-  // Edit the description; switch the default model to one without efforts.
-  await typeInto(view, 'data-agent-roster-role-description', 'Scans rival markets')
-  await pickMenuOption(view, 'data-agent-roster-card-model', JSON.stringify(['deepseek', 'chat']))
+  const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
+  assert.ok(note, 'the failure note renders')
+  assert.equal(note.props['data-agent-roster-error'], 'roster/storage-degraded')
+  assert.ok(texts(note).some((line) => line.includes('storage closed')))
+})
+
+test('an empty roster points at the Settings page instead of offering a dead confirm', async () => {
+  const view = await openModal({ roster: healthyRoster({ listTemplates: async () => ({ ok: true, value: [] }) }) })
+  const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty')
+  assert.ok(note, 'the empty note renders')
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.disabled, true)
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined), undefined)
+})
+
+// ---------------------------------------------------------------------------
+// Settings section — the roster manager
+// ---------------------------------------------------------------------------
+
+test('the roster manager registers one settings.section entry under the loader row id', () => {
+  const { recorded } = applyPlugin({})
+  const entry = recorded.registers.find(({ declaration }) => declaration.name === 'settings.section')
+  assert.ok(entry, 'one settings.section entry')
+  assert.equal(entry.declaration.id, 'agent-roster')
+  assert.equal(entry.declaration.order, 40)
+})
+
+test('the card lists records with the model chip and the updated time', async () => {
+  const view = await mountSection()
+  const ids = findAll(view.vdom, (node) => typeof node.props?.['data-agent-roster-row'] === 'string')
+  assert.deepEqual(ids.map((node) => node.props['data-agent-roster-row']), ['tpl-researcher', 'tpl-reviewer'])
+  const chips = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-model'] !== undefined)
+  assert.equal(chips.length, 2)
+  assert.ok(texts(chips[0]).includes('t:card.model.none'))
+  assert.ok(texts(view.vdom).some((line) => line.startsWith('t:card.updatedAt(time=')))
+})
+
+test('the add form gates on name+prompt, defaults to no model, and sends no id', async () => {
+  const view = await mountSection()
+  const add = find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined)
+  await view.interact(() => { add.props.onClick() })
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined))
+  const save = () => find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
+  assert.equal(save().props.disabled, true, 'gated while incomplete')
+  await typeInto(view, 'data-agent-roster-role-name', 'Market Scout')
+  assert.equal(save().props.disabled, true, 'still gated without a prompt')
+  await typeInto(view, 'data-agent-roster-role-prompt', 'You scout markets.')
+  assert.equal(save().props.disabled, false)
+  await view.interact(() => { save().props.onClick() })
+  assert.equal(view.roster.saved.length, 1)
+  assert.equal(view.roster.saved[0].id, undefined, 'add sends no id')
+  assert.equal(view.roster.saved[0].name, 'Market Scout')
+  assert.equal(view.roster.saved[0].defaultModel, null)
+})
+
+test('edit prefills the shared fields and saves through saveTemplate with the id', async () => {
+  const view = await mountSection()
+  const edit = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] !== undefined)[1]
+  await view.interact(() => { edit.props.onClick() })
+  const name = find(view.vdom, (node) => typeof node.props?.['data-agent-roster-role-name'] === 'string')
+  assert.equal(name.props.value, 'Reviewer')
+  await typeInto(view, 'data-agent-roster-role-prompt', 'You review diffs mercilessly.')
   const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
   await view.interact(() => { save.props.onClick() })
-  // The wire payload: the id, kept fields, the edited description, and the
-  // new explicit defaultModel (the model switch cleared the effort).
-  assert.deepEqual(view.calls.saved, [{
-    id: 'tpl-scout',
-    name: 'Market Scout',
-    description: 'Scans rival markets',
-    prompt: 'You scan markets.',
-    defaultModel: { provider: 'deepseek', model: 'chat' },
-  }])
-  // The form closes and the list refreshes after the save.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined), undefined)
-  assert.ok(view.calls.listed >= 2, 'the list is re-read after saving')
+  assert.equal(view.roster.saved.length, 1)
+  assert.equal(view.roster.saved[0].id, 'tpl-reviewer')
+  assert.equal(view.roster.saved[0].prompt, 'You review diffs mercilessly.')
 })
 
-test('card edit keeps an unmapped default model losslessly when the catalog is absent', async () => {
-  const view = await mountSection()
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] === 'tpl-scout').props.onClick()
-  })
-  // No catalog rows: the stored ref rides as a synthetic option row, effort kept.
-  const model = find(view.vdom, (node) => node.props?.['data-agent-roster-card-model'] !== undefined)
-  assert.equal(model.props['data-agent-roster-menu-value'], JSON.stringify(['deepseek', 'reasoner']))
-  const effort = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
-  assert.equal(effort.props['data-agent-roster-menu-value'], 'high')
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined).props.onClick()
-  })
-  assert.deepEqual(view.calls.saved[0].defaultModel, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
-})
-
-test('card add form gates on name+prompt, defaults to no model, and sends no id', async () => {
+test('the default-model picker offers the catalog through the host dropdown and sends a ModelRef', async () => {
   const view = await mountSection({ extras: { session: { modelCatalog: catalogFace } } })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
-  })
-  // The default-model editor defaults to none with its own labeled row.
-  const model = find(view.vdom, (node) => node.props?.['data-agent-roster-card-model'] !== undefined)
-  assert.equal(model.props['data-agent-roster-menu-value'], '')
-  assert.equal(model.props['data-agent-roster-card-model'], 'none')
-  await view.interact(() => { model.props.onClick() })
-  const noneRow = find(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] === '')
-  assert.ok(texts(noneRow).includes('t:card.model.none'))
-  // Close with a re-found trigger (the pre-open closure would reopen).
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-model'] !== undefined).props.onClick()
-  })
-  // Save gated with the explanatory hint until name+prompt are set.
-  let save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
-  assert.equal(save.props.disabled, true)
-  assert.ok(texts(find(view.vdom, (node) => node.props?.['data-agent-roster-card-save-hint'] !== undefined)).includes('t:card.incomplete'))
-  await typeInto(view, 'data-agent-roster-role-name', 'Librarian')
-  await typeInto(view, 'data-agent-roster-role-prompt', 'You keep the library.')
+  const add = find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined)
+  await view.interact(() => { add.props.onClick() })
+  await typeInto(view, 'data-agent-roster-role-name', 'Market Scout')
+  await typeInto(view, 'data-agent-roster-role-prompt', 'You scout markets.')
   await pickMenuOption(view, 'data-agent-roster-card-model', JSON.stringify(['deepseek', 'reasoner']))
-  await pickMenuOption(view, 'data-agent-roster-effort', 'low')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-save-hint'] !== undefined), undefined)
-  save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
+  const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
   await view.interact(() => { save.props.onClick() })
-  assert.deepEqual(view.calls.saved, [{
-    name: 'Librarian',
-    description: '',
-    prompt: 'You keep the library.',
-    defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'low' },
-  }])
+  assert.deepEqual(view.roster.saved[0].defaultModel, { provider: 'deepseek', model: 'reasoner' })
 })
 
-test('card delete arms on the first click and calls deleteTemplate on the second', async () => {
-  const deleted = []
-  let listed = 0
-  let list = [...CARD_TEMPLATES]
-  const view = await mountSection({ roster: {
-    listTemplates: async () => { listed += 1; return { ok: true, value: list } },
-    deleteTemplate: async (id) => { deleted.push(id); list = list.filter((tpl) => tpl.id !== id); return { ok: true, value: { deleted: true } } },
-  } })
-  const button = () => find(view.vdom, (node) => node.props?.['data-agent-roster-row-delete'] === 'tpl-researcher')
-  assert.ok(texts(button()).includes('t:card.delete'))
-  // First click arms the confirmation only; nothing is deleted.
-  await view.interact(() => { button().props.onClick() })
-  assert.deepEqual(deleted, [])
-  const armed = button()
-  assert.ok(texts(armed).includes('t:card.delete.confirm'))
-  // Second click deletes and refreshes the list.
+test('a template defaultModel prefills the editor losslessly even without a catalog', async () => {
+  const view = await mountSection({
+    roster: healthyRoster({ listTemplates: async () => ({ ok: true, value: [{ ...TEMPLATES[0], defaultModel: { provider: 'acme', model: 'custom-1' } }] }) }),
+  })
+  const edit = find(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] !== undefined)
+  await view.interact(() => { edit.props.onClick() })
+  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-card-model'] !== undefined)
+  assert.equal(trigger.props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'custom-1']))
+  assert.ok(texts(trigger).includes('acme / custom-1'))
+})
+
+test('delete arms on the first click and calls deleteTemplate on the second', async () => {
+  const view = await mountSection()
+  const del = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-delete'] !== undefined)[1]
+  await view.interact(() => { del.props.onClick() })
+  assert.deepEqual(view.roster.deleted, [], 'first click only arms')
+  assert.ok(texts(view.vdom).some((line) => line.includes('t:card.delete.confirm')))
+  const armed = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-delete'] !== undefined)[1]
   await view.interact(() => { armed.props.onClick() })
-  assert.deepEqual(deleted, ['tpl-researcher'])
-  assert.ok(listed >= 2, 'the list is re-read after deletion')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-row'] === 'tpl-researcher'), undefined)
+  assert.deepEqual(view.roster.deleted, ['tpl-reviewer'])
 })
-
-
-
 
 test('card save and delete failures render bilingual error lines', async () => {
-  // Save failure: the form stays open with the reason line.
-  const view = await mountSection({ roster: {
-    listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES }),
-    saveTemplate: async () => { throw Object.assign(new Error('Template name "X" is already taken / 名称已被占用'), { code: 'roster/name-taken' }) },
-  } })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
+  const view = await mountSection({
+    roster: healthyRoster({
+      saveTemplate: async () => ({ ok: false, error: { code: 'roster/name-taken', message: 'name taken' } }),
+      deleteTemplate: async () => ({ ok: false, error: { code: 'roster/not-found', message: 'gone' } }),
+    }),
   })
-  await typeInto(view, 'data-agent-roster-role-name', 'Dup')
-  await typeInto(view, 'data-agent-roster-role-prompt', 'P')
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined).props.onClick()
-  })
-  const error = find(view.vdom, (node) => node.props?.['data-agent-roster-card-form-error'] !== undefined)
-  assert.ok(error, 'the save failure line renders')
-  assert.equal(error.props['data-agent-roster-error'], 'roster/name-taken')
-  const line = texts(error).join(' ')
-  assert.ok(line.includes('t:card.saveFailed'))
-  assert.ok(line.includes('roster/name-taken — Template name "X" is already taken / 名称已被占用'))
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined), 'the form stays open for a fix')
-  // Delete failure: the list renders the reason line.
-  const view2 = await mountSection({ roster: {
-    listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES }),
-    deleteTemplate: async () => { throw Object.assign(new Error('store write failed / 存储写入失败'), { code: 'roster/store-write' }) },
-  } })
-  const del = () => find(view2.vdom, (node) => node.props?.['data-agent-roster-row-delete'] === 'tpl-researcher')
-  await view2.interact(() => { del().props.onClick() })
-  await view2.interact(() => { del().props.onClick() })
-  const error2 = find(view2.vdom, (node) => node.props?.['data-agent-roster-card-error'] !== undefined)
-  assert.ok(error2, 'the delete failure line renders')
-  const line2 = texts(error2).join(' ')
-  assert.ok(line2.includes('t:card.deleteFailed'))
-  assert.ok(line2.includes('roster/store-write — store write failed / 存储写入失败'))
-})
-
-test('card list degrades: unavailable namespace, failed load, empty roster', async () => {
-  const unavailable = await mountSection({ roster: null })
-  assert.ok(texts(find(unavailable.vdom, (node) => node.props?.['data-agent-roster-note'] === 'unavailable')).join(' ')
-    .includes('t:templates.unavailable'))
-  const failed = await mountSection({ roster: {
-    listTemplates: async () => { throw Object.assign(new Error('boom'), { code: 'roster/store-read' }) },
-  } })
-  const note = find(failed.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
-  assert.ok(texts(note).join(' ').includes('t:templates.error'))
-  assert.ok(texts(note).join(' ').includes('roster/store-read — boom'))
-  const empty = await mountSection({ roster: { listTemplates: async () => ({ ok: true, value: [] }) } })
-  assert.ok(texts(find(empty.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty')).join(' ')
-    .includes('t:templates.empty'))
+  const edit = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] !== undefined)[0]
+  await view.interact(() => { edit.props.onClick() })
+  const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
+  await view.interact(() => { save.props.onClick() })
+  const saveError = find(view.vdom, (node) => node.props?.['data-agent-roster-error'] === 'roster/name-taken')
+  assert.ok(saveError, 'the save failure line renders')
+  assert.ok(texts(saveError).some((line) => line.includes('name taken')))
+  const cancel = find(view.vdom, (node) => node.props?.['data-agent-roster-card-cancel'] !== undefined)
+  await view.interact(() => { cancel.props.onClick() })
+  const del = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-delete'] !== undefined)[0]
+  await view.interact(() => { del.props.onClick() })
+  const armed = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-delete'] !== undefined)[0]
+  await view.interact(() => { armed.props.onClick() })
+  const deleteError = find(view.vdom, (node) => node.props?.['data-agent-roster-error'] === 'roster/not-found')
+  assert.ok(deleteError, 'the delete failure line renders')
+  assert.ok(texts(deleteError).some((line) => line.includes('gone')))
 })
 
 test('card cancel returns to the list without writing anything', async () => {
   const view = await mountSection()
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
-  })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-cancel'] !== undefined).props.onClick()
-  })
+  const add = find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined)
+  await view.interact(() => { add.props.onClick() })
+  const cancel = find(view.vdom, (node) => node.props?.['data-agent-roster-card-cancel'] !== undefined)
+  await view.interact(() => { cancel.props.onClick() })
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined), undefined)
-  assert.ok(find(view.vdom, (node) => typeof node.props?.['data-agent-roster-row'] === 'string'), 'the list is back')
-  assert.deepEqual(view.calls.saved, [])
-  assert.deepEqual(view.calls.deleted, [])
-})
-
-
-// ---------------------------------------------------------------------------
-// Review fix wave — the template defaultModel reaches the spawn flow, the
-// template-load failure line, team-busy close gating, card banner hygiene.
-// ---------------------------------------------------------------------------
-
-/** A default-bearing template: the card's chip advertises its defaultModel. */
-const SCOUT_TEMPLATE = {
-  id: 'tpl-scout', name: 'Market Scout', description: 'Scans markets', prompt: 'You scan markets.',
-  defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
-  createdAt: '2026-11-20T08:00:00.000Z', updatedAt: '2026-11-21T08:00:00.000Z',
-}
-
-/** Open the modal over the scout template (auto-selected first) plus a plain one. */
-async function openScoutModal({ extras } = {}) {
-  const spawned = []
-  const view = await openModal({
-    roster: {
-      listTemplates: async () => ({ ok: true, value: [SCOUT_TEMPLATE, TEMPLATES[0]] }),
-      spawnMember: async (input) => { spawned.push(input); return { ok: true, value: { name: 'spawned-member' } } },
-      teamStatus: async () => ({ ok: true, value: HEALTHY_TEAM }),
-    },
-    extras,
-  })
-  view.scoutSpawned = spawned
-  return view
-}
-
-test('a template defaultModel prefills the spawn selector and is sent (lossless without a catalog)', async () => {
-  const reasonerKey = JSON.stringify(['deepseek', 'reasoner'])
-  // With a catalog: the prefill maps to the catalog row; effort included.
-  const view = await openScoutModal({ extras: { session: { modelCatalog: catalogFace } } })
-  const select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.equal(select.props['data-agent-roster-menu-value'], reasonerKey, 'the selector prefills the template default')
-  assert.equal(select.props['data-agent-roster-model'], reasonerKey)
-  const effort = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
-  assert.equal(effort.props['data-agent-roster-menu-value'], 'high', 'the stored effort prefills too')
-  let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.deepEqual(view.scoutSpawned[0].model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
-  // Without a catalog: the stored ref rides as a synthetic row and is still
-  // sent whole (no silent null/clear of the template default).
-  const view2 = await openScoutModal()
-  const select2 = find(view2.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.equal(select2.props['data-agent-roster-menu-value'], reasonerKey)
-  modal = find(view2.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view2.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.deepEqual(view2.scoutSpawned[0].model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
-})
-
-test('an explicit spawn-selector choice overrides the template prefill; a new selection re-applies its own default', async () => {
-  const chatKey = JSON.stringify(['deepseek', 'chat'])
-  const view = await openScoutModal({ extras: { session: { modelCatalog: catalogFace } } })
-  await pickMenuOption(view, 'data-agent-roster-model', chatKey)
-  let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.deepEqual(view.scoutSpawned[0].model, { provider: 'deepseek', model: 'chat' }, 'the explicit choice wins')
-  // Switching to the plain template re-applies ITS default (none): inherit.
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-researcher').props.onClick()
-  })
-  const select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.equal(select.props['data-agent-roster-menu-value'], '', 'the prefill follows the selection')
-  assert.equal(select.props['data-agent-roster-model'], 'inherit')
-  modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.equal(view.scoutSpawned[1].model, null)
-})
-
-test('reverting to inherit sends null — an explicit clear — and the default option says so', async () => {
-  const view = await openScoutModal({ extras: { session: { modelCatalog: catalogFace } } })
-  // Default-bearing template: the none row's copy names the clear.
-  const select = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  await view.interact(() => { select.props.onClick() })
-  const noneRow = find(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] === '')
-  assert.ok(texts(noneRow).join(' ').includes('t:model.inherit.clear'), 'the clear copy renders')
-  await view.interact(() => { noneRow.props.onClick() })
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  assert.equal(view.scoutSpawned[0].model, null, 'revert sends null (explicit clear, not the template fallback)')
-  // A template WITHOUT a default keeps the plain inherit copy.
-  const plain = await openModal()
-  const plainSelect = find(plain.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  await plain.interact(() => { plainSelect.props.onClick() })
-  const plainRow = find(plain.vdom, (node) => node.props?.['data-agent-roster-menu-option'] === '')
-  const label = texts(plainRow).join(' ')
-  assert.ok(label.includes('t:model.inherit'))
-  assert.equal(label.includes('t:model.inherit.clear'), false, 'no clear copy without a template default')
+  assert.equal(view.roster.saved.length, 0)
 })
 
 test('a not-ok listTemplates result renders the failure line, not the empty note', async () => {
-  const view = await openModal({ roster: {
-    listTemplates: async () => ({ ok: false, error: { code: 'roster/store-read', message: 'domain read failed / 域读取失败' } }),
-    spawnMember: async () => ({ ok: true, value: { name: 'x' } }),
-    teamStatus: async () => ({ ok: true, value: HEALTHY_TEAM }),
-  } })
+  const view = await mountSection({
+    roster: healthyRoster({ listTemplates: async () => ({ ok: false, error: { code: 'roster/storage-degraded', message: 'closed' } }) }),
+  })
   const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
   assert.ok(note, 'the failure note renders')
-  const line = texts(note).join(' ')
-  assert.ok(line.includes('t:templates.error'))
-  assert.ok(line.includes('roster/store-read — domain read failed / 域读取失败'))
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty'), undefined)
-})
-
-test('modal close is gated while a team action is in flight', async () => {
-  let resolveEnable
-  const view = await openModal({
-    roster: rosterWithTeam({ teamMode: false, isRoot: true, canEnable: true }),
-    extras: { agentTeams: { setEnabled: () => new Promise((resolve) => { resolveEnable = resolve }) } },
-  })
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-team-enable'] !== undefined).props.onClick()
-  })
-  let modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined).props.disabled, true)
-  modal.props.onClose()
-  await view.interact()
-  assert.ok(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), 'the modal survives close while a team action runs')
-  resolveEnable({ ok: true, value: undefined })
-  await view.interact()
-  modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  modal.props.onClose()
-  await view.interact()
-  assert.equal(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), undefined, 'close works again once the team action settles')
-})
-
-
-// ---------------------------------------------------------------------------
-// Settings section — the AI-draft configuration block (2026-11-23 UX rework).
-// ---------------------------------------------------------------------------
-
-test('the settings block reads the form under the LOADER ROW id namespace', async () => {
-  const view = await mountSection({ settings: { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'chat' } })
-  // 'agent-roster' (the cordis.patch.yml row id), never the package name —
-  // the wrong key left the block in Loading settings… forever. Ready means
-  // the toggle renders checked instead of the loading note.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'loading'), undefined,
-    'no loading note when the form resolves')
-  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-toggle'] !== undefined)
-  assert.ok(toggle, 'the toggle renders (block is ready, not loading)')
-  assert.equal(toggle.props.checked, true)
-  assert.ok(view.recorded.configKeys.includes('agent-roster'), 'the row-id namespace is requested')
-  assert.equal(view.recorded.configKeys.includes('dsh-agent-roster'), false, 'never the package name')
-})
-
-test('the AI-draft block stages the toggle and model through the config form', async () => {
-  const view = await mountSection({
-    extras: { session: { modelCatalog: catalogFace } },
-    settings: { draftEnabled: false, draftModelProvider: '', draftModelId: '' },
-  })
-  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-toggle'] !== undefined)
-  assert.equal(toggle.props.checked, false)
-  // Enable: one queued set of the volatile boolean.
-  await view.interact(() => { toggle.props.onChange({ target: { checked: true } }) })
-  assert.deepEqual(view.form.writes.sets, [['draftEnabled', true]])
-  // Enabled without a model: the required-model hint renders.
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-draft-required'] !== undefined))
-  // Pick a model from the catalog: one atomic mutation sets provider+model
-  // and clears the effort.
-  await pickMenuOption(view, 'data-agent-roster-draft-model-setting', JSON.stringify(['deepseek', 'chat']))
-  assert.deepEqual(view.form.writes.mutations, [[
-    { op: 'set', path: ['draftModelProvider'], value: 'deepseek' },
-    { op: 'set', path: ['draftModelId'], value: 'chat' },
-    { op: 'set', path: ['draftReasoningEffort'], value: '' },
-  ]])
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-draft-required'] !== undefined), undefined)
-})
-
-test('the AI-draft block reads back a configured model and offers its efforts', async () => {
-  const view = await mountSection({
-    extras: { session: { modelCatalog: catalogFace } },
-    settings: { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'reasoner', draftReasoningEffort: 'high' },
-  })
-  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-toggle'] !== undefined)
-  assert.equal(toggle.props.checked, true)
-  const model = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-model-setting'] !== undefined)
-  assert.equal(model.props['data-agent-roster-draft-model-setting'], JSON.stringify(['deepseek', 'reasoner']))
-  const effort = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-effort-setting'] !== undefined)
-  assert.ok(effort, 'the effort menu renders for a model that advertises efforts')
-  assert.equal(effort.props['data-agent-roster-menu-value'], 'high')
-  await pickMenuOption(view, 'data-agent-roster-draft-effort-setting', 'low')
-  assert.deepEqual(view.form.writes.sets, [['draftReasoningEffort', 'low']])
-  // Unsetting the model clears all three fields atomically.
-  await pickMenuOption(view, 'data-agent-roster-draft-model-setting', '')
-  assert.deepEqual(view.form.writes.mutations.at(-1), [
-    { op: 'set', path: ['draftModelProvider'], value: '' },
-    { op: 'set', path: ['draftModelId'], value: '' },
-    { op: 'set', path: ['draftReasoningEffort'], value: '' },
-  ])
-})
-
-test('the add form points at the in-session drafting surface instead of embedding one', async () => {
-  const view = await mountSection()
-  await view.interact(() => {
-    find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick()
-  })
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-form'] !== undefined), 'the add form opens')
-  assert.ok(texts(find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft-hint'] !== undefined))
-    .includes('t:draft.elsewhere'), 'the elsewhere hint renders')
-  // No drafting controls exist on this surface at all.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-draft'] !== undefined), undefined)
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-brief'] !== undefined), undefined)
-})
-
-test('card delete-failure banner clears on editor open and on a successful delete', async () => {
-  let failFirst = true
-  const deletedIds = []
-  const view = await mountSection({ roster: {
-    listTemplates: async () => ({ ok: true, value: CARD_TEMPLATES.filter((tpl) => !deletedIds.includes(tpl.id)) }),
-    deleteTemplate: async (id) => {
-      if (failFirst) {
-        failFirst = false
-        throw Object.assign(new Error('store write failed / 存储写入失败'), { code: 'roster/store-write' })
-      }
-      deletedIds.push(id)
-      return { ok: true, value: { deleted: true } }
-    },
-  } })
-  const del = () => find(view.vdom, (node) => node.props?.['data-agent-roster-row-delete'] === 'tpl-researcher')
-  await view.interact(() => { del().props.onClick() })
-  await view.interact(() => { del().props.onClick() })
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-card-error'] !== undefined), 'the failure banner renders')
-  // Opening any editor clears the stale banner.
-  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined).props.onClick() })
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-error'] !== undefined), undefined)
-  await view.interact(() => { find(view.vdom, (node) => node.props?.['data-agent-roster-card-cancel'] !== undefined).props.onClick() })
-  // A successful delete leaves no banner either, and the row is gone.
-  await view.interact(() => { del().props.onClick() })
-  await view.interact(() => { del().props.onClick() })
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-card-error'] !== undefined), undefined)
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-row'] === 'tpl-researcher'), undefined)
 })

@@ -157,7 +157,7 @@ test('apply reads config through wrappers', async () => {
     // inject callback — the tools registration scope (tests/tools.spec.js
     // drives and asserts it).
     assert.equal(host.injects.length, 1, 'exactly the tools inject callback')
-    assert.deepEqual(host.injects[0].names, ['tools'])
+    assert.deepEqual(host.injects[0].names, ['tools', 'subagents'])
     assert.equal(host.effects.length, 1, 'wiring wrapped in exactly one ctx.effect')
     assert.ok(wrapperReads >= 1, 'exposeAgentTools must be read through the wrapper getter')
     const record = JSON.parse(readFileSync(file, 'utf8'))
@@ -195,18 +195,12 @@ test('Config parses {} to exposeAgentTools: true', () => {
   assert.equal(typeof parsed.exposeAgentTools?.get, 'undefined')
 })
 
-test('Config parses AI-draft settings as volatile wrappers with OFF/empty defaults', () => {
+test('Config exposes exactly one field: the authoring-tools toggle', () => {
+  // ADR-0011 removed every draft field: drafting is gone and member creation
+  // is the always-on roster_spawn tool, so nothing else belongs in Config.
   const parsed = Config({})
-  // Volatile = live-editable AND persisted (ADR-0005): the field parses as
-  // a reactive wrapper the Settings section stages through configForms.
-  assert.equal(unwrap(parsed.draftEnabled), false, 'AI drafting opts in, not out')
-  assert.equal(typeof parsed.draftEnabled.get, 'function')
-  assert.equal(unwrap(parsed.draftModelProvider), '')
-  assert.equal(unwrap(parsed.draftModelId), '')
-  assert.equal(unwrap(parsed.draftReasoningEffort), '')
-  for (const key of ['draftModelProvider', 'draftModelId', 'draftReasoningEffort']) {
-    assert.equal(typeof parsed[key].get, 'function', `${key} is volatile`)
-  }
+  assert.deepEqual(Object.keys(parsed), ['exposeAgentTools'])
+  assert.equal(unwrap(parsed.exposeAgentTools), true)
 })
 
 // ---------------------------------------------------------------------------
@@ -219,7 +213,7 @@ test('store persists through the storageDomain fake which validates records with
   assert.equal(storage.opens.specs.length, 1)
   assert.equal(storage.opens.specs[0].name, 'agent_roster')
   assert.equal(storage.opens.specs[0].version, 1)
-  assert.deepEqual(Object.keys(storage.opens.specs[0].tables).sort(), ['draft_sessions', 'templates'])
+  assert.deepEqual(Object.keys(storage.opens.specs[0].tables).sort(), ['templates'])
 
   const rec = RoleTemplate.parse({ id: 'a1', name: 'Reviewer', prompt: 'Review diffs.', createdAt: T0, updatedAt: T0 })
   await store.put(rec)
@@ -235,11 +229,6 @@ test('store persists through the storageDomain fake which validates records with
     () => store.put({ id: 'x', name: 'X', prompt: '', createdAt: T0, updatedAt: T0 }),
     (error) => Array.isArray(error.issues),
   )
-
-  // Draft-session mapping ops round-trip keyed by cwd.
-  await store.putDraftSession({ cwd: '/w', sessionId: 's1', createdAt: T0 })
-  assert.deepEqual(await store.draftSessionFor('/w'), { cwd: '/w', sessionId: 's1', createdAt: T0 })
-  assert.equal(await store.draftSessionFor('/other'), undefined)
 })
 
 test('save assigns id and timestamps', async () => {
@@ -354,18 +343,16 @@ test('degrades to memory store with storage-degraded status', async () => {
   assert.equal((await store.all()).length, 1)
   assert.equal((await store.byName('Reviewer'))?.id, 'm1')
   assert.equal(await store.delete('nope'), false)
-  await store.putDraftSession({ cwd: '/w', sessionId: 's1', createdAt: T0 })
-  assert.deepEqual(await store.draftSessionFor('/w'), { cwd: '/w', sessionId: 's1', createdAt: T0 })
+
 })
 
 test('AgentRosterService carries Remote markers for the three CRUD methods', () => {
   // remoteMethods reads markers off getPrototypeOf(service): pass an instance.
   const markers = remoteMethods(Object.create(AgentRosterService.prototype))
-  // Task 3 added spawnMember/teamStatus, Task 4 added draft; the
-  // spawn.spec/drafter.spec marker tests pin the full sets — this assertion
-  // keeps the CRUD trio covered here.
+  // ADR-0011: the remote surface is template CRUD only — spawn is an agent
+  // tool, and the draft/teamStatus/spawnMember methods are gone.
   assert.deepEqual(markers.map((m) => m.method).sort(),
-    ['deleteTemplate', 'draft', 'listTemplates', 'saveTemplate', 'spawnMember', 'teamStatus'])
+    ['deleteTemplate', 'listTemplates', 'saveTemplate'])
   for (const marker of markers) {
     assert.deepEqual(marker.invocation, { kind: 'direct' }, `${marker.method} is a direct invocation`)
     assert.equal(marker.mode, undefined, 'unary method')
@@ -426,7 +413,7 @@ test('a rejected domain open never dangles: recorded, mount completes, ops fail 
     // Operations still fail loudly with the typed backend error — the
     // creation-time handler observes, it does not swallow.
     await assert.rejects(() => store.all(), (error) => error === failure)
-    await assert.rejects(() => store.putDraftSession({ cwd: '/w', sessionId: 's', createdAt: T0 }), (error) => error === failure)
+    await assert.rejects(() => store.put({ id: 'z', name: 'Z', prompt: 'p', createdAt: T0, updatedAt: T0 }), (error) => error === failure)
 
     // Mount level: apply still completes (done) — the failure settles after
     // the mount, so it must not crash or block it — and the real status

@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Agent 花名册",
-    "description": "一个全 profile 共用的角色模板花名册，一键组建团队：会话内“+”菜单的成员生成流程（选模板、命名成员、可选模型与初始任务），在设置中配置的 AI 代笔（开关加草稿模型；草稿仅作建议），roster_template_save / roster_template_list 模型工具，以及设置中的“角色花名册”管理页。生成的成员即普通子代理，默认继承会话模型。",
+    "title": "角色花名册",
+    "description": "一份全 profile 共用的角色模板库，把组建团队变成一键操作：“+”菜单把所选模板的指令注入当前会话，由 lead agent 通过 roster_spawn 工具创建成员（模板指令冻结、模板模型生效）。附带 roster_template_save / roster_template_list 工具，以及设置页的角色花名册管理。成员就是普通子代理。",
     "detail": "docs/DETAIL.zh.md"
   }
 }

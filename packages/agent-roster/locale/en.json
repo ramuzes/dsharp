@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Agent roster",
-    "description": "A profile-wide roster of role templates with one-click team building: a \"+\"-menu member spawn flow (pick a template, name the member, optionally choose a model and an initial task), AI-assisted template drafting configured in Settings (toggle plus draft model; drafts only propose), roster_template_save / roster_template_list agent tools, and an Agent roster manager page in Settings. Members are ordinary subagents that inherit the session model by default.",
+    "description": "A profile-wide roster of role templates with one-click team building: a \"+\"-menu flow that injects the chosen template's instruction into the current conversation so the lead agent creates the member through the roster_spawn tool (template prompt frozen, template model applied). Includes roster_template_save / roster_template_list agent tools and an Agent roster manager in Settings. Members are ordinary subagents.",
     "detail": "docs/DETAIL.md"
   }
 }

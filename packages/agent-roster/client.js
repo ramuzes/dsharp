@@ -7,15 +7,14 @@
  * module-table identities, so nothing is bundled) and returns a cordis
  * plugin object (packages/airboard/client.js:18-27 shape).
  *
- * Task 6 landed the scaffold: locale dictionaries, the `agentRoster` remote
- * namespace mount (all six Host methods, Tasks 2–4), one "+"-menu command,
- * and the spawn modal's happy path. Task 7 completes the modal: the
- * custom-role form with save-as-template, the AI-draft area (fill-only
- * proposals), real model selection over the Host catalog, and the
- * team-gating banner states. Task 8 extracted the shared field/model
- * pieces for the manager UI; the 2026-11-23 UX rework moved that manager
- * from the Plugins-page card into a Settings page section and made the
- * AI-draft toggle + model a Settings-owned configuration.
+ * ADR-0011 shape: the "+"-menu modal composes one instruction from a role
+ * template (name, description, frozen standing prompt, optional task) and
+ * injects it into the current session as a user message; the lead agent
+ * runs its loop and calls the `roster_spawn` tool, which performs the
+ * deterministic spawn with the template's model. The client never spawns.
+ * The Settings section is the roster manager (list/add/edit/delete and the
+ * per-template default model); the templates are the whole configuration —
+ * there is no drafting surface and no teamwork gating.
  *
  * dsh interfaces consumed (verified in the checkout, AGENTS.md 2b):
  * - `commandUi` service 'commandUi' (packages/client/ui-commands/src/client/
@@ -76,14 +75,15 @@
  *   registration precedent ui-settings-models client/index.ts:143-152).
  *   With no `plugins.bundle.config` card of our own, the Plugins page
  *   shows this section's entry on the bundle row (settings shell
- *   contract). The AI-draft configuration (toggle + model) lives here;
- *   drafting itself needs a session, so its surface is the in-session
- *   "+"-menu modal (lib/drafter.js resolves the draft session's cwd from
- *   the requesting session).
- * - `configForms` client service (inject list; airboard client.js:770-774
- *   `ctx.configForms.get(<id>)` precedent) — the Settings block stages the
- *   volatile draft fields through the form's set/mutate (config-form.ts:
- *   109-133), and the modal reads the same snapshot live via subscribe.
+ *   contract). The section body is the roster manager: templates are the
+ *   only configuration the plugin has.
+ * - `sessions` client service (inject list) — the object layer the member
+ *   instruction is injected through: `ctx.sessions.using(sessionId, {
+ *   source }, ref => ref.binding.session.prompt(content, 'queue'))`
+ *   (api/session-controller/src/client/contract/session.ts:98-104;
+ *   in-tree precedent ui-commands/src/client/service.ts:105-113). This is
+ *   the composer-equivalent path: same acceptance, queueing, and log
+ *   visibility a typed message gets (ADR-0011).
  */
 window.__ModuleLoader__.load({
   id: 'dsh-agent-roster',
@@ -106,61 +106,31 @@ window.__ModuleLoader__.load({
 
     const zh = {
       'command.label': '添加成员',
-      'command.description': '从角色花名册挑选模板，创建一名团队成员',
+      'command.description': '从角色花名册挑选模板，让 agent 创建团队成员',
       'modal.title': '添加团队成员',
-      'modal.description': '选择角色模板，指定成员名称与首个任务',
       'modal.close': '关闭',
       'templates.title': '角色模板',
       'templates.loading': '正在加载模板…',
       'templates.unavailable': '花名册服务不可用：宿主插件未加载或版本过旧',
       'templates.error': '模板加载失败',
       'templates.empty': '还没有角色模板',
-      'confirm.hint.template': '请先选择一个角色模板',
-      'memberName.label': '成员名称',
-      'memberName.placeholder': '留空使用模板名称',
-      'memberName.hint': '成员在其会话树中的名字；留空时由模板名称派生',
-      'model.label': '模型',
-      'model.inherit': '继承当前会话模型',
-      'model.inherit.clear': '继承当前会话模型（不用模板默认模型）',
+      'templates.none': '还没有模板。请先到 设置 > Agent roster 新建一个角色模板。',
+      'preview.title': '将发送到当前会话的指令',
+      'task.label': '本次任务（可选）',
+      'task.placeholder': '交给这位成员的本次任务，例如：审查 payments 模块',
+      'inject.action': '创建成员',
+      'inject.sending': '发送中…',
+      'inject.sent': '已把「{name}」的创建指令发送到当前会话，agent 将据此创建成员',
+      'inject.failed': '发送失败',
+      'inject.unavailable': '会话消息通道不可用，无法发送创建指令',
       'model.effort.label': '推理力度（可选）',
       'model.effort.default': '模型默认',
-      'task.label': '首个任务（可选）',
-      'task.placeholder': '交给这位成员的第一个任务',
-      'custom.toggle': '自定义角色（不用模板）',
-      'custom.incomplete': '填写自定义角色的名称与提示词后才能创建成员',
       'custom.name.label': '角色名称',
       'custom.name.placeholder': '例如：Market Scout',
       'custom.description.label': '角色描述（可选）',
       'custom.description.placeholder': '一句话说明这个角色负责什么',
       'custom.prompt.label': '角色提示词',
-      'custom.prompt.placeholder': '写给这位成员的完整系统提示词',
-      'custom.saveTemplate': '保存为角色模板',
-      'draft.label': 'AI 起草',
-      'draft.placeholder': '用一两句话描述想要的角色，模型将起草名称、描述与提示词',
-      'draft.uses': '将使用 {model} 起草',
-      'draft.configure.hint': 'AI 代笔未开启或未配置模型 — 请到 设置 > Agent roster 开启并选择模型。',
-      'draft.elsewhere': 'AI 代笔请从会话中的“+”菜单使用（需要会话上下文）。',
-      'draft.action': '起草',
-      'draft.inflight': '起草中…',
-      'draft.abort': '停止等待',
-      'draft.aborted': '已停止等待：草稿会话中的生成可能仍在进行',
-      'draft.unparsed': '模型回复未能解析为结构化草稿，原文已填入提示词，请手动整理',
-      'draft.failed': '起草失败',
-      'team.guidance': '无法在此判断团队模式状态：可从根会话的模型菜单管理团队模式，或确认 agent-team 插件已启用',
-      'team.enable.explain': '团队模式让本次会话树中的成员互相协作。为这棵会话树启用团队模式：',
-      'team.enable.action': '启用团队模式',
-      'team.enable.enabling': '启用中…',
-      'team.nonroot': '这是成员会话：团队模式由根会话的模型菜单开关管理，请前往根会话操作',
-      'team.rows.explain': '团队模式需要 agent-team 插件，而它们当前处于停用状态。',
-      'team.rows.action': '启用 agent-team 插件',
-      'team.rows.confirm': '再次点击以确认启用两行插件',
-      'team.rows.enabling': '启用中…',
-      'team.actionFailed': '团队操作失败',
-      'action.confirm': '创建成员',
-      'action.confirming': '创建中…',
-      'action.cancel': '取消',
-      'spawn.success': '成员 {name} 已创建',
-      'spawn.failed': '创建失败',
+      'custom.prompt.placeholder': '写给这位成员的完整常驻指令（职责边界与主要目标）',
       'card.title': '角色花名册',
       'card.add': '新建角色模板',
       'card.edit': '编辑',
@@ -179,74 +149,34 @@ window.__ModuleLoader__.load({
       'card.model.chip.effort': '{provider} / {model} · {effort}',
       'card.updatedAt': '更新于 {time}',
       'settings.nav': '角色花名册',
-      'settings.draft.title': 'AI 代笔',
-      'settings.draft.toggle': '启用 AI 代笔',
-      'settings.draft.model': '草稿模型',
-      'settings.draft.model.unset': '未设置',
-      'settings.draft.effort.default': '默认',
-      'settings.draft.required': '已开启：请选择草稿模型。',
-      'settings.draft.explain': '开启后，会话内“+”菜单的自定义角色表单即可 AI 起草；草稿在专用草稿会话中生成，使用此模型。',
-      'settings.draft.loading': '设置读取中…',
-      'settings.draft.writeRefused': '设置写入被拒绝',
-      'settings.draft.writeFailed': '写入失败',
     }
     const en = {
       'command.label': 'Add member',
-      'command.description': 'Pick a roster template and spawn a team member',
+      'command.description': 'Pick a roster template and let the agent create the member',
       'modal.title': 'Add team member',
-      'modal.description': 'Choose a role template, set the member name and first task',
       'modal.close': 'Close',
       'templates.title': 'Role templates',
       'templates.loading': 'Loading templates…',
       'templates.unavailable': 'Roster service unavailable: host plugin not loaded or too old',
       'templates.error': 'Template load failed',
       'templates.empty': 'No role templates yet',
-      'confirm.hint.template': 'Pick a role template first',
-      'memberName.label': 'Member name',
-      'memberName.placeholder': 'Leave blank to use the template name',
-      'memberName.hint': "The member's name in its session tree; blank derives from the template name",
-      'model.label': 'Model',
-      'model.inherit': 'Inherit the current session model',
-      'model.inherit.clear': 'Inherit the current session model (skip the template default)',
+      'templates.none': 'No templates yet. Create one in Settings > Agent roster first.',
+      'preview.title': 'Instruction that will be sent to this session',
+      'task.label': 'Task for this member (optional)',
+      'task.placeholder': 'This session\'s task for the member, e.g. review the payments module',
+      'inject.action': 'Create member',
+      'inject.sending': 'Sending…',
+      'inject.sent': 'Sent the request for \u00ab{name}\u00bb to this session; the agent will create the member',
+      'inject.failed': 'Sending failed',
+      'inject.unavailable': 'The session message channel is unavailable; cannot send the request',
       'model.effort.label': 'Reasoning effort (optional)',
       'model.effort.default': 'Model default',
-      'task.label': 'First task (optional)',
-      'task.placeholder': 'The first task to hand this member',
-      'custom.toggle': 'Custom role (no template)',
-      'custom.incomplete': "Fill in the custom role's name and prompt to create the member",
       'custom.name.label': 'Role name',
       'custom.name.placeholder': 'e.g. Market Scout',
       'custom.description.label': 'Role description (optional)',
       'custom.description.placeholder': 'One line on what this role is for',
       'custom.prompt.label': 'Role prompt',
-      'custom.prompt.placeholder': 'The full standing prompt written for this member',
-      'custom.saveTemplate': 'Save as a role template',
-      'draft.label': 'AI draft',
-      'draft.placeholder': 'Describe the role you want in a sentence or two; the model drafts the name, description, and prompt',
-      'draft.uses': 'Drafts run on {model}',
-      'draft.configure.hint': 'AI drafting is off or has no model — enable it in Settings > Agent roster.',
-      'draft.elsewhere': 'AI drafting is available from the "+" menu inside a session (it needs a session context).',
-      'draft.action': 'Draft',
-      'draft.inflight': 'Drafting…',
-      'draft.abort': 'Stop waiting',
-      'draft.aborted': 'Stopped waiting: the draft session may still be generating',
-      'draft.unparsed': 'The reply did not parse into a structured draft; the raw text was placed in the prompt — edit it manually',
-      'draft.failed': 'Draft failed',
-      'team.guidance': "Team-mode status cannot be determined here. Manage Team mode from the root session's model menu, or make sure the agent-team plugins are enabled",
-      'team.enable.explain': 'Team mode lets the members of this session tree collaborate. Enable it for this tree:',
-      'team.enable.action': 'Enable Team mode',
-      'team.enable.enabling': 'Enabling…',
-      'team.nonroot': "This is a member session: Team mode is toggled from the root session's model menu — switch to the root conversation to change it",
-      'team.rows.explain': 'Team mode needs the agent-team plugins, and their rows are currently disabled.',
-      'team.rows.action': 'Enable the agent-team plugins',
-      'team.rows.confirm': 'Click again to confirm enabling both rows',
-      'team.rows.enabling': 'Enabling…',
-      'team.actionFailed': 'Team action failed',
-      'action.confirm': 'Create member',
-      'action.confirming': 'Creating…',
-      'action.cancel': 'Cancel',
-      'spawn.success': 'Member {name} created',
-      'spawn.failed': 'Spawn failed',
+      'custom.prompt.placeholder': 'The standing instruction for this member: responsibility boundary and main goal',
       'card.title': 'Role roster',
       'card.add': 'New role template',
       'card.edit': 'Edit',
@@ -262,19 +192,9 @@ window.__ModuleLoader__.load({
       'card.defaultModel': 'Default model',
       'card.model.none': 'No default model',
       'card.model.chip': '{provider} / {model}',
-      'card.model.chip.effort': '{provider} / {model} · {effort}',
+      'card.model.chip.effort': '{provider} / {model} \u00b7 {effort}',
       'card.updatedAt': 'Updated {time}',
       'settings.nav': 'Agent roster',
-      'settings.draft.title': 'AI draft',
-      'settings.draft.toggle': 'Enable AI-assisted drafting',
-      'settings.draft.model': 'Draft model',
-      'settings.draft.model.unset': 'Not configured',
-      'settings.draft.effort.default': 'Default',
-      'settings.draft.required': 'Enabled — pick a draft model.',
-      'settings.draft.explain': 'When enabled, the custom-role form in a session\'s "+" menu offers AI drafting; drafts run in the dedicated draft session on this model.',
-      'settings.draft.loading': 'Loading settings…',
-      'settings.draft.writeRefused': 'The settings write was refused',
-      'settings.draft.writeFailed': 'Write failed',
     }
 
     /**
@@ -288,77 +208,18 @@ window.__ModuleLoader__.load({
     let pluginCtx = null
 
     /**
-     * Optional lookup of one client Remote namespace (`remote.agentRoster`
-     * and the generated faces `remote.session`, `remote.agentTeams`,
-     * `remote.pluginInventory`, `remote.pluginManager`): try-guarded
-     * ctx.get — undefined when the face is absent on this host.
+     * Optional lookup of one client service by name — `remote.agentRoster`
+     * (our mounted namespace), `remote.session` (the model catalog), and
+     * `sessions` (the session object layer the member instruction is injected
+     * through). Try-guarded ctx.get: undefined when the service is absent on
+     * this host, so every consumer degrades instead of throwing.
      */
-    const optRemote = (name) => {
+    const optService = (name) => {
       try { return pluginCtx?.get?.(name) } catch { return undefined }
     }
 
     /** Optional roster namespace lookup; undefined until $mount lands. */
-    const rosterNs = () => optRemote('remote.agentRoster')
-
-    /**
-     * The plugin's own Config form, staged through the settings mutate path
-     * (airboard client.js:770-774 precedent: `ctx.configForms.get(<ns>)`;
-     * `configForms` is in the inject list). CRITICAL: the settings
-     * namespace is the LOADER ROW id from cordis.patch.yml —
-     * `ns: entry.options.id` (dsh packages/settings/settings/src/index.ts:
-     * 315,327) — NOT the package name: the 2026-11-23 "Loading settings…"
-     * incident came from keying the package name (dsh-agent-roster), whose
-     * mirror never becomes ready. Undefined while the host exposes no
-     * settings surface — every consumer degrades, never crashes.
-     */
-    const SETTINGS_NS = 'agent-roster'
-    const rosterForm = () => {
-      try { return pluginCtx?.get?.('configForms')?.get?.(SETTINGS_NS) } catch { return undefined }
-    }
-
-    /**
-     * Unwrap one config-form snapshot value: the mirror delivers plain JSON,
-     * but defensive wrapper-tolerance matches the host-side readString rule.
-     */
-    const configValue = (value) => (typeof value?.get === 'function' ? value.get() : value)
-
-    /**
-     * Read the Settings-owned AI-draft configuration from the form snapshot.
-     * @returns {{ phase: 'loading' | 'ready', enabled?: boolean, modelRef?: { provider: string, model: string, reasoningEffort?: string } | null }}
-     */
-    const draftSettingsOf = () => {
-      const form = rosterForm()
-      const snapshot = form?.getSnapshot?.()
-      if (snapshot?.status !== 'ready' || snapshot.value === null || typeof snapshot.value !== 'object') {
-        return { phase: 'loading' }
-      }
-      const value = snapshot.value
-      const provider = configValue(value.draftModelProvider)
-      const modelId = configValue(value.draftModelId)
-      const effort = configValue(value.draftReasoningEffort)
-      const modelRef = typeof provider === 'string' && provider !== ''
-        && typeof modelId === 'string' && modelId !== ''
-        ? { provider, model: modelId, ...(typeof effort === 'string' && effort !== '' ? { reasoningEffort: effort } : {}) }
-        : null
-      return { phase: 'ready', enabled: configValue(value.draftEnabled) === true, modelRef }
-    }
-
-    /**
-     * React hook over draftSettingsOf: re-reads on every form snapshot
-     * change (form.subscribe, the ConfigForm mirror contract) so a Settings
-     * edit is live in an open modal.
-     * @returns {ReturnType<typeof draftSettingsOf>}
-     */
-    function useDraftSettings() {
-      const [settings, setSettings] = React.useState(draftSettingsOf)
-      React.useEffect(() => {
-        setSettings(draftSettingsOf())
-        const form = rosterForm()
-        const off = form?.subscribe?.(() => { setSettings(draftSettingsOf()) })
-        return () => { off?.() }
-      }, [])
-      return settings
-    }
+    const rosterNs = () => optService('remote.agentRoster')
 
     /**
      * Await one RemoteResult-shaped call and yield its value: `{ok: true}`
@@ -382,28 +243,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The agent-team plugin rows of an inventory snapshot: entries whose
-     * entryId or moduleName names the two team plugins. Deployments
-     * configure ids `agent-team` / `tool-agent-team` with package names
-     * `@deepseek-ai/dsh-agent-team` / `@deepseek-ai/dsh-tool-agent-team`
-     * (snapshots/sdk/team-session-mode/cordis.yml); both naming faces are
-     * accepted because either may be customized per deployment.
-     * @param {Array<{ entryId?: string, moduleName?: string, enabled?: boolean }>} entries
-     * @returns {Array<{ entryId: string, enabled: boolean }>}
-     */
-    const TEAM_ROW_IDS = ['agent-team', 'tool-agent-team']
-    const TEAM_ROW_MODULES = ['@deepseek-ai/dsh-agent-team', '@deepseek-ai/dsh-tool-agent-team']
-    function teamRowsIn(entries) {
-      return entries
-        .filter((entry) => TEAM_ROW_IDS.includes(entry?.entryId) || TEAM_ROW_MODULES.includes(entry?.moduleName))
-        .map((entry) => ({ entryId: entry.entryId, enabled: entry.enabled === true }))
-    }
-
-    /**
-     * The Host half's six remote methods (lib/roster-service.js — Tasks 2-4)
-     * as version-1 invocation descriptors. Wire parameter names mirror the
-     * Host method signatures: object-input methods take one `input`, delete
-     * one `id` string, listTemplates none; every result is src-json. The
+     * The Host half's three remote methods (lib/roster-service.js) as
+     * version-1 invocation descriptors. Wire parameter names mirror the Host
+     * method signatures: object-input methods take one `input`, delete one
+     * `id` string, listTemplates none; every result is src-json. The
      * id/service/namespace/invocation shape follows the chrome-cdp
      * client.js:389-396 pattern over typert InvocationDescriptor.
      */
@@ -412,8 +255,7 @@ window.__ModuleLoader__.load({
     // validation rejects any parameter whose codec mode is not 'strict'
     // (dsh packages/api/gateway/src/client/index.ts validateContribution
     // :283-330 → requireStrictInputs :299-303 → requireStrictCodec :341-346;
-    // 'src-json' is legal for RESULTS only — chrome-cdp's zero-parameter
-    // status() mount never exercised this). After validation the invoke path
+    // 'src-json' is legal for RESULTS only). After validation the invoke path
     // reads only `parameter.wire` (prepareInvocation :505-546), so the
     // minimal legal TypertCodec is mode 'strict' + typeSymbol + create.
     // `create` comes from baseline zod (browser module table, hmr precedent:
@@ -428,9 +270,6 @@ window.__ModuleLoader__.load({
       { method: 'listTemplates', parameters: [] },
       { method: 'saveTemplate', parameters: [jsonParameter('input')] },
       { method: 'deleteTemplate', parameters: [jsonParameter('id')] },
-      { method: 'spawnMember', parameters: [jsonParameter('input')] },
-      { method: 'teamStatus', parameters: [jsonParameter('input')] },
-      { method: 'draft', parameters: [jsonParameter('input')] },
     ]
 
     /**
@@ -505,7 +344,7 @@ window.__ModuleLoader__.load({
     function useModelRows() {
       const [catalog, setCatalog] = React.useState({ phase: 'loading' })
       React.useEffect(() => {
-        const face = optRemote('remote.session')
+        const face = optService('remote.session')
         if (face?.modelCatalog === undefined) {
           setCatalog({ phase: 'degraded' })
           return undefined
@@ -850,47 +689,7 @@ window.__ModuleLoader__.load({
         }))
     }
 
-    /**
-     * The client-side draft wait shared by the modal's AI-draft area and the
-     * card's draft entry. `epoch` is the liveness token that lets an
-     * abandoned wait discard its late resolution; the mounted draft method
-     * declares no transport cancellation (lib/roster-service.js `draft(
-     * input)`, no signal parameter), so abort abandons the CLIENT wait only.
-     * The Host shares ONE draft session per workspace (ADR-0010), so a new
-     * start is refused while one runs.
-     * @param {(key: string, params?: object) => string} t - the locale seat.
-     * @returns {{ draft: object, drafting: boolean, start: (input: object)
-     *   => Promise<void>, abort: () => void }}
-     */
-    function useDraftFlow(t) {
-      const [draft, setDraft] = React.useState({ epoch: 0, phase: 'idle', result: null })
-      const drafting = draft.phase === 'drafting'
-      const start = async (input) => {
-        if (drafting) return
-        const briefText = typeof input?.brief === 'string' ? input.brief.trim() : ''
-        if (briefText === '') return
-        const ns = rosterNs()
-        if (ns?.draft === undefined) {
-          setDraft((prev) => ({ ...prev, epoch: prev.epoch + 1, phase: 'idle', result: { ok: false, error: { code: 'roster/unavailable', message: t('templates.unavailable') } } }))
-          return
-        }
-        const epoch = draft.epoch + 1
-        setDraft({ epoch, phase: 'drafting', result: null })
-        try {
-          const value = await settle(ns.draft({ ...input, brief: briefText }))
-          setDraft((prev) => (prev.epoch === epoch ? { ...prev, phase: 'idle', result: { ok: true, value } } : prev))
-        } catch (error) {
-          setDraft((prev) => (prev.epoch === epoch ? { ...prev, phase: 'idle', result: { ok: false, error } } : prev))
-        }
-      }
-      const abort = () => {
-        if (!drafting) return
-        setDraft((prev) => ({ ...prev, epoch: prev.epoch + 1, phase: 'idle', result: { ok: false, aborted: true } }))
-      }
-      return { draft, drafting, start, abort }
-    }
-
-    /** The flat-row key of one stored ModelRef, or null when malformed. */
+    /** One stored ModelRef as a stable key: JSON [provider, model], or null. */
     const refKey = (ref) => ref !== null && typeof ref === 'object'
       && typeof ref.provider === 'string' && typeof ref.model === 'string'
       ? JSON.stringify([ref.provider, ref.model])
@@ -923,61 +722,48 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The spawn modal. Everything it keeps is local state; nothing outlives
-     * the open modal. Body order is the Task 6 contract — team-status banner
-     * area, template list, member name, model selector, first task,
-     * custom-role toggle + form (AI-draft area, name/description/prompt,
-     * save-as-template) — over the shared Modal chrome.
-     *
-     * Task 7 behaviors: closing (Escape, mask, cancel — everything the
-     * Modal primitive routes through onClose) is gated while a spawn or
-     * draft is in flight, so an in-flight result is never silently dropped
-     * and no duplicate spawn can race it; the model selector is populated
-     * from the Host catalog with a "current session model" inherit default
-     * (explicit choice sends a ModelRef, the default sends null); the
-     * AI-draft area is a fill-only proposal (nothing is saved without the
-     * explicit confirm, and an unparsed draft is visibly flagged); the
-     * banner area carries the team-gating states (see the teamBanner
-     * derivation inside RosterModal). The draft model is NOT chosen here:
-     * the Settings > Agent roster page owns the toggle and the model
-     * (2026-11-23 UX ruling) — this area states which model a draft will
-     * use and points at Settings while the feature is off or unconfigured.
+     * Compose the instruction injected into the current session (SPEC §Design).
+     * Pinned shape: the agent must call `roster_spawn` with the template id and
+     * must not restate or rewrite the standing prompt — that is what keeps the
+     * template frozen while the agent contributes conversation context.
+     * @param {{ id: string, name: string, description: string, prompt: string }} template
+     * @param {string} [task] - optional one-off task typed in the modal.
+     * @returns {string} the exact user message to inject.
+     */
+    function composeMemberInstruction(template, task) {
+      const trimmedTask = typeof task === 'string' ? task.trim() : ''
+      return [
+        `Use the agent-roster template «${template.name}» to create a team member for me.`,
+        `Template description: ${template.description === '' ? '(none)' : template.description}`,
+        'Standing instruction the member must run with (do not rewrite it):',
+        '---',
+        template.prompt,
+        '---',
+        ...(trimmedTask === '' ? [] : [`Current task for this member: ${trimmedTask}`]),
+        `Call the roster_spawn tool with template: ${JSON.stringify(template.id)}`
+          + (trimmedTask === '' ? ' (omit task).' : ' and the current task text above as task.'),
+        'Do not describe the member in chat instead of creating it, and do not pass the standing instruction yourself.',
+      ].join('\n')
+    }
+
+    /**
+     * The "+"-menu modal (ADR-0011): pick a template, preview the exact
+     * instruction, optionally add this session's task, then inject it into the
+     * conversation. The plugin does NOT spawn here — the lead agent does, by
+     * calling `roster_spawn`; this keeps the agent loop in charge of context
+     * while the template's prompt and model stay frozen.
      * @param {any} props - `sessionId`, `close()`, the locale seat's `t`.
      */
     function RosterModal(props) {
       const { sessionId, close, t } = props
       const [templates, setTemplates] = React.useState({ phase: 'loading' })
       const [selectedId, setSelectedId] = React.useState(null)
-      const [memberName, setMemberName] = React.useState('')
       const [task, setTask] = React.useState('')
-      const [custom, setCustom] = React.useState(false)
       const [outcome, setOutcome] = React.useState(null)
-      const [spawning, setSpawning] = React.useState(false)
-      // Model catalog + choices: '' is the inherit default.
-      const { rows: modelRows } = useModelRows()
-      const [modelChoice, setModelChoice] = React.useState('')
-      const [effortChoice, setEffortChoice] = React.useState('')
-      // Team gating: status + the agent-team rows of the plugin inventory.
-      const [team, setTeam] = React.useState({ phase: 'loading' })
-      const [inventory, setInventory] = React.useState({ phase: 'loading', rows: [] })
-      const [teamBusy, setTeamBusy] = React.useState(false)
-      const [teamError, setTeamError] = React.useState(null)
-      const [rowsConfirming, setRowsConfirming] = React.useState(false)
-      // Custom-role form + AI-draft area.
-      const [customName, setCustomName] = React.useState('')
-      const [customDescription, setCustomDescription] = React.useState('')
-      const [customPrompt, setCustomPrompt] = React.useState('')
-      const [saveAsTemplate, setSaveAsTemplate] = React.useState(false)
-      const [brief, setBrief] = React.useState('')
-      // The Settings-owned AI-draft configuration (toggle + model), read
-      // live from the config form — the host re-validates on every draft.
-      const draftSettings = useDraftSettings()
-      // The shared client-side draft wait (epoch-guarded, abortable).
-      const { draft, drafting, start: startDraftFlow, abort: abortDraft } = useDraftFlow(t)
+      const [sending, setSending] = React.useState(false)
 
-      // Load the template list once per open. The namespace may be missing
-      // (host plugin not loaded) — that degrades to the unavailable line,
-      // never a crash.
+      // Load the template list once per open; a missing namespace (host plugin
+      // not loaded) degrades to the unavailable line, never a crash.
       React.useEffect(() => {
         const ns = rosterNs()
         if (ns?.listTemplates === undefined) {
@@ -992,319 +778,81 @@ window.__ModuleLoader__.load({
         return () => { alive = false }
       }, [])
 
-      /** Read (and re-read after banner actions) the session tree's team status. */
-      const loadTeam = React.useCallback(() => {
-        const ns = rosterNs()
-        if (ns?.teamStatus === undefined) {
-          setTeam({ phase: 'unavailable' })
-          return undefined
-        }
-        return settle(ns.teamStatus({ sessionId })).then(
-          (value) => { setTeam({ phase: 'ready', value: value ?? {} }) },
-          (error) => { setTeam({ phase: 'failed', error }) },
-        )
-      }, [sessionId])
-      React.useEffect(() => { loadTeam() }, [loadTeam])
-
-      /** Read (and re-read) the agent-team rows of the plugin inventory. */
-      const loadInventory = React.useCallback(() => {
-        const face = optRemote('remote.pluginInventory')
-        if (face?.list === undefined) {
-          setInventory({ phase: 'unavailable', rows: [] })
-          return undefined
-        }
-        return settle(face.list()).then(
-          (value) => {
-            const entries = Array.isArray(value?.entries) ? value.entries : []
-            setInventory({ phase: 'ready', rows: teamRowsIn(entries) })
-          },
-          () => { setInventory({ phase: 'unavailable', rows: [] }) },
-        )
-      }, [])
-      React.useEffect(() => { loadInventory() }, [loadInventory])
-
-      // A draft result fills the custom form ONCE per result: the effect keys
-      // on the result object's identity, so an abandoned wait (whose epoch
-      // bump leaves state untouched) never fills anything, while a re-draft
-      // deliberately overwrites manual edits.
-      React.useEffect(() => {
-        if (draft.result?.ok !== true) return
-        const value = draft.result.value ?? {}
-        setCustomName(typeof value.name === 'string' ? value.name : '')
-        setCustomDescription(typeof value.description === 'string' ? value.description : '')
-        setCustomPrompt(typeof value.prompt === 'string' ? value.prompt : '')
-      }, [draft.result])
-
       const list = templates.phase === 'ready' ? templates.list : []
-      // The first row is the default selection until the user picks another.
       const effectiveId = (selectedId !== null && list.some((tpl) => tpl.id === selectedId)
         ? selectedId
         : list[0]?.id) ?? null
-      // The template behind the current selection: its optional defaultModel
-      // (SPEC) drives the spawn selector's prefill and the default entry's
-      // truthful copy. Null in custom-only states and for templates without
-      // one; a malformed stored ref counts as absent (refKey null).
-      const selectedTemplate = list.find((tpl) => tpl.id === effectiveId) ?? null
-      const templateDefault = selectedTemplate?.defaultModel ?? null
-      const templateHasDefault = refKey(templateDefault) !== null
-      // Custom-role fields (trimmed; the Host re-validates anyway) gate the
-      // confirm exactly like a selectable template does.
-      const customNameText = customName.trim()
-      const customDescriptionText = customDescription.trim()
-      const customPromptText = customPrompt.trim()
-      const customComplete = customNameText !== '' && customPromptText !== ''
-      const canConfirm = custom ? customComplete : effectiveId !== null
-
-      // Flat catalog rows keyed by JSON [provider, model]; empty when the
-      // catalog degraded — the selector then offers the inherit entry only.
-      const modelByKey = rowsByKey(modelRows)
-      // Lossless spawn rows: the selected template's default rides as a
-      // synthetic row when the catalog does not carry it (the settings
-      // editor's rowsWithRef machinery), so the prefill maps and an
-      // untouched open→confirm round-trip sends the stored ref whole.
-      const spawnRows = React.useMemo(() => rowsWithRef(modelRows, templateDefault), [modelRows, templateDefault])
-      const spawnByKey = rowsByKey(spawnRows)
-      const chosen = modelChoice === '' ? undefined : spawnByKey.get(modelChoice)
-
-      // SPEC — a template's optional defaultModel pre-fills the model
-      // selector. The prefill follows the SELECTION (it re-applies whenever
-      // another template becomes effective, so the selector always tells
-      // the truth about what will spawn); an explicit user choice after a
-      // selection wins until the selection changes again. Toggling the
-      // custom form does not touch the selection, so whatever the selector
-      // shows stays — visible, and therefore truthful — for custom spawns
-      // too.
-      React.useEffect(() => {
-        setModelChoice(templateHasDefault ? refKey(templateDefault) : '')
-        setEffortChoice(templateHasDefault && typeof templateDefault.reasoningEffort === 'string' ? templateDefault.reasoningEffort : '')
-      }, [effectiveId])
-
-      const modelRef = modelRefOf(chosen, effortChoice)
-      // A draft runs only when Settings enabled it AND configured a model
-      // (the user's 2026-11-23 ruling: enabling requires picking a model);
-      // otherwise the area shows the configure-first hint.
-      const draftEligible = draftSettings.phase === 'ready' && draftSettings.enabled === true && draftSettings.modelRef !== null
+      const selected = list.find((tpl) => tpl.id === effectiveId) ?? null
+      const instruction = selected === null ? '' : composeMemberInstruction(selected, task)
+      const canConfirm = selected !== null && !sending
 
       /**
-       * Start one AI draft over the shared wait (useDraftFlow carries the
-       * one-draft-session-per-workspace boundary and the epoch guard): the
-       * model is the Settings-configured one (host-side resolution — the
-       * modal sends none of its own), and the result is a PROPOSAL that
-       * fills the custom form below; nothing is saved without the explicit
-       * confirm.
+       * Inject the instruction through the composer-equivalent path
+       * (`sessions.using(...) → session.prompt(content, 'queue')`, SPEC §Design):
+       * the same acceptance, queueing, and visibility a typed message gets.
        */
-      const startDraft = () => { startDraftFlow({ sessionId, brief, model: null }) }
-
-      /** Enable Team mode for this session tree, then refresh the status. */
-      const enableTeamMode = async () => {
-        if (teamBusy) return
-        const face = optRemote('remote.agentTeams')
-        if (face?.setEnabled === undefined) return
-        setTeamBusy(true)
-        setTeamError(null)
-        try {
-          await settle(face.setEnabled(sessionId, true))
-          await Promise.all([loadTeam(), loadInventory()])
-        } catch (error) {
-          setTeamError(error)
-        } finally {
-          setTeamBusy(false)
-        }
-      }
-
-      /**
-       * Confirm-then-enable the disabled agent-team rows: the first click
-       * arms the confirmation (the label switches to the confirm copy), the
-       * second enables every disabled team row found in the inventory and
-       * refreshes both status reads.
-       */
-      const enableTeamRows = async () => {
-        if (!rowsConfirming) {
-          setRowsConfirming(true)
-          return
-        }
-        if (teamBusy) return
-        const face = optRemote('remote.pluginManager')
-        if (face?.setPluginEnabled === undefined) {
-          setRowsConfirming(false)
-          return
-        }
-        setTeamBusy(true)
-        setTeamError(null)
-        try {
-          for (const row of inventory.rows) {
-            await settle(face.setPluginEnabled(row.entryId, true))
-          }
-          setRowsConfirming(false)
-          await Promise.all([loadTeam(), loadInventory()])
-        } catch (error) {
-          setTeamError(error)
-          setRowsConfirming(false)
-        } finally {
-          setTeamBusy(false)
-        }
-      }
-
-      /**
-       * The team-status banner for the current state, or null when healthy.
-       * Precedence (brief's gating states): a loading read renders nothing;
-       * an unavailable/failed read — or an action surface the client needs
-       * but this host does not mount — renders guidance text only;
-       * `teamMode` is healthy silence; `!isRoot` explains that the toggle
-       * lives in the root session's model menu; otherwise disabled
-       * agent-team rows (detected from the plugin inventory) offer
-       * confirm-then-enable, and `canEnable` offers the setEnabled button.
-       */
-      const guidanceBanner = () => h('div', { className: 'agent-roster-team', 'data-agent-roster-team': 'guidance' },
-        h('span', {}, t('team.guidance')),
-        team.phase === 'failed' ? errorDetail(team.error) : null)
-      const teamBanner = (() => {
-        if (team.phase === 'loading') return null
-        if (team.phase !== 'ready') return guidanceBanner()
-        const status = team.value
-        if (status.teamMode === true) return null
-        if (status.isRoot !== true) {
-          return h('div', { className: 'agent-roster-team', 'data-agent-roster-team': 'nonroot' },
-            h('span', {}, t('team.nonroot')))
-        }
-        if (inventory.phase === 'ready' && inventory.rows.length > 0 && inventory.rows.every((row) => row.enabled !== true)) {
-          if (optRemote('remote.pluginManager')?.setPluginEnabled === undefined) return guidanceBanner()
-          return h('div', { className: 'agent-roster-team', 'data-agent-roster-team': 'rows' },
-            h('span', {}, t('team.rows.explain')),
-            h('div', { className: 'agent-roster-team-actions' },
-              h('button', {
-                type: 'button',
-                className: 'agent-roster-button',
-                'data-agent-roster-team-rows': '',
-                disabled: teamBusy,
-                onClick: () => { void enableTeamRows() },
-              }, teamBusy ? t('team.rows.enabling') : rowsConfirming ? t('team.rows.confirm') : t('team.rows.action'))))
-        }
-        if (status.canEnable === true) {
-          if (optRemote('remote.agentTeams')?.setEnabled === undefined) return guidanceBanner()
-          return h('div', { className: 'agent-roster-team', 'data-agent-roster-team': 'enable' },
-            h('span', {}, t('team.enable.explain')),
-            h('div', { className: 'agent-roster-team-actions' },
-              h('button', {
-                type: 'button',
-                className: 'agent-roster-button',
-                'data-agent-roster-team-enable': '',
-                disabled: teamBusy,
-                onClick: () => { void enableTeamMode() },
-              }, teamBusy ? t('team.enable.enabling') : t('team.enable.action'))))
-        }
-        return guidanceBanner()
-      })()
-
-      /**
-       * Confirm: spawn the member and land the outcome banner. In custom
-       * mode the save-as-template box persists the role FIRST — a save
-       * failure (e.g. roster/name-taken) surfaces while it is still fixable
-       * in-form instead of after the member already exists.
-       */
-      const confirmSpawn = async () => {
-        if (!canConfirm || spawning) return
-        setSpawning(true)
+      const confirm = async () => {
+        if (!canConfirm) return
+        setSending(true)
         setOutcome(null)
-        const ns = rosterNs()
-        if (ns?.spawnMember === undefined) {
-          setOutcome({ ok: false, error: { code: 'roster/unavailable', message: t('templates.unavailable') } })
-          setSpawning(false)
-          return
-        }
-        const source = custom
-          ? { custom: { name: customNameText, description: customDescriptionText, prompt: customPromptText } }
-          : { templateId: effectiveId }
         try {
-          if (custom && saveAsTemplate) {
-            if (ns.saveTemplate === undefined) {
-              throw { code: 'roster/unavailable', message: t('templates.unavailable') }
-            }
-            await settle(ns.saveTemplate({
-              name: customNameText,
-              description: customDescriptionText,
-              prompt: customPromptText,
-              defaultModel: modelRef,
-            }))
+          const sessions = optService('sessions')
+          if (sessions?.using === undefined) {
+            throw new Error(t('inject.unavailable'))
           }
-          const result = await settle(ns.spawnMember({
-            sessionId,
-            ...source,
-            ...(memberName.trim() === '' ? {} : { memberName: memberName.trim() }),
-            model: modelRef,
-            ...(task.trim() === '' ? {} : { task: task.trim() }),
-          }))
-          setOutcome({ ok: true, name: result?.name })
+          await sessions.using(sessionId, { source: 'agent-roster' }, async (reference) => {
+            const result = await reference.binding.session.prompt([{ type: 'text', text: instruction }], 'queue')
+            if (result?.ok === false) throw result.error ?? new Error(t('inject.failed'))
+            return result
+          })
+          setOutcome({ ok: true })
         } catch (error) {
           setOutcome({ ok: false, error })
         } finally {
-          setSpawning(false)
+          setSending(false)
         }
       }
 
-      // Close (Escape, mask, header X — everything the Modal primitive
-      // routes through onClose) is gated while a spawn, draft, or team
-      // action is in flight: closing would drop the in-flight result,
-      // invite a duplicate spawn into the shared tree, or strand a team
-      // write's refresh (Task 6 review note 1; team-busy per the whole-
-      // branch review).
-      const guardedClose = () => { if (!spawning && !drafting && !teamBusy) close() }
-
-      // A hint rides along whenever confirm is disabled but not merely
-      // busy (Task 6 review note 2).
-      const confirmHintText = spawning
-        ? null
-        : custom
-          ? (customComplete ? null : t('custom.incomplete'))
-          : effectiveId === null ? t('confirm.hint.template') : null
-
-      const footer = h('div', { className: 'agent-roster-footer' },
-        h('button', {
-          type: 'button',
-          className: 'agent-roster-button agent-roster-button-confirm',
-          'data-agent-roster-confirm': '',
-          disabled: !canConfirm || spawning,
-          onClick: () => { void confirmSpawn() },
-        }, spawning ? t('action.confirming') : t('action.confirm')),
-        h('button', {
-          type: 'button',
-          className: 'agent-roster-button',
-          'data-agent-roster-cancel': '',
-          disabled: spawning || drafting || teamBusy,
-          onClick: guardedClose,
-        }, t('action.cancel')))
-
       return h(Modal, {
         open: true,
-        onClose: guardedClose,
+        onClose: sending ? undefined : close,
         title: t('modal.title'),
         closeLabel: t('modal.close'),
-        description: t('modal.description'),
-        footer,
         contentClassName: 'agent-roster-content',
+        footer: h('div', { className: 'agent-roster-footer' },
+          h('button', {
+            type: 'button',
+            className: 'agent-roster-button',
+            'data-agent-roster-cancel': '',
+            disabled: sending,
+            onClick: close,
+          }, t('modal.close')),
+          h('button', {
+            type: 'button',
+            className: 'agent-roster-button agent-roster-button-confirm',
+            'data-agent-roster-confirm': '',
+            disabled: !canConfirm,
+            onClick: () => { void confirm() },
+          }, sending ? t('inject.sending') : t('inject.action'))),
       },
-      h('div', { className: 'agent-roster-root', 'data-agent-roster': '' },
-        h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'banner', 'aria-live': 'polite' },
-          teamBanner,
-          teamError === null ? null : h('div', {
-            className: 'agent-roster-team agent-roster-team-error',
-            'data-agent-roster-team': 'error',
-            role: 'alert',
-          },
-          h('span', { className: 'agent-roster-error-label' }, t('team.actionFailed')),
-          errorDetail(teamError)),
-          outcome === null ? null
-            : outcome.ok
-              ? h('div', { className: 'agent-roster-banner agent-roster-banner-success', 'data-agent-roster-banner': 'success' },
-                t('spawn.success', { name: outcome.name ?? '' }))
-              : h('div', {
-                className: 'agent-roster-banner agent-roster-banner-error',
-                'data-agent-roster-banner': 'error',
-                'data-agent-roster-error': typeof outcome.error?.code === 'string' ? outcome.error.code : '',
-                role: 'alert',
-              },
-              h('span', { className: 'agent-roster-error-label' }, t('spawn.failed')),
-              errorDetail(outcome.error))),
+      h('div', { className: 'agent-roster', 'data-agent-roster': '' },
+        outcome === null
+          ? null
+          : outcome.ok === true
+            ? h('div', {
+              className: 'agent-roster-banner agent-roster-banner-success',
+              'data-agent-roster-banner': 'success',
+              role: 'status',
+              'aria-live': 'polite',
+            }, t('inject.sent', { name: selected?.name ?? '' }))
+            : h('div', {
+              className: 'agent-roster-banner agent-roster-banner-error',
+              'data-agent-roster-banner': 'error',
+              'data-agent-roster-error': typeof outcome.error?.code === 'string' ? outcome.error.code : '',
+              role: 'alert',
+            },
+            h('span', { className: 'agent-roster-error-label' }, t('inject.failed')),
+            errorDetail(outcome.error)),
         h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'templates' },
           h('div', { className: 'agent-roster-label' }, t('templates.title')),
           templates.phase === 'loading'
@@ -1320,8 +868,8 @@ window.__ModuleLoader__.load({
             h('span', { className: 'agent-roster-error-label' }, t('templates.error')),
             errorDetail(templates.error)) : null,
           templates.phase === 'ready' && list.length === 0
-            ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'empty' }, t('templates.empty')) : null,
-          templates.phase === 'ready'
+            ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'empty' }, t('templates.none')) : null,
+          templates.phase === 'ready' && list.length > 0
             ? h('div', { className: 'agent-roster-templates', role: 'listbox', 'aria-label': t('templates.title') },
               list.map((tpl) => h('button', {
                 type: 'button',
@@ -1329,147 +877,31 @@ window.__ModuleLoader__.load({
                 role: 'option',
                 className: 'agent-roster-template',
                 'data-agent-roster-template': tpl.id,
-                'aria-selected': !custom && tpl.id === effectiveId ? 'true' : 'false',
-                onClick: () => { setSelectedId(tpl.id) },
+                'aria-selected': tpl.id === effectiveId ? 'true' : 'false',
+                onClick: () => { setSelectedId(tpl.id); setOutcome(null) },
               },
               h('span', { className: 'agent-roster-template-name' }, String(tpl.name ?? '')),
-              tpl.description === undefined || tpl.description === null || tpl.description === ''
-                ? null
-                : h('span', { className: 'agent-roster-template-desc' }, String(tpl.description)))))
+              tpl.description === '' ? null : h('span', { className: 'agent-roster-template-desc' }, String(tpl.description)))))
             : null),
-        h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'member-name' },
-          h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-member-name' }, t('memberName.label')),
-          h('input', {
-            id: 'agent-roster-member-name',
-            type: 'text',
-            className: 'agent-roster-input',
-            'data-agent-roster-member-name': '',
-            value: memberName,
-            placeholder: t('memberName.placeholder'),
-            'aria-describedby': 'agent-roster-member-name-hint',
-            autoComplete: 'off',
-            onChange: (event) => { setMemberName(event.target.value) },
-          }),
-          h('p', { id: 'agent-roster-member-name-hint', className: 'agent-roster-hint' }, t('memberName.hint'))),
-        // The shared ModelRef editor (Task 8 extraction): for a template
-        // with a defaultModel the default entry's copy names what reverting
-        // really does — null is an EXPLICIT CLEAR of that default
-        // (lib/spawn.js:210-216 precedence); without one (or in custom
-        // mode) it stays the plain inherit copy. The optional effort input
-        // appears only beside an explicit choice of a model that advertises
-        // efforts.
-        h(ModelRefEditor, {
-          section: 'model',
-          id: 'agent-roster-model',
-          marker: 'data-agent-roster-model',
-          noneMarker: 'inherit',
-          label: t('model.label'),
-          defaultLabel: !custom && templateHasDefault ? t('model.inherit.clear') : t('model.inherit'),
-          effortLabel: t('model.effort.label'),
-          effortDefaultLabel: t('model.effort.default'),
-          rows: spawnRows,
-          byKey: spawnByKey,
-          choice: modelChoice,
-          onChoice: (value) => { setModelChoice(value); setEffortChoice('') },
-          effort: effortChoice,
-          onEffort: setEffortChoice,
-        }),
-        h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'task' },
-          h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-task' }, t('task.label')),
-          h('textarea', {
-            id: 'agent-roster-task',
-            className: 'agent-roster-input agent-roster-textarea',
-            'data-agent-roster-task': '',
-            rows: 3,
-            value: task,
-            placeholder: t('task.placeholder'),
-            onChange: (event) => { setTask(event.target.value) },
-          })),
-        h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'custom' },
-          h('label', { className: 'agent-roster-toggle' },
-            h('input', {
-              type: 'checkbox',
-              'data-agent-roster-custom-toggle': '',
-              checked: custom,
-              onChange: (event) => { setCustom(event.target.checked) },
-            }),
-            h('span', {}, t('custom.toggle'))),
-          custom ? h('div', { className: 'agent-roster-custom-form', 'data-agent-roster-custom-form': '' },
-            // AI-draft area: the brief plus the draft-model picker and the
-            // Draft button. Results are PROPOSALS — they fill the fields
-            // below and nothing is saved without the explicit confirm.
-            h('div', { className: 'agent-roster-draft-area', 'data-agent-roster-draft-area': '' },
-              h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-brief' }, t('draft.label')),
-              h('textarea', {
-                id: 'agent-roster-brief',
-                className: 'agent-roster-input agent-roster-textarea',
-                'data-agent-roster-brief': '',
-                rows: 2,
-                value: brief,
-                placeholder: t('draft.placeholder'),
-                disabled: drafting,
-                onChange: (event) => { setBrief(event.target.value) },
-              }),
-              h('div', { className: 'agent-roster-draft-controls' },
-                // Which model a draft will use — the Settings-configured
-                // one; never a per-draft choice (2026-11-23 UX ruling).
-                h('span', {
-                  className: 'agent-roster-note',
-                  'data-agent-roster-draft-model-line': draftEligible ? 'ready' : 'configure',
-                }, draftEligible
-                  ? t('draft.uses', { model: draftSettings.modelRef.model })
-                  : t('draft.configure.hint')),
-                h('button', {
-                  type: 'button',
-                  className: 'agent-roster-button',
-                  'data-agent-roster-draft': '',
-                  disabled: !draftEligible || brief.trim() === '' || drafting,
-                  onClick: () => { void startDraft() },
-                }, drafting ? t('draft.inflight') : t('draft.action')),
-                drafting
-                  ? h('button', {
-                    type: 'button',
-                    className: 'agent-roster-button',
-                    'data-agent-roster-draft-abort': '',
-                    onClick: abortDraft,
-                  }, t('draft.abort'))
-                  : null),
-              draft.result?.ok === true && draft.result.value?.parsed !== true
-                ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-note': 'draft-unparsed' }, t('draft.unparsed'))
-                : null,
-              draft.result?.aborted === true
-                ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'draft-aborted' }, t('draft.aborted'))
-                : null,
-              draft.result?.ok === false && draft.result.aborted !== true
-                ? h('div', {
-                  className: 'agent-roster-note agent-roster-error',
-                  'data-agent-roster-draft-error': '',
-                  'data-agent-roster-error': typeof draft.result.error?.code === 'string' ? draft.result.error.code : '',
-                },
-                h('span', { className: 'agent-roster-error-label' }, t('draft.failed')),
-                errorDetail(draft.result.error))
-                : null),
-            // The shared role fields (Task 8 extraction — the card's
-            // add/edit forms render the same components).
-            h(RoleFields, {
-              t,
-              idPrefix: 'agent-roster',
-              name: customName,
-              description: customDescription,
-              prompt: customPrompt,
-              onName: setCustomName,
-              onDescription: setCustomDescription,
-              onPrompt: setCustomPrompt,
-            }),
-            h('label', { className: 'agent-roster-toggle' },
-              h('input', {
-                type: 'checkbox',
-                'data-agent-roster-save-template': '',
-                checked: saveAsTemplate,
-                onChange: (event) => { setSaveAsTemplate(event.target.checked) },
-              }),
-              h('span', {}, t('custom.saveTemplate')))) : null,
-          confirmHintText === null ? null : h('p', { className: 'agent-roster-hint', 'data-agent-roster-confirm-hint': '' }, confirmHintText))))
+        selected === null
+          ? null
+          : h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'preview' },
+            h('div', { className: 'agent-roster-label' }, t('preview.title')),
+            h('pre', { className: 'agent-roster-instruction', 'data-agent-roster-preview': '' }, instruction)),
+        selected === null
+          ? null
+          : h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'task' },
+            h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-task' }, t('task.label')),
+            h('textarea', {
+              id: 'agent-roster-task',
+              className: 'agent-roster-input agent-roster-textarea',
+              'data-agent-roster-task': '',
+              rows: 2,
+              value: task,
+              placeholder: t('task.placeholder'),
+              disabled: sending,
+              onChange: (event) => { setTask(event.target.value) },
+            }))))
     }
 
     /**
@@ -1499,135 +931,21 @@ window.__ModuleLoader__.load({
 
     /**
      * The roster manager body: the template list with per-row edit/delete
-     * and the add button, or one open editor form. Rendered inside the
-     * Settings section below the AI-draft block. Every write goes through
+     * and the add button, or one open editor form. Every write goes through
      * the module-level rosterNs() lookup; failures render bilingual
      * reasons and the list re-reads after each successful write.
      */
     /**
-     * The Settings > Agent roster page body (2026-11-23 UX ruling): part
-     * one is the AI-draft configuration (toggle + the draft model this
-     * profile's drafts run on — enabling REQUIRES a model, the modal never
-     * picks one per-draft); part two is the roster manager below it.
-     * `configForms` is in the inject list (airboard precedent); a missing
-     * form degrades the block to its loading note, never a crash.
-     */
-    function DraftSettingsBlock({ t }) {
-      const settings = useDraftSettings()
-      const { rows } = useModelRows()
-      const [writeError, setWriteError] = React.useState(null)
-      const currentKey = settings.phase === 'ready' && settings.modelRef !== null
-        ? refKey(settings.modelRef)
-        : null
-      const currentRow = currentKey === null ? undefined : rowsByKey(rows).get(currentKey)
-
-      /** Stage one write; a refused write surfaces its bilingual reason. */
-      const write = async (operation) => {
-        const form = rosterForm()
-        try {
-          const accepted = await operation(form)
-          if (accepted !== true) setWriteError({ code: 'roster/settings-write-refused', message: t('settings.draft.writeRefused') })
-          else setWriteError(null)
-        } catch (error) {
-          setWriteError(error)
-        }
-      }
-
-      const toggleDraft = () => {
-        if (settings.phase !== 'ready') return
-        void write((form) => form.set('draftEnabled', settings.enabled !== true))
-      }
-      const chooseModel = (event) => {
-        const value = event.target.value
-        if (value === '') {
-          void write((form) => form.mutate([
-            { op: 'set', path: ['draftModelProvider'], value: '' },
-            { op: 'set', path: ['draftModelId'], value: '' },
-            { op: 'set', path: ['draftReasoningEffort'], value: '' },
-          ]))
-          return
-        }
-        const row = rowsByKey(rows).get(value)
-        if (row === undefined) return
-        void write((form) => form.mutate([
-          { op: 'set', path: ['draftModelProvider'], value: row.provider },
-          { op: 'set', path: ['draftModelId'], value: row.model },
-          { op: 'set', path: ['draftReasoningEffort'], value: '' },
-        ]))
-      }
-      const chooseEffort = (event) => {
-        const value = event.target.value
-        void write((form) => form.set('draftReasoningEffort', value))
-      }
-
-      const efforts = currentRow?.efforts ?? []
-      const currentEffort = settings.phase === 'ready' && settings.modelRef !== null
-          && typeof settings.modelRef.reasoningEffort === 'string'
-        ? settings.modelRef.reasoningEffort
-        : ''
-
-      return h('div', { className: 'agent-roster-settings-draft', 'data-agent-roster-settings-draft': '' },
-        h('div', { className: 'agent-roster-card-head' },
-          h('span', { className: 'agent-roster-label' }, t('settings.draft.title'))),
-        settings.phase !== 'ready'
-          ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'loading' }, t('settings.draft.loading'))
-          : h('div', { className: 'agent-roster-settings-draft-row' },
-            h('label', { className: 'agent-roster-custom-toggle-row' },
-              h('input', {
-                type: 'checkbox',
-                role: 'switch',
-                'aria-checked': settings.enabled === true ? 'true' : 'false',
-                'data-agent-roster-draft-toggle': '',
-                checked: settings.enabled === true,
-                onChange: toggleDraft,
-              }),
-              h('span', {}, t('settings.draft.toggle'))),
-            h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-draft-model-setting' }, t('settings.draft.model')),
-            h(ModelMenu, {
-              marker: 'data-agent-roster-draft-model-setting',
-              markerValue: currentKey ?? 'unset',
-              value: currentKey ?? '',
-              noneLabel: t('settings.draft.model.unset'),
-              groups: catalogGroups(rows),
-              onPick: (key) => { chooseModel({ target: { value: key } }) },
-              ariaLabel: t('settings.draft.model'),
-              triggerClass: 'agent-roster-menu-trigger-form',
-            }),
-            h(ModelMenu, {
-              marker: 'data-agent-roster-draft-effort-setting',
-              markerValue: currentEffort,
-              value: currentEffort,
-              noneLabel: t('settings.draft.effort.default'),
-              groups: null,
-              rows: efforts.map((effort) => ({ key: effort.id, label: effort.name ?? effort.id })),
-              onPick: (key) => { chooseEffort({ target: { value: key } }) },
-              disabled: efforts.length === 0,
-              ariaLabel: t('settings.draft.model'),
-              triggerClass: 'agent-roster-menu-trigger-form',
-            }),
-            settings.enabled === true && settings.modelRef === null
-              ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-draft-required': '' }, t('settings.draft.required'))
-              : null,
-            writeError !== null
-              ? h('div', { className: 'agent-roster-note agent-roster-error', 'data-agent-roster-error': typeof writeError?.code === 'string' ? writeError.code : '' },
-                h('span', { className: 'agent-roster-error-label' }, t('settings.draft.writeFailed')),
-                errorDetail(writeError))
-              : null),
-        h('div', { className: 'agent-roster-note' }, t('settings.draft.explain')))
-    }
-
-    /**
      * The settings.section entry: renders through the Settings page's
      * `settings.section.view` factory with `{ id, close }` owner props
      * (ui-settings contract/slots.ts:17-27) — no `view` gate and no session
-     * identity. The body is the AI-draft block plus the roster manager.
+     * identity. The body is the roster manager.
      * @param {any} props - the section view props; the bound locale `t`
      *   comes from the registration's `locale` option.
      */
     function RosterSettingsSection(props) {
       const { t } = props
       return h('div', { className: 'agent-roster-settings', 'data-agent-roster-settings': '' },
-        h(DraftSettingsBlock, { t }),
         h(RosterCardPage, { t }))
     }
 
@@ -1770,15 +1088,14 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The card's add/edit form: the add-mode AI-draft entry above the shared
+     * The card's add/edit form: the shared
      * RoleFields and the shared ModelRefEditor (default = no default model).
      * Saves go through saveTemplate — `id` on edit, none on add — with the
      * full explicit field set (patch semantics not relied upon, so clearing
      * a field actually clears it); a failure stays in-form with its
      * bilingual reason, a success closes the form and refreshes the list.
      * @param {any} props - `mode` ('add' | 'edit'), `template` (edit only),
-     *   `t`, `sessionId` (usually absent — gates the draft entry),
-     *   `close()`, `saved()`.
+     *   `t`, `close()`, `saved()`.
      */
     function RosterCardForm(props) {
       const { mode, template, t, close, saved } = props
@@ -1837,18 +1154,9 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // The add form carries no AI-draft entry: drafting needs a session
-      // for the draft session's cwd, so the + menu in a session is the
-      // drafting surface (2026-11-23 UX ruling) — this hint says so.
-      const draftHint = mode !== 'add' ? null : h('div', {
-        className: 'agent-roster-note',
-        'data-agent-roster-card-draft-hint': '',
-      }, t('draft.elsewhere'))
-
       return h('div', { className: 'agent-roster-card-form', 'data-agent-roster-card-form': '' },
         h('div', { className: 'agent-roster-card-head' },
           h('span', { className: 'agent-roster-label' }, mode === 'edit' ? t('card.edit') : t('card.add'))),
-        draftHint,
         h(RoleFields, {
           t,
           idPrefix: 'agent-roster-card',
@@ -1969,7 +1277,6 @@ window.__ModuleLoader__.load({
 .agent-roster-button-confirm:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
 /* The Settings > Agent roster page (settings.section body). */
 [data-agent-roster-settings] { display: flex; flex-direction: column; gap: 12px; color: var(--dsw-alias-label-primary); }
-[data-agent-roster-settings-draft] { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; }
 .agent-roster-settings-draft-row { display: flex; flex-direction: column; gap: 6px; }
 [data-agent-roster-settings] .agent-roster-settings-draft-row .agent-roster-select { width: auto; }
 /* The roster manager (Settings section part two). */
@@ -2084,7 +1391,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['commandUi', 'configForms', 'locale', 'slots', 'remote'],
+      inject: ['commandUi', 'locale', 'sessions', 'slots', 'remote'],
       apply(ctx) {
         pluginCtx = ctx
         const t = ctx.locale.bind(NS)

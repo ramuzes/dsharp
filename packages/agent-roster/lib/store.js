@@ -1,7 +1,7 @@
 /**
- * Roster store: persistence for role templates and per-workspace
- * draft-session pointers over the host's domain data form, with an in-memory
- * fallback when the host exposes no storageDomain service.
+ * Roster store: persistence for role templates over the host's domain data
+ * form, with an in-memory fallback when the host exposes no storageDomain
+ * service.
  *
  * storageDomain conformance (dsh source is the single source of truth,
  * AGENTS.md 2b): the form is @deepseek-ai/dsh-storage-domain — defineDomain/
@@ -51,24 +51,12 @@ export const RoleTemplate = z.object({
   updatedAt: z.string(),
 })
 
-/** One draft-session pointer: the reusable drafter session per workspace. */
-export const DraftSession = z.object({
-  cwd: z.string(),
-  sessionId: z.string(),
-  createdAt: z.string(),
-})
-
 /** The roster storage domain (feishu-gateway bindingDomain pattern). */
 export const rosterDomain = defineDomain({
   name: 'agent_roster',
   version: 1,
   tables: {
     templates: domainTable(RoleTemplate),
-    // Table names must match UNIT_NAME_RE /^[a-z][a-z0-9_]*$/ — defineDomain
-    // rejects 'draftSessions' loud at module load (dsh-storage-domain
-    // lib/index.js spec validation), so the snake_case key it is. Internal
-    // identifier only: consumers go through draftSessionFor/putDraftSession.
-    draft_sessions: domainTable(DraftSession),
   },
 })
 
@@ -95,8 +83,6 @@ export function freshId() {
  *   byName(name: string): Promise<import('zod').z.infer<typeof RoleTemplate> | undefined>,
  *   put(rec: import('zod').z.infer<typeof RoleTemplate>): Promise<void>,
  *   delete(id: string): Promise<boolean>,
- *   draftSessionFor(cwd: string): Promise<import('zod').z.infer<typeof DraftSession> | undefined>,
- *   putDraftSession(rec: import('zod').z.infer<typeof DraftSession>): Promise<void>,
  *   dispose(): void,
  * }} the store handle. Every operation awaits the domain open, so a backend
  *   failure rejects the operations that need it — loud, never a silent second
@@ -106,7 +92,7 @@ export function freshId() {
  *   `storage-open-failed` status entry.
  */
 export function openRosterStore(scope, status) {
-  const memory = { templates: new Map(), draftSessions: new Map() }
+  const memory = { templates: new Map() }
   const storageDomain = scope?.get?.('storageDomain')
   if (storageDomain === undefined) {
     status?.write('storage-degraded',
@@ -132,9 +118,7 @@ export function openRosterStore(scope, status) {
   /** Resolve both table handles, or undefined in memory mode. */
   const tables = async () => {
     const domain = await ready
-    return domain === undefined
-      ? undefined
-      : { templates: domain.table('templates'), draftSessions: domain.table('draft_sessions') }
+    return domain === undefined ? undefined : { templates: domain.table('templates') }
   }
 
   const all = async () => {
@@ -159,15 +143,6 @@ export function openRosterStore(scope, status) {
     const t = await tables()
     return t === undefined ? memory.templates.delete(id) : t.templates.delete(id)
   }
-  const draftSessionFor = async (cwd) => {
-    const t = await tables()
-    return t === undefined ? memory.draftSessions.get(cwd) : t.draftSessions.get(cwd)
-  }
-  const putDraftSession = async (rec) => {
-    const t = await tables()
-    if (t === undefined) { memory.draftSessions.set(rec.cwd, rec); return }
-    await t.draftSessions.put(rec.cwd, rec)
-  }
   /**
    * Release the opened domain (caller-owns-handle contract, file header).
    * Best effort by contract — a disposal path must never throw; memory mode
@@ -179,5 +154,5 @@ export function openRosterStore(scope, status) {
       .catch(() => { /* open() already failed: nothing was opened */ })
   }
 
-  return { all, byId, byName, put, delete: remove, draftSessionFor, putDraftSession, dispose }
+  return { all, byId, byName, put, delete: remove, dispose }
 }

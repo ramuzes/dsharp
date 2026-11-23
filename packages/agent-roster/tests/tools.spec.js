@@ -127,21 +127,50 @@ async function withStatusFile(run) {
   }
 }
 
-test('registerRosterTools registers exactly the two tools; the disposer unregisters both', () => {
+/** The subagents fake: real activation signature, records every spawn. */
+function makeSubagents(overrides = {}) {
+  const calls = { listDescendants: [], startActivation: [] }
+  const rootAgent = { id: 'root-session', name: 'lead' }
+  const fake = {
+    calls,
+    rootAgent,
+    rootOf: (caller) => { calls.rootOf = caller; return rootAgent },
+    listDescendants: async (sessionId) => {
+      calls.listDescendants.push(sessionId)
+      return overrides.descendants ?? [{ kind: 'child', depth: 1, path: 'existing-member' }]
+    },
+    startActivation: async (spec) => {
+      calls.startActivation.push(spec)
+      return { kind: 'activation', name: spec.name, childId: 'child-session-1', result: { promise: Promise.resolve(undefined) } }
+    },
+  }
+  return fake
+}
+
+test('registerRosterTools registers three tools; the disposer unregisters all', () => {
   const scope = makeToolsScope()
-  const dispose = registerRosterTools(scope, makeRecordingService())
+  const subagents = makeSubagents()
+  const dispose = registerRosterTools(scope, makeRecordingService(), { store: makeRoster().store, subagents })
   assert.deepEqual(
     scope.registered.map((t) => t.name).sort(),
-    ['roster_template_list', 'roster_template_save'],
+    ['roster_spawn', 'roster_template_list', 'roster_template_save'],
   )
   assert.equal(typeof dispose, 'function')
   dispose()
-  assert.deepEqual(scope.disposed.sort(), ['roster_template_list', 'roster_template_save'])
+  assert.deepEqual(scope.disposed.sort(), ['roster_spawn', 'roster_template_list', 'roster_template_save'])
+})
+
+test('the authoring toggle drops save/list but keeps the spawn tool', () => {
+  const scope = makeToolsScope()
+  const dispose = registerRosterTools(scope, makeRecordingService(), { store: makeRoster().store, subagents: makeSubagents() }, { authoring: false })
+  assert.deepEqual(scope.registered.map((t) => t.name), ['roster_spawn'])
+  dispose()
+  assert.deepEqual(scope.disposed, ['roster_spawn'])
 })
 
 test('roster_template_list is concurrency-safe; roster_template_save is not', () => {
   const scope = makeToolsScope()
-  registerRosterTools(scope, makeRecordingService())
+  registerRosterTools(scope, makeRecordingService(), { store: makeRoster().store, subagents: makeSubagents() })
   // Read-only declares isConcurrencySafe (the call may join a parallel
   // group — dsh packages/core/tools/src/contracts.ts:84); the mutating
   // save does not (engram_save precedent).
@@ -253,26 +282,29 @@ test('service failures map to model-facing text and never rethrow', async () => 
   assert.ok(result.includes('already taken'), result)
 })
 
-test('apply registers the tools inject and both tools when exposeAgentTools reads true through the wrapper', async () => {
+test('apply registers the tools inject and all three tools when exposeAgentTools reads true', async () => {
   await withStatusFile(async (file) => {
     const host = makeFakeHost()
-    const fakeService = makeRecordingService()
-    setServiceFactoryForTests(() => fakeService)
+    setServiceFactoryForTests(() => makeRecordingService())
     apply(host.ctx, { exposeAgentTools: { get: () => true } })
     assert.equal(host.injects.length, 1, 'exactly one inject callback')
-    assert.deepEqual(host.injects[0].names, ['tools'],
-      'the callback injects only the tools service')
-    // Drive the callback like real cordis once 'tools' becomes available.
+    // roster_spawn resolves the tree root through `subagents`, so that name
+    // must be injected on the same callback (AGENTS.md 3).
+    assert.deepEqual(host.injects[0].names, ['tools', 'subagents'],
+      'the callback injects both services it touches')
+    // Drive the callback like real cordis once both services are available.
     const scope = makeToolsScope()
+    scope.subagents = makeSubagents()
     const offInject = host.injects[0].fn(scope)
     assert.deepEqual(scope.registered.map((t) => t.name).sort(),
-      ['roster_template_list', 'roster_template_save'])
-    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'tools-registered',
-      'the registration path names its stage')
+      ['roster_spawn', 'roster_template_list', 'roster_template_save'])
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(record.stage, 'tools-registered')
+    assert.equal(record.detail.authoring, true, 'the stage detail records the toggle state')
     // The callback returns its disposal; invoking it unregisters the tools.
     assert.equal(typeof offInject, 'function')
     offInject()
-    assert.deepEqual(scope.disposed.sort(), ['roster_template_list', 'roster_template_save'])
+    assert.deepEqual(scope.disposed.sort(), ['roster_spawn', 'roster_template_list', 'roster_template_save'])
   })
 })
 
@@ -286,11 +318,7 @@ test('a registration failure writes tools-failed with the error text and rethrow
     // stage tools-failed with the error text — then rethrow loudly, the
     // engram index.js:257-259 / airboard index.js:262-265 pattern.
     const boom = new Error('tool name "roster_template_save" already registered')
-    const scope = {
-      tools: {
-        register: () => { throw boom },
-      },
-    }
+    const scope = { tools: { register: () => { throw boom } }, subagents: makeSubagents() }
     assert.throws(() => host.injects[0].fn(scope), (error) => error === boom,
       'the contained callback rethrows so the failure stays loud')
     const record = JSON.parse(readFileSync(file, 'utf8'))
@@ -299,19 +327,89 @@ test('a registration failure writes tools-failed with the error text and rethrow
   })
 })
 
-test('apply registers no tools inject when exposeAgentTools reads false through the wrapper', async () => {
+test('exposeAgentTools false still injects and registers roster_spawn alone', async () => {
   await withStatusFile(async (file) => {
     const host = makeFakeHost()
-    const constructed = []
-    setServiceFactoryForTests((ctx, store) => {
-      constructed.push({ ctx, store })
-      return makeRecordingService()
-    })
+    setServiceFactoryForTests(() => makeRecordingService())
     apply(host.ctx, { exposeAgentTools: { get: () => false } })
-    assert.equal(host.injects.length, 0,
-      'a wrapper reading false registers no tools inject (readBoolean, not raw truthiness)')
-    assert.equal(constructed.length, 1, 'the toggle gates only the tools, not the service')
-    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'tools-skipped',
-      'the skipped path names its stage')
+    // The "+" flow depends on roster_spawn, so the callback always runs; the
+    // toggle only removes the authoring pair.
+    assert.equal(host.injects.length, 1)
+    const scope = makeToolsScope()
+    scope.subagents = makeSubagents()
+    host.injects[0].fn(scope)
+    assert.deepEqual(scope.registered.map((t) => t.name), ['roster_spawn'])
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(record.stage, 'tools-registered')
+    assert.equal(record.detail.authoring, false)
   })
+})
+
+// ---------------------------------------------------------------------------
+// roster_spawn — the single creation path (ADR-0011)
+// ---------------------------------------------------------------------------
+
+/** Seed a store with one template and wire the spawn tool over it. */
+async function spawnToolHarness({ template = { name: 'Researcher', description: 'Finds sources', prompt: 'You research thoroughly.' }, subagents } = {}) {
+  const { store } = makeRoster()
+  const saved = await (async () => {
+    const service = Object.create(AgentRosterService.prototype)
+    service.store = store
+    return service.saveTemplate(template)
+  })()
+  const scope = makeToolsScope()
+  scope.subagents = subagents ?? makeSubagents()
+  registerRosterTools(scope, makeRecordingService(), { store, subagents: scope.subagents })
+  return { tool: toolOf(scope, 'roster_spawn'), store, saved, subagents: scope.subagents }
+}
+
+test('roster_spawn resolves a template by exact name and creates the member', async () => {
+  const ctx = await spawnToolHarness()
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  const out = await ctx.tool.execute({ template: 'Researcher', task: 'review payments' }, { agent: caller, callId: 'c1' })
+  const spec = ctx.subagents.calls.startActivation[0]
+  assert.equal(spec.label, 'Researcher')
+  assert.equal(spec.name, 'researcher')
+  assert.equal(spec.prompt[0].text, 'You research thoroughly.\n\n---\n\nInitial task (assigned by the user at spawn time):\nreview payments')
+  assert.equal(spec.delivery, 'parent')
+  const parsed = JSON.parse(out)
+  assert.equal(parsed.created, 'researcher')
+  assert.equal(parsed.template, 'Researcher')
+  assert.equal(parsed.model, 'inherited from the parent agent')
+})
+
+test('roster_spawn resolves a template by id and applies its model', async () => {
+  const ctx = await spawnToolHarness({
+    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
+  })
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  const out = await ctx.tool.execute({ template: ctx.saved.id }, { agent: caller, callId: 'c1' })
+  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions, { provider: 'deepseek', model: 'chat' })
+  assert.deepEqual(JSON.parse(out).model, { provider: 'deepseek', model: 'chat' })
+})
+
+test('roster_spawn maps an unknown template to model-facing text instead of throwing', async () => {
+  const ctx = await spawnToolHarness()
+  const out = await ctx.tool.execute({ template: 'Nope' }, { agent: { id: 'root-1', name: 'lead' }, callId: 'c1' })
+  assert.match(out, /roster call failed \(roster\/not-found\)/)
+  assert.equal(ctx.subagents.calls.startActivation.length, 0, 'nothing spawned')
+})
+
+test('roster_spawn without a calling agent reports misuse, never throws', async () => {
+  const ctx = await spawnToolHarness()
+  const out = await ctx.tool.execute({ template: 'Researcher' }, { callId: 'c1' })
+  assert.match(out, /requires a calling agent/)
+  assert.equal(ctx.subagents.calls.startActivation.length, 0)
+})
+
+test('roster_spawn is not concurrency-safe; the authoring list tool is', async () => {
+  const scope = makeToolsScope()
+  registerRosterTools(scope, makeRecordingService(), { store: makeRoster().store, subagents: makeSubagents() })
+  // A spawn mutates the tree, so it must NOT join a parallel batch (the
+  // flag's real shape is a predicate — tools/index.ts).
+  const spawn = toolOf(scope, 'roster_spawn')
+  assert.equal(spawn.isConcurrencySafe === undefined || spawn.isConcurrencySafe({}) === false, true)
+  assert.equal(toolOf(scope, 'roster_template_list').isConcurrencySafe({}), true)
 })

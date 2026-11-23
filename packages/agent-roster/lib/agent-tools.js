@@ -1,7 +1,9 @@
 /**
- * Agent-facing roster tools (Task 5): roster_template_save and
- * roster_template_list over the `agentRoster` remote service
- * (lib/roster-service.js).
+ * Agent-facing roster tools: `roster_spawn` (the single creation path,
+ * ADR-0011 — always registered) plus the authoring pair
+ * `roster_template_save` / `roster_template_list` over the `agentRoster`
+ * remote service (lib/roster-service.js), gated by the `exposeAgentTools`
+ * Config toggle.
  *
  * Registration API mirrors this repo's precedent, engram's
  * packages/engram/lib/agent-tools.js (itself mirroring
@@ -22,6 +24,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
+import { resolveTemplateRef, spawnFromTemplate } from './spawn.js'
 
 /** Plain-text tool output (session-query's TEXT_OUTPUT shape). */
 const TEXT_OUTPUT = {
@@ -67,7 +70,8 @@ function toModelRef(value) {
 }
 
 /**
- * Register the two roster tools.
+ * Register the roster tools: `roster_spawn` always (the "+" flow depends on
+ * it), and the authoring pair when `authoring` is true.
  *
  * @param {object} scope - inject scope with `tools` injected (accessing it
  *   on a scope that did not inject it throws in cordis — AGENTS.md 3).
@@ -76,12 +80,66 @@ function toModelRef(value) {
  *   listTemplates(): Promise<import('./store.js').RoleTemplate[]>,
  * }} service - the `agentRoster` remote (lib/roster-service.js); only the
  *   two methods above are called.
- * @returns {() => void} disposer unregistering both tools (each off is the
- *   exact disposer tools.register returned — dsh packages/core/tools/src/index.ts:128).
+ * @param {{ store: { all(): Promise<object[]>, byId(id: string): Promise<object | undefined> }, subagents: object }} deps
+ *   - the roster store (template resolution) and the subagents runtime the
+ *     spawn tool creates members through. Both are passed explicitly because
+ *     this callback's inject list is `['tools', 'subagents']` — services not
+ *     injected on a scope throw on access (AGENTS.md 3).
+ * @param {{ authoring?: boolean }} [options] - whether the authoring pair is
+ *   registered (the `exposeAgentTools` toggle).
+ * @returns {() => void} disposer unregistering every registered tool (each
+ *   off is the exact disposer tools.register returned — dsh
+ *   packages/core/tools/src/index.ts:128).
  */
-export function registerRosterTools(scope, service) {
+export function registerRosterTools(scope, service, deps, options = {}) {
   const offs = []
   const register = (tool) => offs.push(scope.tools.register(tool))
+  const authoring = options.authoring !== false
+  const store = deps?.store
+
+  // ---- spawn (the single creation path, ADR-0011) ---------------------------
+  register(defineTool({
+    name: 'roster_spawn',
+    description: 'Create one team member from a configured role template. The template carries the member\'s standing instruction (its responsibility boundary and main goal) and an optional model; pass the id or exact name from roster_template_list. The optional task points this member at the current work. Returns the created member\'s name. Do not restate the template yourself — the template text is used verbatim.',
+    parameters: {
+      template: {
+        type: 'string',
+        required: true,
+        description: 'Template id (preferred) or exact template name.',
+      },
+      task: {
+        type: 'string',
+        description: 'Optional one-off task for this member, taken from the current conversation (e.g. "review the payments module").',
+      },
+    },
+    output: TEXT_OUTPUT,
+    isConcurrencySafe: false,
+    async execute(args, exec) {
+      try {
+        const agent = exec?.agent
+        if (agent === undefined || agent === null) {
+          return 'roster_spawn failed: it requires a calling agent (this tool runs inside an agent only)'
+        }
+        if (store === undefined) throw new Error('roster store is unavailable')
+        const template = await resolveTemplateRef(store, args?.template)
+        const result = await spawnFromTemplate(scope, deps, {
+          agent,
+          template,
+          task: args?.task,
+          signal: exec?.signal,
+        })
+        return bounded({
+          created: result.name,
+          template: template.name,
+          model: result.model ?? 'inherited from the parent agent',
+        })
+      } catch (error) {
+        return failure(error)
+      }
+    },
+  }))
+
+  if (!authoring) return () => { for (const off of offs) { try { off?.() } catch {} } }
 
   // ---- save (upsert by exact name) -----------------------------------------
   register(defineTool({
