@@ -1,6 +1,11 @@
 # Model-assisted template drafting runs in a dedicated reusable draft session
 
-Status: Accepted (2026-11-22)
+Status: **Superseded (2026-11-23) by ADR-0011** — drafting was removed in the agent-driven rework: a template IS the
+instruction the user would otherwise type, so nothing needs to write it; the user writes it directly or distills it in
+conversation through `roster_template_save`. The mechanism below is kept as history only: no draft session, `draft`
+remote, Settings draft configuration, or draft-related Config field remains in the plugin.
+
+Originally: Accepted (2026-11-22)
 
 ## Context
 

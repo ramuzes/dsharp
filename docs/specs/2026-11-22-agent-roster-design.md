@@ -1,86 +1,98 @@
 # Agent roster — reusable role templates for team members
 
+## Change 2026-11-23 — agent-driven member creation (form 2)
+
+- REMOVED: AI-assisted drafting in every form — the draft session, the `draft` remote, the Settings toggle/draft-model block, the four draft Config fields, ADR-0010's mechanism. A template IS the instruction the user would otherwise type; nothing must write it for them.
+- MODIFIED: creating a member is now **agent-driven**. "+" → pick a template (+ optional task) → the plugin injects that instruction into the current session as a user message (the composer-equivalent path) → the lead agent runs its normal loop and calls the plugin's `roster_spawn` tool → the host performs the deterministic subagent-runtime spawn with the template's model.
+- REMOVED: the client-side spawn (`spawnMember` remote), the team-mode gating states, the member-name field and the per-spawn model selector — names follow the template, models come from the template.
+- REMOVED: the in-dialog ad-hoc custom role (templates replace the repeated natural-language description; a one-off still goes through conversation or a saved template).
+- ADDED: `roster_spawn` agent tool — the single creation path, always registered; `roster_template_save/list` stay behind the `exposeAgentTools` toggle.
+
 ## Change 2026-11-23 — settings-owned AI draft + Settings page manager
 
 - MODIFIED: the roster manager moved from a Plugins-page config card to a **Settings page section** (`settings.section`, id `agent-roster`): part one is the AI-draft configuration (enable toggle + draft model — enabling requires picking a model), part two the template manager. The Plugins row links the section (no card of our own).
 - MODIFIED: AI-draft model selection is **Settings-owned** (volatile Config fields `draftEnabled` default false, `draftModelProvider/Id/ReasoningEffort`), replacing the in-modal per-draft picker and its live-session prefill. The modal states which model will be used and points at Settings while off or unconfigured; the host resolves `input.model > configured > refuse` (`roster/draft-disabled`, `roster/draft-model-unset`).
 - MODIFIED: the Settings add-form carries no drafting surface (drafting needs a session context); a hint points at the in-session "+" flow.
+- SUPERSEDED by the change above (form 2) — that block and its mechanism are gone.
 
 ## Requirement (the why & what)
 
 ### Problem statement
 
-DSH's agent teamwork requires the user to specify subagents explicitly, in conversation, every time. Switching to a new session means re-explaining the same role's configuration and constraints to the agent from scratch. Users who repeatedly collaborate with the same roles (reviewer, tester, docs writer…) have no way to configure a role once and reuse it across sessions — unlike, e.g., CherryStudio assistants.
+DSH's agent teamwork requires users to specify subagents explicitly, in conversation, every time. Switching to a new session means re-describing the same role's responsibility boundary and main goal to the lead agent from scratch, and re-stating which model that member should run on. Users who repeatedly collaborate with the same roles (reviewer, tester, docs writer…) have no way to configure that description once and reuse it across sessions.
 
 ### Goal
 
-A new plugin, **agent-roster** (package `dsh-agent-roster`), that provides a profile-wide **roster** of **role templates** and a fast in-session flow to spawn team members from them:
+A new plugin, **agent-roster** (package `dsh-agent-roster`), that turns a profile-wide **roster of role templates** into one-click member creation:
 
-- configure role templates once (settings card, in-modal custom roles, or model-assisted drafting) — use them in every session;
-- from the session composer's "+" menu, add an agent member through a picker dialog (pick a template, or define a custom role on the spot);
-- choose the member's model per spawn, defaulting to the current session's configuration, following DSH's own model-selection rules;
-- if agent teamwork is not enabled for the session, the dialog offers a one-click enable (explicit confirmation, never silent);
+- a **role template is exactly what the user would otherwise say to the lead agent**: a name, a one-line description, the standing instruction (responsibility boundary and main goal), and an optional model preference;
+- from the composer's "+" menu, picking a template (plus an optional one-off task) **injects that instruction into the current session**, so the lead agent runs its normal agent loop and creates the member through the plugin's `roster_spawn` tool;
+- the template's model preference is applied **reliably** at creation (it cannot be left to prompt interpretation — see the design note);
+- templates are managed once in Settings and are reusable in every session;
 - the plugin UI is fully bilingual (Chinese and English); all docs and code comments are English.
 
 ### User stories
 
-1. As a session user, I want to pick a pre-configured role from the "+" menu and get a working team member, so that I don't re-explain the role in every session.
-2. As a session user, I want to define a one-off custom role in the same dialog, so that ad-hoc collaboration needs no prior setup.
-3. As a session user, I want to save a custom role (edited or AI-drafted) as a roster template, so that next session it is one click away.
-4. As a session user, I want the member to use the current session's model by default and to optionally choose another model for it, so that model policy follows DSH's design.
-5. As a session user who has not enabled agent teamwork, I want the dialog to offer enabling it with one click (with a clear explanation), so that the shared task board is available without hunting for the toggle.
-6. As a roster owner, I want to manage templates (list, edit, delete) on the plugin's settings card, so that the roster stays curated without touching YAML.
-7. As a roster owner, I want AI assistance to turn a one-line brief into a full template draft that I review before saving, so that I never hand-write long standing prompts.
-8. As a session user, I want to ask the root agent in conversation to draft and save a role template (e.g. distill the role it has just been using), so that templates capture real working context.
-9. As a Chinese- or English-language user, I want every plugin surface in my language, so that the feature is usable without translation.
+1. As a session user, I want to pick a role template from the "+" menu and have the lead agent create that member, so that I never re-describe the role's boundary, goal, and model again.
+2. As a session user, I want to attach a one-off task to the pick ("review the payments module"), so that the same role can be pointed at this session's work.
+3. As a session user, I want to see the exact instruction that will be injected before it is sent, so that the template never surprises me.
+4. As a roster owner, I want each template to carry a model preference that is actually used, so that cheap work runs on a cheap model without prompt-stuffing.
+5. As a roster owner, I want to create, edit, and delete templates on the plugin's Settings page, so that the roster stays curated without touching YAML.
+6. As a session user, I want to ask the lead agent in conversation to save the role we just used as a template, so that templates capture real working context.
+7. As a Chinese- or English-language user, I want every plugin surface in my language.
 
 ### Out of scope
 
-- Model-facing template selection (surfacing templates as `agent_preset` choices to the `subagent` tool) — deferred; revisit as v2 (see ADR-0008).
-- Member lifecycle UI (rename, interrupt, delete): the host's Subagents panel and agent tools already cover it.
-- Team task-board UI of any kind (owned by the host's agent-team package).
-- Template import/export and cross-profile synchronization.
-- Drafting with tools or workspace file access beyond what the draft session's ordinary agent already has.
+- AI-assisted template drafting of any kind (removed — the user writes the instruction, or distills it in conversation).
+- An in-dialog ad-hoc role: a one-off that is not worth a template goes through ordinary conversation instead.
+- Model-facing `agent_preset` selection (surfacing templates as presets to the `subagent` tool) — still deferred.
+- Member lifecycle UI (rename, interrupt, delete): the host's Subagents panel and agent tools cover it.
+- Team task-board UI (owned by the host's agent-team package); template import/export; cross-profile sync.
 
 ## Design (the how)
 
 ### Solution
 
-The plugin has a host half and a client half. The host half owns the roster (a storage-domain table), exposes one Remote service for every operation, spawns members through the subagent runtime, and runs model-assisted drafting in a dedicated draft session. The client half adds one "+"-menu command that opens a picker modal (templates, custom role with AI draft, model choice, optional kickoff task, teamwork enable row), and one settings card for roster management. Members spawned this way are ordinary subagents: they show up in the existing Subagents panel and `list_agents` with no plugin-side rendering.
+The plugin has a small host half and a client half. The host half owns the roster (a storage-domain table), exposes template CRUD as a Remote for the Settings page, registers `roster_spawn` as an agent tool (the single creation path), and keeps the authoring tools `roster_template_save/list`. The client half adds one "+"-menu command whose modal lists templates, previews the exact instruction, takes an optional task, and injects that instruction into the current session as a user message. The lead agent then calls `roster_spawn`; members appear in the standard Subagents panel.
 
-The flow for a user: click "+" → "Add agent member" → modal opens. If team mode is off for this session, the modal shows an explanation row with an Enable button (one click calls the host's existing agent-team remote; spawning itself remains possible without team mode — team mode adds the shared task board, and the dialog says so). The user picks a template or switches to "custom", optionally renames the member, optionally picks a model (default: current session's), optionally types a kickoff task, and confirms. The member appears under the current tree's root as a subagent and greets per its standing prompt.
+The user flow: click "+" → "Add agent member" → pick a template → optionally type the task → confirm. The conversation shows the injected instruction, the lead agent calls `roster_spawn`, the member starts under the current tree's root with the template's standing prompt and model.
 
 ### Implementation decisions
 
-**Architecture** (grounded in ADR-0008/0009/0010):
+**Why a plugin tool instead of letting the agent call `subagent` directly.** Two facts force it: (1) DSH limits explicit child-model selection on the `subagent` tool to the parent's current route unless the Host sets an allowlist policy (`packages/subagent/tool-subagent/src/model-selection.ts:167-190`, `MODEL_ROUTE_NOT_ALLOWED`), so "this member runs on model X" cannot be reliably honored through the model's own tool call; (2) the template's standing prompt must stay frozen — letting the lead rewrite it on every spawn reintroduces the drift templates exist to prevent. `roster_spawn` therefore does the deterministic host-side spawn (`subagents.startActivation` with `agentOptions`), while the agent loop still contributes what it is good at: reading the conversation and filling in the one-off task.
 
-- **Member spawn** resolves the current session tree's root agent and calls the subagent runtime's activation entry (`startActivation`) — the identical path the `subagent` tool uses. `label` = template display name; `name` = slugified, user-adjustable, validated by the same rules as the tool's name parameter (including the reserved `lead`), with plugin-owned suffixing for repeats; `prompt` = the standing prompt, with the optional kickoff task appended as a marked section; model overrides passed only when explicitly chosen, otherwise omitted so the child inherits the parent's current route.
-- **Roster storage** is a plugin-owned storage-domain table of zod-validated records: `{ id, name, description, prompt, defaultModel?, createdAt, updatedAt }`. The storage service is optional; absence degrades to an in-memory store with a loud status record. The Config schema holds only behavior toggles (initially: whether model-facing roster tools are exposed, default on).
-- **One operation, two callers**: every roster operation is a host service method consumed by both the client UI and the model-facing tools (`roster_template_save` upsert, `roster_template_list`), gated by the config toggle. No separate logic paths.
-- **AI drafting** lazily creates one ordinary draft session per workspace (created via the session controller, pinned with a fixed recognizable title), delivers a structured meta-prompt through the sanctioned follow-up + flush path, awaits turn end on the global session event stream, and extracts the last assistant message text. The meta-prompt asks for name / description / standing prompt in the brief's language. A service-side timeout bounds the wait; the client shows a drafting state and can abort. Drafts are proposals only — nothing is saved without explicit user review.
-- **Remote surface**: the host half is a typed remote service exposing at least: template CRUD, spawn, team-status probe, and draft. The client mounts the namespace itself (per-remote optional lookup), so absence never throws.
+**Instruction injection (client).** The message is composed from the template record and sent through the sanctioned composer-equivalent path — `ctx.sessions.using(sessionId, { source: 'agent-roster' }, ref => ref.binding.session.prompt([{ type: 'text', text }], 'queue'))` (`packages/api/session-controller/src/client/contract/session.ts:98-104`; in-tree precedent `ui-commands/src/client/service.ts:105-113`). Shared session semantics apply for free: queueing while busy, visible in the log, cancellable. Failure to reach `prompt()` surfaces a bilingual error in the modal, never a silent no-op. The exact message shape:
 
-**Client integration**:
+```
+Use the agent-roster template «<name>» to create a team member for me.
+Template description: <description>
+Standing instruction the member must run with (do not rewrite it):
+---
+<prompt>
+---
+Current task for this member: <task>          ← this line only when a task was given
+Call the roster_spawn tool with template: "<id>" and the task above as task (omit task when none).
+Do not describe the member in chat instead of creating it; do not pass the standing instruction yourself.
+```
 
-- The "+" item registers through the command UI contribution API (label, icon, availability). It appears among the menu's command entries; joining the curated "Add" section is not offered by the host and is accepted as a disclosed limitation.
-- The picker modal uses the shared Modal primitive from the browser module table, styled with theme tokens and the repo's copied-control conventions (no new primitives invented). It contains: the template list (or custom-role form with the AI-draft brief field and its own model picker, prefilled with the current session's model), the member-name field, the model selector, and the optional kickoff-task field.
-- The model selector lists the current session's selectable models from the session controller's model catalog; a template's optional `defaultModel` pre-fills it. Reasoning effort is offered only alongside an explicit model choice, mirroring the tool's parameter coupling.
-- Teamwork gating has three handled states: team mode off (offer one-click enable via the host's agent-team remote — root sessions only; in non-root views the row degrades to explanation-only text pointing at the root session's model-menu toggle, since enabling is a root-only operation; the modal explains that spawning works regardless); the agent-team plugin rows disabled (detected via the plugin inventory remote; the modal offers to enable the row through the plugin-manager remote, or to open the Plugins page); no team-mode surface at all (the agent-team remote is absent — the row shows Plugins-page guidance only, as row-enable is impossible without the bundle loaded).
-- Repeat spawns of the same template get numeric suffixes on the slug (`reviewer`, `reviewer-2`, `reviewer-3`), allocated by probing the root's existing child names.
-- The settings card registers in the bundle-config slot keyed by package name: a list editor with add/edit/delete, the AI-draft entry, and per-template default-model editing.
-- Localization: one client locale namespace with complete `zh` and `en` dictionaries (parity asserted by a test), metadata locales for the plugin catalog, bilingual detail document.
+**`roster_spawn` (host tool).** Parameters `{ template: string, task?: string }` — `template` accepts the record id or its exact name. It resolves the template, then calls `subagents.startActivation` with `label` = template name, `name` = slugified template name (then `-2`, `-3`… among the root's existing children; `lead` yields `lead-member`), `prompt` = the standing prompt plus the optional task as a marked section, and `agentOptions` from the template's `defaultModel` (omitted → the child inherits the parent's route). Returns `{ name }`. Typed errors: `roster/not-found`, `roster/ambiguous-name`, `roster/no-subagents`, `roster/no-session-controller`.
 
-**Failure and containment posture** (repo rules): every entry point wrapped in containment helpers; config values read through wrapper-unwrap helpers in every code path; boot-stage status records written per profile instance; spawn, draft, and CRUD failures surface as explicit bilingual reasons, never silent drops.
+**Roster storage** stays a plugin-owned storage-domain table of zod records `{ id, name, description, prompt, defaultModel?, createdAt, updatedAt }`, with an in-memory fallback plus a loud status record when the service is absent. Config holds only `exposeAgentTools` (the authoring tools); `roster_spawn` is always registered because the "+" flow depends on it.
+
+**Remote surface**: template CRUD only (`listTemplates`, `saveTemplate`, `deleteTemplate`). No spawn, no team-status probe, no draft.
+
+**Settings section** (`settings.section`, id `agent-roster`): the roster manager — list, add, edit, delete, per-template default model. No AI-draft block.
+
+**Shared UI**: the model chooser is the host model-picker dropdown pattern (CSS anchor positioning + portaled `MenuSurface` + provider-grouped rows, copied and renamed per the practices rule); role fields and row rendering are shared between the modal preview and the Settings editor.
 
 ### Testing decisions
 
-- **Unit (node --test, strict fakes)** — the fakes mirror real strictness per repo rules: inject-list proxy scopes that throw on non-injected access; config fields as reactive wrappers; a storage-domain fake that validates with the same zod records and rejects what the real one rejects; a subagent-runtime fake with the real activation signature that records calls (parent, label, name, prompt, agentOptions) for assertion; a session-event fake reproducing the global dispatch; a module-loader stub whose `require` throws on unexpected specifiers and mirrors the real primitives export set. Locale tests assert zh/en key parity and parameter interpolation.
-- **Client tests** render the modal and card against the fake React-hook harness used by existing packages, asserting: menu contribution shape, gating states (team off / rows disabled / healthy), spawn payload assembly (template render + task append + model omission default), draft review flow (nothing saved without confirmation).
-- **Live-host verification** (mandatory per AGENTS.md): background host on a dedicated test profile, stage-record progression, served client boot graph containing the bundle, then exercising: spawn from the modal (member visible in the Subagents panel), default model inheritance, one-click team enable, template CRUD round-trip, and one AI draft round-trip with the draft session reused.
-- **Prior art**: the engram and airboard suites (host/client spec shapes, strict fakes, status-file redirection via env), the engram live-verify runbook, the chrome-cdp client-mount pattern.
+- **Unit (node --test)** — strict fakes as before (inject-only proxy scopes, wrapper-typed config, zod-validating storage fake, a subagent-runtime fake with the real activation signature, a session-store fake with the real `prompt()` contract). New coverage: the injected message text is exactly the pinned shape; `roster_spawn` resolves by id and by exact name, rejects unknown/ambiguous templates, applies the template model (and omits `agentOptions` otherwise), appends the task section, and allocates names.
+- **Client tests** render against real React (`react-test-renderer`): command contribution, template list and instruction preview, task field, exact `prompt()` call, failure line. The removed surfaces (draft, team gating, model selector, name field) must leave no dead references.
+- **Live-host verification**: background host, stage records, served boot graph, then: template CRUD round-trip; "+" → template → confirm injects the message into the session (visible in its log); the lead agent's `roster_spawn` tool call creates a member with the template model (verified in the child session's `modelSelection`); a template's edit is reflected in the next injection.
 
 ## Further notes
 
-- Domain terms (role template, roster, member spawn, draft session) are defined in `CONTEXT.md`; decisions are recorded in ADR-0008 (spawn through the subagent runtime), ADR-0009 (storage-domain persistence), ADR-0010 (draft-session model assistance).
-- The `subagent` runtime appends its own result-delivery guidance to the child's first message; the plugin must not duplicate that text.
-- The plugin targets the current DSH release and declares its engine constraint per the repo's packaging conventions; no runtime npm dependencies.
+- Decisions: ADR-0008 (spawn through the subagent runtime — the mechanism is unchanged; the caller is now the tool), ADR-0009 (storage-domain persistence), ADR-0011 (member creation is agent-driven through a plugin tool), ADR-0010 (draft session — superseded).
+- The `subagent` runtime appends its own result-delivery guidance to the child's first message; the plugin does not duplicate it.
+- The plugin declares its engine constraint per repo packaging conventions and carries no runtime npm dependencies.

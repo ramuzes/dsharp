@@ -1,6 +1,6 @@
 # Agent-roster members spawn through the subagent runtime, not a parallel mechanism
 
-Status: Accepted (2026-11-22)
+Status: Accepted (2026-11-22) · Amended (2026-11-23): the caller is now the `roster_spawn` agent tool, not a client Remote (see ADR-0011)
 
 ## Context
 
@@ -8,7 +8,7 @@ Users need to add team members from persisted role templates via the Web GUI's "
 
 ## Decision
 
-The plugin's host half exposes a Remote spawn that resolves the current tree's root agent and calls `ctx.subagents.startActivation` with the rendered template: `label` = template display name, `name` = slugified unique name (user-adjustable), `prompt` = standing prompt plus an optional kickoff task, and `agentOptions` only when the user explicitly picked a model (omission inherits the parent's current route — `child-agent.ts:98-119`). Role constraints ride as the child's first user message, the same semantics a model-driven spawn would produce.
+The plugin's host half exposes the spawn as an **agent tool** (`roster_spawn`) that resolves the current tree's root agent and calls `ctx.subagents.startActivation` with the rendered template (originally a client Remote; the mechanism below is unchanged — only who calls it, per ADR-0011): `label` = template display name, `name` = slugified unique name (user-adjustable), `prompt` = standing prompt plus an optional kickoff task, and `agentOptions` only when the user explicitly picked a model (omission inherits the parent's current route — `child-agent.ts:98-119`). Role constraints ride as the child's first user message, the same semantics a model-driven spawn would produce.
 
 ## Considered Options
 
