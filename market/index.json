@@ -3,6 +3,33 @@
   "title": "dsharp plugins",
   "plugins": [
     {
+      "name": "dsh-agent-roster",
+      "title": {
+        "en": "Agent roster",
+        "zh": "角色花名册"
+      },
+      "description": {
+        "en": "A profile-wide roster of role templates with one-click team building: a \"+\"-menu flow that injects the chosen template's instruction into the current conversation so the lead agent creates the member through the roster_spawn tool (template prompt frozen, template model applied). Includes roster_template_save / roster_template_list agent tools and an Agent roster manager in Settings. Members are ordinary subagents.",
+        "zh": "一份全 profile 共用的角色模板库，把组建团队变成一键操作：“+”菜单把所选模板的指令注入当前会话，由 lead agent 通过 roster_spawn 工具创建成员（模板指令冻结、模板模型生效）。附带 roster_template_save / roster_template_list 工具，以及设置页的角色花名册管理。成员就是普通子代理。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1hZ2VudC1yb3N0ZXI6IGEgcm9zdGVyIGNhcmQgb2YgbWVtYmVyIHJvd3Mgd2l0aCBhICIrIiBhZGQgYmFkZ2UgLS0+CiAgPHJlY3QgeD0iOCIgeT0iMTAiIHdpZHRoPSI0MCIgaGVpZ2h0PSI0NCIgcng9IjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFiOWU3NyIgc3Ryb2tlLXdpZHRoPSI0IiAvPgogIDxjaXJjbGUgY3g9IjE3IiBjeT0iMjIiIHI9IjMiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjI1IiB5MT0iMjIiIHgyPSI0MCIgeTI9IjIyIiBzdHJva2U9IiMxYjllNzciIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjE3IiBjeT0iMzIiIHI9IjMiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjI1IiB5MT0iMzIiIHgyPSI0MCIgeTI9IjMyIiBzdHJva2U9IiMxYjllNzciIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjE3IiBjeT0iNDIiIHI9IjMiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjI1IiB5MT0iNDIiIHgyPSIzNCIgeTI9IjQyIiBzdHJva2U9IiMxYjllNzciIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjUwIiBjeT0iNDgiIHI9IjkiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjQ2IiB5MT0iNDgiIHgyPSI1NCIgeTI9IjQ4IiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxsaW5lIHgxPSI1MCIgeTE9IjQ0IiB4Mj0iNTAiIHkyPSI1MiIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KPC9zdmc+Cg==",
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1795425335,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/ramuzes/dsharp",
+            "commit": "cbe8de1754378f72994abc725ae8f7e495e40730",
+            "path": "packages/agent-roster"
+          },
+          "engines": {
+            "dsh": "^0.2.2-rc.5"
+          }
+        }
+      ]
+    },
+    {
       "name": "dsh-airboard",
       "title": {
         "en": "AirBoard",
@@ -15,12 +42,12 @@
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1haXJib2FyZDogYSBib2FyZCB3aXRoIG9uZSBjYXJkIHB1bGxlZCBvdXQgZm9yIHJlYWRpbmcgLS0+CiAgPHJlY3QgeD0iOCIgeT0iMTQiIHdpZHRoPSI0MCIgaGVpZ2h0PSIzNiIgcng9IjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzI0N2JiZiIgc3Ryb2tlLXdpZHRoPSI0IiAvPgogIDxsaW5lIHgxPSIxNiIgeTE9IjI2IiB4Mj0iMzIiIHkyPSIyNiIgc3Ryb2tlPSIjMjQ3YmJmIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KICA8bGluZSB4MT0iMTYiIHkxPSIzNiIgeDI9IjI2IiB5Mj0iMzYiIHN0cm9rZT0iIzI0N2JiZiIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiIC8+CiAgPHJlY3QgeD0iMzYiIHk9IjMyIiB3aWR0aD0iMjAiIGhlaWdodD0iMjQiIHJ4PSI0IiBmaWxsPSIjMjQ3YmJmIiAvPgogIDxsaW5lIHgxPSI0MSIgeTE9IjQwIiB4Mj0iNTEiIHkyPSI0MCIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KICA8bGluZSB4MT0iNDEiIHkxPSI0NyIgeDI9IjUxIiB5Mj0iNDciIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIC8+Cjwvc3ZnPgo=",
       "versions": [
         {
-          "version": "0.2.2",
-          "publishTimestamp": 1794794377,
+          "version": "0.2.3",
+          "publishTimestamp": 1795425335,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "be663c0e45a1270a18d0abdefbdfcd9869248363",
+            "commit": "cbe8de1754378f72994abc725ae8f7e495e40730",
             "path": "packages/airboard"
           }
         }
@@ -28,18 +55,51 @@
     },
     {
       "name": "dsh-chrome-cdp",
-      "title": "dsh-chrome-cdp",
-      "description": "Operate the user's real Chrome over CDP via chrome-devtools-mcp: per-Session exclusive attach, per-action approval gate, Plugins-page config card",
+      "title": {
+        "en": "Chrome over CDP",
+        "zh": "Chrome (CDP)"
+      },
+      "description": {
+        "en": "Operate the user's real Chrome over CDP via chrome-devtools-mcp: per-Session exclusive attach, per-action approval gate, Plugins-page config card",
+        "zh": "通过 chrome-devtools-mcp 以 CDP 操作你真实使用的 Chrome：每会话独占挂载、逐操作审批门、Plugins 页配置卡"
+      },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE5MGQ5IiBzdHJva2Utd2lkdGg9IjIiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjkiLz48Y2lyY2xlIGN4PSI5LjUiIGN5PSIxMCIgcj0iMSIgZmlsbD0iIzRhOTBkOSIvPjxjaXJjbGUgY3g9IjE0LjUiIGN5PSIxMCIgcj0iMSIgZmlsbD0iIzRhOTBkOSIvPjxwYXRoIGQ9Ik04LjUgMTQuNWMxIDEuMiAyLjIgMS44IDMuNSAxLjhzMi41LS42IDMuNS0xLjgiLz48L3N2Zz4K",
       "versions": [
         {
-          "version": "0.1.0",
-          "publishTimestamp": 1794794377,
+          "version": "0.1.1",
+          "publishTimestamp": 1795425335,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "be663c0e45a1270a18d0abdefbdfcd9869248363",
+            "commit": "cbe8de1754378f72994abc725ae8f7e495e40730",
             "path": "packages/chrome-cdp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dsh-engram",
+      "title": {
+        "en": "engram memory",
+        "zh": "engram 记忆"
+      },
+      "description": {
+        "en": "Durable agent memory backed by a local engram daemon: six curated memory tools (search, save, context, timeline, stats, projects), DSH↔engram session bridging, optional prompt injection, and cloud-sync status. Daemon stewardship is host-side; secrets stay in the credential store.",
+        "zh": "由本地 engram 守护进程支撑的 agent 持久记忆：六个精选记忆工具（搜索、保存、上下文、时间线、统计、项目列表）、DSH↔engram 会话桥接、可选的提示注入与云同步状态。守护进程托管在宿主侧；密钥只存于凭据存储。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgPCEtLSBvcmlnaW5hbCBhcnR3b3JrOiBhIG1lbW9yeSBub2RlIGdyYXBoIOKAlCBvbmUgaHViIG5ldXJvbiB3aXRoIGxpbmtlZCBzYXRlbGxpdGVzIC0tPgogIDxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjMuNCIvPgogIDxjaXJjbGUgY3g9IjQuNSIgY3k9IjYiIHI9IjEuNyIvPgogIDxjaXJjbGUgY3g9IjE5LjUiIGN5PSI2IiByPSIxLjciLz4KICA8Y2lyY2xlIGN4PSI0LjUiIGN5PSIxOCIgcj0iMS43Ii8+CiAgPGNpcmNsZSBjeD0iMTkuNSIgY3k9IjE4IiByPSIxLjciLz4KICA8cGF0aCBkPSJNNS45IDcuMSA5LjUgOS45TTE4LjEgNy4xIDE0LjUgOS45TTUuOSAxNi45IDkuNSAxNC4xTTE4LjEgMTYuOSAxNC41IDE0LjEiLz4KPC9zdmc+Cg==",
+      "versions": [
+        {
+          "version": "0.1.5",
+          "publishTimestamp": 1795425335,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/ramuzes/dsharp",
+            "commit": "cbe8de1754378f72994abc725ae8f7e495e40730",
+            "path": "packages/engram"
+          },
+          "engines": {
+            "dsh": "^0.2.2-rc.5"
           }
         }
       ]
@@ -57,12 +117,12 @@
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1mZWlzaHUtZ2F0ZXdheSBpY29uOiBhIEZlaXNodS1ibHVlIGNoYXQgYnViYmxlIGNhcnJ5aW5nIGEgcGx1ZywKICAgICAgIGRyYXduIGFzIG9yaWdpbmFsIGFydHdvcmsgZm9yIHRoaXMgcGx1Z2luLiAtLT4KICA8cGF0aCBkPSJNMzIgOEMxOC43IDggOCAxNi45NSA4IDI4YzAgNi40IDMuNiAxMi4xIDkuMiAxNS43LS41IDIuOS0xLjkgNS41LTQgNy42LS42LjYtLjEgMS42LjcgMS41IDUtLjcgOS4zLTIuNyAxMi40LTUuMiAxLjguMyAzLjcuNCA1LjcuNCAxMy4zIDAgMjQtOC45NSAyNC0yMFM0NS4zIDggMzIgOHoiCiAgICAgICAgZmlsbD0iIzMzNzBmZiIvPgogIDxnIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIGZpbGw9Im5vbmUiPgogICAgPHBhdGggZD0iTTI0IDIydjEwTTQwIDIydjEwIi8+CiAgICA8cGF0aCBkPSJNMjAgMjdoOE0zNiAyN2g4TTI0IDM2YzIuNyAzLjUgNS4zIDUuMiA4IDUuMnM1LjMtMS43IDgtNS4yIi8+CiAgPC9nPgo8L3N2Zz4K",
       "versions": [
         {
-          "version": "0.1.2",
-          "publishTimestamp": 1794794377,
+          "version": "0.1.3",
+          "publishTimestamp": 1795425335,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "be663c0e45a1270a18d0abdefbdfcd9869248363",
+            "commit": "cbe8de1754378f72994abc725ae8f7e495e40730",
             "path": "packages/feishu-gateway"
           }
         }
@@ -81,12 +141,12 @@
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1naXRsYWI6IGEgc3R5bGl6ZWQgZm94LXRhaWwgYnJhbmNoIG5vZGUgb3ZlciBhIHJlcG8gY2FyZCAtLT4KICA8cmVjdCB4PSI4IiB5PSIxMiIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQwIiByeD0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZTI0MzI5IiBzdHJva2Utd2lkdGg9IjQiIC8+CiAgPHBhdGggZD0iTTIyIDQ0IEwyMiAzMiBRMjIgMjQgMzAgMjQgTDM4IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmYzZkMjYiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjIyIiBjeT0iNDQiIHI9IjQiIGZpbGw9IiNlMjQzMjkiIC8+CiAgPGNpcmNsZSBjeD0iMzgiIGN5PSIyNCIgcj0iNCIgZmlsbD0iI2ZjYTMyNiIgLz4KICA8cGF0aCBkPSJNNDYgMzIgTDQ2IDM4IEw0MCA0MSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmNhMzI2IiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KICA8Y2lyY2xlIGN4PSI0NiIgY3k9IjMyIiByPSIzIiBmaWxsPSIjZTI0MzI5IiAvPgo8L3N2Zz4K",
       "versions": [
         {
-          "version": "0.2.3",
-          "publishTimestamp": 1794794377,
+          "version": "0.2.4",
+          "publishTimestamp": 1795425335,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "be663c0e45a1270a18d0abdefbdfcd9869248363",
+            "commit": "cbe8de1754378f72994abc725ae8f7e495e40730",
             "path": "packages/gitlab"
           }
         }
@@ -94,16 +154,22 @@
     },
     {
       "name": "dsh-workspace-env",
-      "title": "dsh-workspace-env",
-      "description": "Workspace-local toolchain state (uv, Go) for every confined bash call and PTY terminal — no sandbox holes",
+      "title": {
+        "en": "Workspace toolchain env",
+        "zh": "工作区工具链环境"
+      },
+      "description": {
+        "en": "Workspace-local toolchain state (uv, Go) for every confined bash call and PTY terminal — no sandbox holes",
+        "zh": "让每次受限 bash 调用与 PTY 终端的工具链状态（uv、Go）都落在工作区内——不给沙箱开洞"
+      },
       "versions": [
         {
-          "version": "0.2.0",
-          "publishTimestamp": 1794794377,
+          "version": "0.2.1",
+          "publishTimestamp": 1795425335,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "be663c0e45a1270a18d0abdefbdfcd9869248363",
+            "commit": "cbe8de1754378f72994abc725ae8f7e495e40730",
             "path": "packages/workspace-env"
           }
         }
