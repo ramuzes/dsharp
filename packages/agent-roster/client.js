@@ -27,7 +27,7 @@
  *   (packages/client/ui-primitives/src/index.ts:51): open/onClose/title/
  *   closeLabel/description/footer props, mask + Escape + aria-modal handled
  *   by the primitive (Modal.tsx ModalBaseProps) — kept intact; this task
- *   only gates the `onClose` it hands over (in-flight spawn/draft).
+ *   only gates the `onClose` it hands over (while the instruction is being injected).
  * - `conversation.input.overlay` list slot, scope session
  *   (packages/client/ui-conversation/src/client/contract/slots.ts:310) —
  *   the placement ui-message-feedback uses for its dialog
@@ -60,16 +60,6 @@
  *   would crash the plugin on hosts without them); each is resolved per use
  *   through the same try-guarded ctx.get() optional lookup as the roster
  *   namespace, and absence degrades the UI instead of throwing.
- * - Session-scoped slot standard props — `useProjection`: the slot machinery
- *   composes the standard props into every session-scope seat (ui-renderer
- *   scoped-slots.tsx:521,602 standardProps keyed hooks; ui-session
- *   client/index.ts:148-157 SessionStandardProps), and `useProjection` is
- *   the per-key projection hook (UseProjection, session-controller
- *   src/client/sessions/projection-store.ts:38-45; undefined = capability
- *   absent). `modelSelection` is a registered projection key whose `next`
- *   is the live selection (core/agent types.ts:78-101 — null while the
- *   Agent's initial options supply the route). Read the ui-agent-team
- *   TeamModeToggle.tsx:39-41 way: a PROP the seat receives, never a remote.
  * - `settings.section` list slot, scope root — one Settings page entry
  *   (`{ id, order, label }` options; ui-settings contract/slots.ts:17-27,
  *   registration precedent ui-settings-models client/index.ts:143-152).
@@ -326,18 +316,16 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Shared building blocks (Task 8 extraction): the modal of Tasks 6-7 and
-    // the Plugins-page card of Task 8 render the same role fields, the same
-    // ModelRef selector, and run the same client-side draft wait — extracted
-    // here once instead of being duplicated per surface.
+    // Shared building blocks: the Settings roster manager's add/edit forms and
+    // the modal's instruction preview render the same role fields and the same
+    // ModelRef selector.
     // -------------------------------------------------------------------------
 
     /**
      * The Host model catalog as flat selector rows, loaded once per consumer
      * (modal open / card form mount). The session face may be absent or fail
      * (older host, provider outage): rows degrade to [] — callers offer the
-     * default entry only and never block on the catalog (Task 6 review
-     * note 4).
+     * default entry only and never block on the catalog.
      * @returns {{ rows: Array<object> }} the flat rows (`key` is the JSON
      *   [provider, model] pair).
      */
@@ -645,9 +633,9 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The shared role fields — name, description, prompt — of the modal's
-     * custom-role form (Tasks 6-7) and the card's template add/edit forms
-     * (Task 8). Controlled and hook-free; `idPrefix` namespaces the
+     * The shared role fields — name, description, prompt — of the Settings
+     * roster manager's template add/edit forms. Controlled and hook-free;
+     * `idPrefix` namespaces the
      * label/field ids so the two surfaces never collide in one document.
      * @param {any} props - `t`, `idPrefix`, `name`, `description`, `prompt`,
      *   `onName`, `onDescription`, `onPrompt`.
@@ -910,23 +898,23 @@ window.__ModuleLoader__.load({
      * opener its mount effect registers (the ui-message-feedback dialog
      * placement pattern — the Modal portals from here, the overlay supplies
      * the per-session scope).
-     * @param {any} props - the seat's composed props: the slot machinery's
-     *   standard `useProjection` (session scope), the inject face's
-     *   `sessionId`, and the locale seat's `t`.
+     * @param {any} props - the seat's composed props: the inject face's
+     *   `sessionId` and the locale seat's `t` (the slot's other standard
+     *   props are accepted and unused).
      */
     function RosterModalSeat(props) {
-      const { sessionId, t, useProjection } = props
+      const { sessionId, t } = props
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => {
         const opener = () => { setOpen(true) }
         modalOpeners.set(sessionId, opener)
         return () => { if (modalOpeners.get(sessionId) === opener) modalOpeners.delete(sessionId) }
       }, [sessionId])
-      return open ? h(RosterModal, { sessionId, close: () => { setOpen(false) }, t, useProjection }) : null
+      return open ? h(RosterModal, { sessionId, close: () => { setOpen(false) }, t }) : null
     }
 
     // -------------------------------------------------------------------------
-    // Task 8 — the Plugins-page settings card (roster manager).
+    // The Settings roster manager (templates: list / add / edit / delete).
     // -------------------------------------------------------------------------
 
     /**
@@ -1208,32 +1196,23 @@ window.__ModuleLoader__.load({
           }, t('card.cancel'))))
     }
 
-    /** Scoped sheet, appended once per activation and removed with the plugin. */
-    // Styles follow the HOST's native settings controls, copied and
-    // renamed under this plugin's prefix (practices.md: copy markup, CSS,
-    // and behavior from the host control; keep only --dsw-alias-* tokens):
-    // - field rhythm, label, input, hint  — ui-primitives
-    //   settings-form/fields.module.css (.field 12px 0 + 6px gap + hairline
-    //   separators; .label 13px/500/1.5; .input height 34px, padding 0 12px,
-    //   0.5px border-l4, radius md, bg layer-3, 13px/1.5, focus border
-    //   business-primary, disabled label-tertiary) and ConfigField.module.css
-    //   (textarea padding 6px 12px, resize vertical).
-    // - buttons — ui-primitives Button.module.css (sm 28px, radius sm,
-    //   ghost hover interactive-bg-hover, disabled 0.4) and
-    //   settings-form/SettingsForm.module.css (.save primary fill 5px 14px,
-    //   focus ring).
-    // Styles follow the HOST's native settings controls, copied and renamed
-    // under this plugin's prefix (practices.md: copy markup, CSS, and
-    // behavior from the host control; keep only --dsw-alias-* tokens):
-    // - field rhythm/label/input/hint — ui-primitives settings-form/
-    //   fields.module.css (.field 12px 0 + 6px gap + 0.5px hairline
-    //   separators; .label 13px/500/1.5; .input height 34px, padding
-    //   0 12px, 0.5px border-l4, radius md, bg layer-3, focus border
-    //   business-primary, disabled label-tertiary) and ConfigField.module.css
-    //   (textarea padding 6px 12px, resize vertical).
-    // - buttons — ui-primitives Button.module.css (sm 28px, radius sm, ghost
-    //   hover interactive-bg-hover, disabled 0.4) and settings-form/
-    //   SettingsForm.module.css (.save primary fill, focus ring).
+    /**
+     * Scoped sheet, appended once per activation and removed with the plugin.
+     * Styles follow the HOST's native settings controls, copied and renamed
+     * under this plugin's prefix (practices.md: copy markup, CSS, and behavior
+     * from the host control; keep only --dsw-alias-* tokens):
+     * - field rhythm, label, input, hint — ui-primitives settings-form/
+     *   fields.module.css (.field 12px 0 + 6px gap + 0.5px hairline
+     *   separators; .label 13px/500/1.5; .input height 34px, padding 0 12px,
+     *   0.5px border-l4, radius md, bg layer-3, 13px/1.5, focus border
+     *   business-primary, disabled label-tertiary) and ConfigField.module.css
+     *   (textarea padding 6px 12px, resize vertical).
+     * - buttons — ui-primitives Button.module.css (sm 28px, radius sm, ghost
+     *   hover interactive-bg-hover, disabled 0.4) and settings-form/
+     *   SettingsForm.module.css (.save primary fill 5px 14px, focus ring).
+     * - the model dropdown — ui-model-selection ModelSelect.module.css (CSS
+     *   anchor positioning, portaled MenuSurface, provider-grouped rows).
+     */
     const STYLES = `
 [data-agent-roster] { display: flex; flex-direction: column; gap: 14px; color: var(--dsw-alias-label-primary); }
 .agent-roster-content { max-height: min(520px, 70vh); overflow: auto; }
@@ -1247,9 +1226,6 @@ window.__ModuleLoader__.load({
 .agent-roster-banner-success { color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-interactive-bg-hover); }
 .agent-roster-banner-error { display: flex; flex-direction: column; gap: 2px; color: var(--dsw-alias-label-error); background: var(--dsw-alias-interactive-bg-hover); }
 .agent-roster-error-label { font-weight: 500; }
-.agent-roster-team { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover); border-radius: var(--dsw-radius-md); }
-.agent-roster-team-error { color: var(--dsw-alias-label-error); }
-.agent-roster-team-actions { display: flex; gap: 8px; }
 .agent-roster-templates { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; }
 .agent-roster-template { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 0.5px solid transparent; border-radius: var(--dsw-radius-md); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .agent-roster-template:hover { background: var(--dsw-alias-interactive-bg-hover); }
@@ -1257,16 +1233,10 @@ window.__ModuleLoader__.load({
 .agent-roster-template-name { font-size: 13px; font-weight: 500; line-height: 1.5; }
 .agent-roster-template-desc { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
 .agent-roster-input { box-sizing: border-box; width: 100%; height: 34px; padding: 0 12px; font: inherit; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); }
-.agent-roster-input:focus-visible, .agent-roster-select:focus-visible { outline: none; border-color: var(--dsw-alias-state-business-primary); }
-.agent-roster-input:disabled, .agent-roster-select:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
+.agent-roster-input:focus-visible { outline: none; border-color: var(--dsw-alias-state-business-primary); }
+.agent-roster-input:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
 .agent-roster-textarea { height: auto; min-height: 56px; padding: 6px 12px; resize: vertical; }
-.agent-roster-select { box-sizing: border-box; width: 100%; height: 34px; padding: 0 12px; font: inherit; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); }
 .agent-roster-effort { display: flex; flex-direction: column; gap: 6px; }
-.agent-roster-toggle, .agent-roster-custom-toggle-row { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); cursor: pointer; }
-.agent-roster-custom-form { display: flex; flex-direction: column; gap: 6px; padding: 12px 0 0; border-top: 0.5px solid var(--dsw-alias-border-l2); }
-.agent-roster-draft-area { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }
-.agent-roster-draft-controls { display: flex; align-items: center; gap: 8px; }
-.agent-roster-draft-controls .agent-roster-select { flex: 1; width: auto; }
 .agent-roster-footer { display: flex; align-items: center; gap: 8px; padding-top: 16px; }
 .agent-roster-button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 0 10px; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; }
 .agent-roster-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
@@ -1277,8 +1247,6 @@ window.__ModuleLoader__.load({
 .agent-roster-button-confirm:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
 /* The Settings > Agent roster page (settings.section body). */
 [data-agent-roster-settings] { display: flex; flex-direction: column; gap: 12px; color: var(--dsw-alias-label-primary); }
-.agent-roster-settings-draft-row { display: flex; flex-direction: column; gap: 6px; }
-[data-agent-roster-settings] .agent-roster-settings-draft-row .agent-roster-select { width: auto; }
 /* The roster manager (Settings section part two). */
 [data-agent-roster-card] { display: flex; flex-direction: column; gap: 12px; color: var(--dsw-alias-label-primary); }
 .agent-roster-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

@@ -1,6 +1,7 @@
-# dsh-agent-roster bundle layer: one row mounting the Host half (Task 1
-# scaffold — apply() writes its boot stages; Tasks 2-5 add the store, the
-# agentRoster remote, spawn, drafting, and the agent tools). The same package
+# dsh-agent-roster bundle layer: one row mounting the Host half (apply()
+# scaffold — apply() writes its boot stages; the store, the agentRoster
+# template-CRUD remote, the roster_spawn tool and the authoring tools all
+# mount from it). The same package
 # also carries the browser half (package.json dsh.client + ./client export),
 # which the client module system attaches to this row.
 #

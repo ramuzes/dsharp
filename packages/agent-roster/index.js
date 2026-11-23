@@ -1,9 +1,10 @@
 /**
- * dsh-agent-roster — Host half. Task 1 scaffold: Config schema and staged
- * boot observability; Task 2: the storageDomain-backed template store and
- * the `agentRoster` CRUD remote service mounted on top of it; Task 5: the
- * roster_template_save / roster_template_list agent tools behind the
- * (non-volatile) exposeAgentTools toggle. Config
+ * dsh-agent-roster — Host half: Config schema and staged boot observability,
+ * the storageDomain-backed template store, the `agentRoster` template-CRUD
+ * remote mounted on top of it, and the agent tools — `roster_spawn` (the
+ * always-on creation path, ADR-0011) plus roster_template_save /
+ * roster_template_list behind the (non-volatile) exposeAgentTools toggle.
+ * Config
  * arrives as reactive wrappers and is read exclusively through
  * readBoolean (AGENTS.md, "Config values arrive wrapped"), and every mount
  * stage lands in the status file so a dead mount names its stage.
@@ -48,10 +49,11 @@ export const Config = Schema.object({
 /**
  * Mount the plugin. Stage sequence (status file, engram pattern): apply →
  * wire-ready → (storage-degraded when the host exposes no storageDomain) →
- * service-registered → done → tools-registered (from the tools inject
- * callback; its detail records whether the authoring pair was included), or
- * tools-failed with the error text (a contained registration failure,
- * rethrown) — or wire-failed with the error text, rethrown
+ * service-registered → done → tools-pending → tools-registered (from the
+ * tools inject callback; its detail records whether the authoring pair was
+ * included), or tools-failed with the error text (a contained registration
+ * failure, rethrown). A host that never provides the injected services stops
+ * at tools-pending — an honest, visible state instead of a terminal `done` — or wire-failed with the error text, rethrown
  * so a dead mount stays loud rather than silently degrading
  * (packages/gitlab/index.js noteStage pattern; AGENTS.md containment rule).
  * The tools stage lands AFTER `done` on purpose: the file keeps only the
@@ -71,7 +73,7 @@ export function apply(ctx, config) {
     try {
       // The ONLY config read in this file — through the unwrap helper,
       // never raw (a wrapper-typed field must not crash the boot path).
-      // Task 5 gates agent-tool registration on this value.
+      // The authoring pair is gated on this value; roster_spawn is not.
       const exposeAgentTools = readBoolean(config.exposeAgentTools)
       status.write('wire-ready', { exposeAgentTools })
 
@@ -85,6 +87,11 @@ export function apply(ctx, config) {
       const roster = factory(ctx, store)
       status.write('service-registered')
       status.write('done')
+      // The tools inject below may not run for a long time (or ever, on a host
+      // without the subagents service). Claiming `done` as terminal would hide
+      // that, so the next record names the pending state; the inject callback
+      // overwrites it with tools-registered / tools-failed.
+      status.write('tools-pending')
 
       // ---- model-facing tools ---------------------------------------------
       // `roster_spawn` is ALWAYS registered: the "+" flow injects an
@@ -123,7 +130,7 @@ export function apply(ctx, config) {
       // lib/store.js dispose) so a remount never hits 'already-open'.
       return () => { store?.dispose?.() }
     } catch (error) {
-      // Same containment as Task 1: name the stage, release what already
+      // Same containment as the mount path: name the stage, release what already
       // opened, then rethrow — a dead mount stays loud.
       store?.dispose?.()
       status.write('wire-failed', String(error))

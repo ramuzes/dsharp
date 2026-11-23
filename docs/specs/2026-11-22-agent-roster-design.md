@@ -65,17 +65,19 @@ The user flow: click "+" → "Add agent member" → pick a template → optional
 
 ```
 Use the agent-roster template «<name>» to create a team member for me.
-Template description: <description>
+Template description: <description | (none)>
 Standing instruction the member must run with (do not rewrite it):
 ---
 <prompt>
 ---
 Current task for this member: <task>          ← this line only when a task was given
-Call the roster_spawn tool with template: "<id>" and the task above as task (omit task when none).
-Do not describe the member in chat instead of creating it; do not pass the standing instruction yourself.
+Call the roster_spawn tool with template: "<id>" (omit task).   ← or: and the current task text above as task.
+Do not describe the member in chat instead of creating it, and do not pass the standing instruction yourself.
 ```
 
-**`roster_spawn` (host tool).** Parameters `{ template: string, task?: string }` — `template` accepts the record id or its exact name. It resolves the template, then calls `subagents.startActivation` with `label` = template name, `name` = slugified template name (then `-2`, `-3`… among the root's existing children; `lead` yields `lead-member`), `prompt` = the standing prompt plus the optional task as a marked section, and `agentOptions` from the template's `defaultModel` (omitted → the child inherits the parent's route). Returns `{ name }`. Typed errors: `roster/not-found`, `roster/ambiguous-name`, `roster/no-subagents`, `roster/no-session-controller`.
+**`roster_spawn` (host tool).** Parameters `{ template: string, task?: string }` — `template` accepts the record id or its exact name. It resolves the template, then calls `subagents.startActivation` with `label` = template name, `name` = slugified template name (then `-2`, `-3`… among the root's existing children; `lead` yields `lead-member`), `prompt` = the standing prompt plus the optional task as a marked section, and `agentOptions` from the template's `defaultModel` (omitted → the child inherits the parent's route). Returns `{ name }`. Typed errors: `roster/bad-request`, `roster/not-found`, `roster/ambiguous-name`, `roster/no-subagents` (defense in depth — the tool only registers when the runtime is injected, see below).
+
+**Registration and availability.** The tools callback injects `['tools', 'subagents']` — `roster_spawn` resolves the caller's tree root and the subagent runtime through that second service, and cordis throws when a callback touches a service it did not inject. The mount therefore records `tools-pending` after `done` and lets the callback overwrite it with `tools-registered` / `tools-failed`; a host that never provides those services (a deployment without the subagent runtime) stops at `tools-pending` rather than claiming a terminal success. In that deployment the plugin can do nothing useful anyway: member creation is its core capability.
 
 **Roster storage** stays a plugin-owned storage-domain table of zod records `{ id, name, description, prompt, defaultModel?, createdAt, updatedAt }`, with an in-memory fallback plus a loud status record when the service is absent. Config holds only `exposeAgentTools` (the authoring tools); `roster_spawn` is always registered because the "+" flow depends on it.
 

@@ -28,7 +28,7 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 
 /**
  * ModelRef — the model a template spawns its member with. JSDoc restatement
- * of the shared shape (Task 3 passes it on to the subagent runtime):
+ * of the shared shape (the spawn passes it on as AgentOptions):
  * @typedef {object} ModelRef
  * @property {string} provider
  * @property {string} model

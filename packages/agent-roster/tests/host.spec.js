@@ -161,7 +161,9 @@ test('apply reads config through wrappers', async () => {
     assert.equal(host.effects.length, 1, 'wiring wrapped in exactly one ctx.effect')
     assert.ok(wrapperReads >= 1, 'exposeAgentTools must be read through the wrapper getter')
     const record = JSON.parse(readFileSync(file, 'utf8'))
-    assert.equal(record.stage, 'done', 'stage sequence ends with a done record')
+    // The mount stops at tools-pending until the injected services appear;
+    // a terminal `done` here would hide a tools callback that never ran.
+    assert.equal(record.stage, 'tools-pending', 'the mount names the pending tools state')
     assert.equal(typeof record.at, 'string')
     assert.ok(!Number.isNaN(Date.parse(record.at)))
   } finally {
@@ -373,7 +375,7 @@ test('apply registers the service over the domain store and closes the domain on
     assert.equal(constructed.length, 1, 'service constructed exactly once')
     assert.equal(constructed[0].ctx, host.ctx, 'service receives the plugin ctx')
     assert.equal(typeof constructed[0].store.all, 'function', 'service receives the opened store')
-    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'done')
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'tools-pending')
     assert.equal(storage.opens.closedCounts[0], 0, 'domain open while mounted')
     host.effects[0].dispose()
     // dispose() rides the domain-open promise's microtask: flush before
@@ -425,7 +427,7 @@ test('a rejected domain open never dangles: recorded, mount completes, ops fail 
     setServiceFactoryForTests(() => { factoryRan += 1 })
     apply(host.ctx, { exposeAgentTools: { get: () => true } })
     assert.equal(factoryRan, 1, 'service registration ran — the mount completed')
-    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'done', 'mount writes done despite the open failure')
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'tools-pending', 'mount proceeds past the open failure up to the tools stage')
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(JSON.parse(readFileSync(file, 'utf8')).stage, 'storage-open-failed')
     // Disposal over a failed open is also safe (nothing to close).

@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-roster",
   "version": "0.2.0",
-  "description": "Agent roster for dsh: a profile-wide roster of role templates with a plus-menu member spawn flow, AI-assisted template drafting, model-facing roster tools, and a settings card",
+  "description": "A profile-wide roster of role templates with one-click team building: the \"+\" menu injects a chosen template's instruction into the current conversation and the lead agent creates the member through the roster_spawn tool (template prompt frozen, template model applied). Includes roster_template_save/list authoring tools and a Settings roster manager. Members are ordinary subagents.",
   "type": "module",
   "main": "index.js",
   "exports": {

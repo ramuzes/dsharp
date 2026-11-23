@@ -39,8 +39,12 @@ so it always names the stage the mount currently sits at:
 `apply → wire-ready → (storage-degraded when the host exposes no
 storageDomain; storage-open-failed when the domain's open() rejects — the
 mount proceeds but store operations then fail loudly, and the record carries
-the error text) → service-registered → done → tools-registered |
-tools-failed`, or a `wire-failed` record carrying the error text. The
+the error text) → service-registered → done → tools-pending → tools-registered |
+tools-failed`, or a `wire-failed` record carrying the error text.
+`tools-pending` is the state between the completed mount and the injected
+tools callback: the plugin registers `roster_spawn` only once both `tools` and
+`subagents` are available (on a host without a subagent runtime it stays
+there, which is honest — member creation is the plugin's core capability). The
 `tools-registered` record's detail carries `{ authoring }` — whether the
 authoring pair was included (the stage claims the spawn tool, which is
 always registered). Point `AGENT_ROSTER_STATUS_FILE` elsewhere for tests or

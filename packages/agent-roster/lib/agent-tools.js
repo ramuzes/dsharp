@@ -100,7 +100,7 @@ export function registerRosterTools(scope, service, deps, options = {}) {
   // ---- spawn (the single creation path, ADR-0011) ---------------------------
   register(defineTool({
     name: 'roster_spawn',
-    description: 'Create one team member from a configured role template. The template carries the member\'s standing instruction (its responsibility boundary and main goal) and an optional model; pass the id or exact name from roster_template_list. The optional task points this member at the current work. Returns the created member\'s name. Do not restate the template yourself — the template text is used verbatim.',
+    description: 'Create one team member from a configured role template. The template carries the member\'s standing instruction (its responsibility boundary and main goal) and an optional model; pass the template id from the instruction that asked for this member, or its exact display name. The optional task points this member at the current work. Returns the created member\'s name. Do not restate the template yourself — the template text is used verbatim.',
     parameters: {
       template: {
         type: 'string',

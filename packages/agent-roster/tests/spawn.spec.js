@@ -280,3 +280,19 @@ test('a missing calling agent is misuse, not a data error', async () => {
     (error) => error instanceof Error && !(error instanceof RemoteError),
   )
 })
+test('the caller signal is forwarded to startActivation (tool cancellation)', async () => {
+  // exec.signal reaches spawnFromTemplate through the tool; it must become the
+  // activation's own signal so cancelling the tool call cancels publication.
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const controller = new AbortController()
+  await spawnFromTemplate(strictScope(), { subagents }, {
+    agent: root,
+    template: RoleTemplate.parse(RESEARCHER),
+    signal: controller.signal,
+  })
+  assert.equal(subagents.activations[0].signal, controller.signal)
+  // An absent signal must still satisfy the required spec member.
+  await spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(RESEARCHER) })
+  assert.equal(subagents.activations[1].signal instanceof AbortSignal, true)
+})
