@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Agent 花名册",
+    "description": "全档案通用的角色模板花名册，把组建团队变成一键操作：\u201c+\u201d菜单成员创建流程（挑选模板、命名成员、可选模型与初始任务）、可复用的 AI 模板起草（只产出提案）、roster_template_save / roster_template_list 模型工具，以及插件页的花名册管理卡片。成员即普通子代理，默认继承会话模型。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

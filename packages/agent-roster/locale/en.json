@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Agent roster",
+    "description": "A profile-wide roster of role templates with one-click team building: a \"+\"-menu member spawn flow (pick a template, name the member, optionally choose a model and an initial task), reusable AI-assisted template drafting that only proposes, roster_template_save / roster_template_list agent tools, and a roster manager card on the Plugins page. Members are ordinary subagents that inherit the session model by default.",
+    "detail": "docs/DETAIL.md"
+  }
+}

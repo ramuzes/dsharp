@@ -8,13 +8,9 @@ reusable AI-assisted drafting session for new templates, model-facing
 card on the Plugins page. Members are ordinary subagents — the plugin never
 renders member lists itself.
 
-> **Status: scaffold (Task 1 of the implementation plan).** Only the package
-> manifest, Config schema, staged status writer, and config-unwrap wire
-> helpers exist so far; the store, remote service, spawn flow, drafting,
-> agent tools, and client half land in later tasks.
-
 Design and full spec: see `docs/specs/2026-11-22-agent-roster-design.md` and
 `docs/plan/2026-11-22-agent-roster.md` in the repository root.
+Live-host verification runbook (recorded evidence): `scripts/live-verify.md`.
 
 ## Install
 
@@ -30,11 +26,15 @@ host half on one row (`agent-roster`); enabling the bundle starts it.
 
 ## Boot observability
 
-Every mount writes its stage progression (`apply → wire-ready → done`, or a
-`wire-failed` record carrying the error text) to
-`~/.dsh/agent-roster-status.json`, one JSON record per stage. Point
-`AGENT_ROSTER_STATUS_FILE` elsewhere for tests or multi-instance setups — the
-target resolves at write time, and the writer is best-effort by contract.
+Every mount writes its stage progression to
+`~/.dsh/agent-roster-status.json` — the file keeps only the latest record,
+so it always names the stage the mount currently sits at:
+`apply → wire-ready → (storage-degraded when the host exposes no
+storageDomain) → service-registered → done → tools-registered |
+tools-skipped | tools-failed`, or a `wire-failed` record carrying the error
+text. Point `AGENT_ROSTER_STATUS_FILE` elsewhere for tests or
+multi-instance setups — the target resolves at write time, and the writer
+is best-effort by contract.
 
 ## Tests
 
