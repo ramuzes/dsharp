@@ -298,12 +298,18 @@ window.__ModuleLoader__.load({
 
     /**
      * The plugin's own Config form, staged through the settings mutate path
-     * (airboard client.js:770-774 precedent: `ctx.configForms.get(<id>)`;
-     * `configForms` is in the inject list). Undefined while the host exposes
-     * no settings surface — every consumer degrades, never crashes.
+     * (airboard client.js:770-774 precedent: `ctx.configForms.get(<ns>)`;
+     * `configForms` is in the inject list). CRITICAL: the settings
+     * namespace is the LOADER ROW id from cordis.patch.yml —
+     * `ns: entry.options.id` (dsh packages/settings/settings/src/index.ts:
+     * 315,327) — NOT the package name: the 2026-11-23 "Loading settings…"
+     * incident came from keying the package name (dsh-agent-roster), whose
+     * mirror never becomes ready. Undefined while the host exposes no
+     * settings surface — every consumer degrades, never crashes.
      */
+    const SETTINGS_NS = 'agent-roster'
     const rosterForm = () => {
-      try { return pluginCtx?.get?.('configForms')?.get?.(ID) } catch { return undefined }
+      try { return pluginCtx?.get?.('configForms')?.get?.(SETTINGS_NS) } catch { return undefined }
     }
 
     /**

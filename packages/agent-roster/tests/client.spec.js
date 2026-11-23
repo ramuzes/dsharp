@@ -189,7 +189,7 @@ function placeholders(value) {
  * :100-106), never a more forgiving shape.
  */
 function makeCtx({ roster, extras, settings } = {}) {
-  const recorded = { commands: [], injects: [], registers: [], namespaces: [], mounts: [] }
+  const recorded = { commands: [], injects: [], registers: [], namespaces: [], mounts: [], configKeys: [] }
   const remoteNamespaces = {}
   for (const [name, face] of Object.entries(extras ?? {})) remoteNamespaces[`remote.${name}`] = face
   // The fake ConfigForm mirrors the real contract (config-form.ts:104-160):
@@ -221,7 +221,14 @@ function makeCtx({ roster, extras, settings } = {}) {
     },
   }
   const services = {
-    configForms: { get: (id) => (id === 'dsh-agent-roster' ? form : undefined) },
+    // The settings namespace is the LOADER ROW id 'agent-roster'
+    // (settings/src/index.ts:315,327 ns: entry.options.id) — NOT the
+    // package name. Strict: any other key resolves undefined, exactly
+    // like the real configForms (the 2026-11-23 incident passed because
+    // an earlier fake accepted the package name).
+    configForms: {
+      get: (id) => { recorded.configKeys.push(id); return id === 'agent-roster' ? form : undefined },
+    },
     commandUi: { register: (contribution) => { recorded.commands.push(contribution); return () => {} } },
     locale: {
       bind: () => makeT(),
@@ -1047,7 +1054,7 @@ async function mountSection({ roster, extras, settings } = {}) {
   const section = recorded.registers.find(({ declaration }) => declaration.name === 'settings.section')
   assert.ok(section, 'the settings section is registered')
   const seatProps = { t: makeT() }
-  const view = { vdom: undefined, calls, harness, form }
+  const view = { vdom: undefined, calls, harness, form, recorded }
   const render = () => { view.vdom = harness.render(section.Component, seatProps) }
   render()
   await harness.settle()
@@ -1405,6 +1412,20 @@ test('modal close is gated while a team action is in flight', async () => {
 // ---------------------------------------------------------------------------
 // Settings section — the AI-draft configuration block (2026-11-23 UX rework).
 // ---------------------------------------------------------------------------
+
+test('the settings block reads the form under the LOADER ROW id namespace', async () => {
+  const view = await mountSection({ settings: { draftEnabled: true, draftModelProvider: 'deepseek', draftModelId: 'chat' } })
+  // 'agent-roster' (the cordis.patch.yml row id), never the package name —
+  // the wrong key left the block in Loading settings… forever. Ready means
+  // the toggle renders checked instead of the loading note.
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'loading'), undefined,
+    'no loading note when the form resolves')
+  const toggle = find(view.vdom, (node) => node.props?.['data-agent-roster-draft-toggle'] !== undefined)
+  assert.ok(toggle, 'the toggle renders (block is ready, not loading)')
+  assert.equal(toggle.props.checked, true)
+  assert.ok(view.recorded.configKeys.includes('agent-roster'), 'the row-id namespace is requested')
+  assert.equal(view.recorded.configKeys.includes('dsh-agent-roster'), false, 'never the package name')
+})
 
 test('the AI-draft block stages the toggle and model through the config form', async () => {
   const view = await mountSection({
