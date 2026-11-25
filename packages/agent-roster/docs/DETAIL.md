@@ -4,4 +4,6 @@ Creation is agent-driven. From the composer's "+" menu you pick a template, see 
 
 Manage templates in **Settings > Agent roster**: create, edit, delete, and set each template's default model (through the same model picker the rest of the harness uses). The `roster_template_save` / `roster_template_list` tools let the lead agent distill the role you have just been using into a template from inside the conversation; the `exposeAgentTools` option hides those two authoring tools when a deployment wants the model to stay out of the roster.
 
+The member's model and reasoning effort can be overridden for a single spawn from the same dialog. The picker starts from the template's default; choosing "inherit the session model" clears it for this member. The template itself is never edited, and the instruction states the chosen model explicitly so it reaches `roster_spawn` unchanged.
+
 Members are ordinary subagents: they appear in the host's Subagents panel and in `list_agents`, and nothing about them is rendered by this plugin.

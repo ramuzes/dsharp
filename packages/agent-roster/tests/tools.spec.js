@@ -413,3 +413,51 @@ test('roster_spawn is not concurrency-safe; the authoring list tool is', async (
   assert.equal(spawn.isConcurrencySafe === undefined || spawn.isConcurrencySafe({}) === false, true)
   assert.equal(toolOf(scope, 'roster_template_list').isConcurrencySafe({}), true)
 })
+
+// ---------------------------------------------------------------------------
+// roster_spawn: the per-spawn model argument (2026-11-25)
+// ---------------------------------------------------------------------------
+
+test('roster_spawn applies the model argument over the template default and reports it', async () => {
+  const ctx = await spawnToolHarness({
+    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
+  })
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  const out = await ctx.tool.execute(
+    { template: ctx.saved.id, model: { provider: 'acme', model: 'cheap', reasoning_effort: 'low' } },
+    { agent: caller, callId: 'c1' },
+  )
+  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions, { provider: 'acme', model: 'cheap', reasoningEffort: 'low' })
+  assert.deepEqual(JSON.parse(out).model, { provider: 'acme', model: 'cheap', reasoningEffort: 'low' })
+})
+
+test('roster_spawn with model null makes the member inherit despite a template default', async () => {
+  const ctx = await spawnToolHarness({
+    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
+  })
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  const out = await ctx.tool.execute({ template: ctx.saved.id, model: null }, { agent: caller, callId: 'c1' })
+  assert.equal('agentOptions' in ctx.subagents.calls.startActivation[0], false)
+  assert.equal(JSON.parse(out).model, 'inherited from the parent agent')
+})
+
+test('roster_spawn without a model argument keeps the template default', async () => {
+  const ctx = await spawnToolHarness({
+    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
+  })
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  await ctx.tool.execute({ template: ctx.saved.id }, { agent: caller, callId: 'c1' })
+  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions, { provider: 'deepseek', model: 'chat' })
+})
+
+test('an invalid model argument maps to model-facing text instead of throwing', async () => {
+  const ctx = await spawnToolHarness()
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  const out = await ctx.tool.execute({ template: ctx.saved.id, model: { provider: '', model: 'x' } }, { agent: caller, callId: 'c1' })
+  assert.match(out, /roster call failed \(roster\/bad-request\)/)
+  assert.equal(ctx.subagents.calls.startActivation.length, 0)
+})

@@ -106,6 +106,8 @@ window.__ModuleLoader__.load({
       'templates.empty': '还没有角色模板',
       'templates.none': '还没有模板。请先到 设置 > Agent roster 新建一个角色模板。',
       'preview.title': '将发送到当前会话的指令',
+      'spawn.model.label': '成员模型',
+      'spawn.model.inherit': '继承当前会话模型',
       'task.label': '本次任务（可选）',
       'task.placeholder': '交给这位成员的本次任务，例如：审查 payments 模块',
       'inject.action': '创建成员',
@@ -152,6 +154,8 @@ window.__ModuleLoader__.load({
       'templates.empty': 'No role templates yet',
       'templates.none': 'No templates yet. Create one in Settings > Agent roster first.',
       'preview.title': 'Instruction that will be sent to this session',
+      'spawn.model.label': 'Member model',
+      'spawn.model.inherit': 'Inherit the session model',
       'task.label': 'Task for this member (optional)',
       'task.placeholder': 'This session\'s task for the member, e.g. review the payments module',
       'inject.action': 'Create member',
@@ -716,10 +720,27 @@ window.__ModuleLoader__.load({
      * template frozen while the agent contributes conversation context.
      * @param {{ id: string, name: string, description: string, prompt: string }} template
      * @param {string} [task] - optional one-off task typed in the modal.
+     * @param {import('./store.js').ModelRef | null} model - the member model
+     *   for this spawn: an explicit route, or null to inherit the session
+     *   model. Always stated (2026-11-25), so the agent never infers it from
+     *   the template and the user's choice reaches roster_spawn verbatim.
      * @returns {string} the exact user message to inject.
      */
-    function composeMemberInstruction(template, task) {
+    function composeMemberInstruction(template, task, model) {
       const trimmedTask = typeof task === 'string' ? task.trim() : ''
+      const inherit = model === null || model === undefined
+      const route = inherit
+        ? 'inherit the session model'
+        : `${model.provider} / ${model.model}` + (model.reasoningEffort ? ` · ${model.reasoningEffort}` : '')
+      // Tool-facing spelling (`reasoning_effort`) in a fixed key order: the
+      // agent copies this JSON verbatim into roster_spawn's `model` argument.
+      const modelArg = inherit
+        ? 'null'
+        : JSON.stringify({
+          provider: model.provider,
+          model: model.model,
+          ...(model.reasoningEffort ? { reasoning_effort: model.reasoningEffort } : {}),
+        })
       return [
         `Use the agent-roster template «${template.name}» to create a team member for me.`,
         `Template description: ${template.description === '' ? '(none)' : template.description}`,
@@ -727,9 +748,11 @@ window.__ModuleLoader__.load({
         '---',
         template.prompt,
         '---',
+        `Member model for this spawn: ${route}`,
         ...(trimmedTask === '' ? [] : [`Current task for this member: ${trimmedTask}`]),
-        `Call the roster_spawn tool with template: ${JSON.stringify(template.id)}`
-          + (trimmedTask === '' ? ' (omit task).' : ' and the current task text above as task.'),
+        `Call the roster_spawn tool with template: ${JSON.stringify(template.id)} and model: ${modelArg}`
+          + (trimmedTask === '' ? ' (omit task).' : ', and the current task text above as task.'),
+        'Pass the model value exactly as given; null means the member inherits the session model.',
         'Do not describe the member in chat instead of creating it, and do not pass the standing instruction yourself.',
       ].join('\n')
     }
@@ -739,7 +762,10 @@ window.__ModuleLoader__.load({
      * instruction, optionally add this session's task, then inject it into the
      * conversation. The plugin does NOT spawn here — the lead agent does, by
      * calling `roster_spawn`; this keeps the agent loop in charge of context
-     * while the template's prompt and model stay frozen.
+     * while the template's prompt stays frozen. The member MODEL is the one
+     * surface the user may override per spawn (2026-11-25): the picker starts
+     * from the template's default and the choice travels in the instruction,
+     * so it reaches roster_spawn without editing the template.
      * @param {any} props - `sessionId`, `close()`, the locale seat's `t`.
      */
     function RosterModal(props) {
@@ -749,6 +775,13 @@ window.__ModuleLoader__.load({
       const [task, setTask] = React.useState('')
       const [outcome, setOutcome] = React.useState(null)
       const [sending, setSending] = React.useState(false)
+      // Per-spawn model choice. A pick belongs to the template it was made for
+      // (`choiceFor`): switching templates falls back to the new template's
+      // default instead of carrying a stale route. '' = inherit.
+      const [choice, setChoice] = React.useState('')
+      const [effort, setEffort] = React.useState('')
+      const [choiceFor, setChoiceFor] = React.useState(null)
+      const { rows } = useModelRows()
 
       // Load the template list once per open; a missing namespace (host plugin
       // not loaded) degrades to the unavailable line, never a crash.
@@ -771,8 +804,33 @@ window.__ModuleLoader__.load({
         ? selectedId
         : list[0]?.id) ?? null
       const selected = list.find((tpl) => tpl.id === effectiveId) ?? null
-      const instruction = selected === null ? '' : composeMemberInstruction(selected, task)
+      // Effective choice: the user's own pick for THIS template, else the
+      // template's default. rowsWithRef keeps a default the catalog does not
+      // list (degraded catalog, retired model) selectable and lossless.
+      const defaultRef = selected?.defaultModel ?? null
+      const defaultKey = refKey(defaultRef) ?? ''
+      const defaultEffort = typeof defaultRef?.reasoningEffort === 'string' ? defaultRef.reasoningEffort : ''
+      const ownPick = selected !== null && choiceFor === selected.id
+      const modelChoice = ownPick ? choice : defaultKey
+      const effortChoice = ownPick ? effort : defaultEffort
+      const modelRows = React.useMemo(() => rowsWithRef(rows, defaultRef), [rows, defaultRef])
+      const byKey = React.useMemo(() => rowsByKey(modelRows), [modelRows])
+      const memberModel = modelRefOf(modelChoice === '' ? undefined : byKey.get(modelChoice), effortChoice)
+      const instruction = selected === null ? '' : composeMemberInstruction(selected, task, memberModel)
       const canConfirm = selected !== null && !sending
+      /** Pick the member model: another model starts on its own default effort;
+       * re-picking the template's model restores its stored effort. */
+      const pickModel = (key) => {
+        setChoice(key)
+        setChoiceFor(effectiveId)
+        setEffort(key === defaultKey ? defaultEffort : '')
+        setOutcome(null)
+      }
+      const pickEffort = (id) => {
+        setEffort(id)
+        setChoiceFor(effectiveId)
+        setOutcome(null)
+      }
 
       /**
        * Inject the instruction through the composer-equivalent path
@@ -871,6 +929,25 @@ window.__ModuleLoader__.load({
               h('span', { className: 'agent-roster-template-name' }, String(tpl.name ?? '')),
               tpl.description === '' ? null : h('span', { className: 'agent-roster-template-desc' }, String(tpl.description)))))
             : null),
+        selected === null
+          ? null
+          : h(ModelRefEditor, {
+            section: 'model',
+            id: 'agent-roster-model',
+            marker: 'data-agent-roster-model',
+            noneMarker: 'inherit',
+            label: t('spawn.model.label'),
+            defaultLabel: t('spawn.model.inherit'),
+            effortLabel: t('model.effort.label'),
+            effortDefaultLabel: t('model.effort.default'),
+            rows: modelRows,
+            byKey,
+            choice: modelChoice,
+            onChoice: pickModel,
+            effort: effortChoice,
+            onEffort: pickEffort,
+            disabled: sending,
+          }),
         selected === null
           ? null
           : h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'preview' },

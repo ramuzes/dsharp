@@ -116,7 +116,7 @@ _Avoid_: team (DSH team mode is the per-session coordination flag), library, reg
 
 ### Member spawn (成员生成)
 
-Creating a team member by instantiating a role template as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. Creation is agent-driven: the "+" flow injects the template's instruction into the conversation and the lead agent calls the `roster_spawn` tool. The standing prompt rides as the child's first user message (frozen — the model never rewrites it), exactly as a model-driven spawn would carry it.
+Creating a team member by instantiating a role template as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. Creation is agent-driven: the "+" flow injects the template's instruction into the conversation and the lead agent calls the `roster_spawn` tool. The standing prompt rides as the child's first user message (frozen — the model never rewrites it), exactly as a model-driven spawn would carry it. The member's model defaults to the template's and may be overridden for that one spawn (a spawn override), including back to inheriting the session model; a spawn override never edits the template.
 _Avoid_: agent creation (that is sessionController's ordinary-session path), preset selection, direct client-side spawn
 
 ### Member instruction (成员指令)

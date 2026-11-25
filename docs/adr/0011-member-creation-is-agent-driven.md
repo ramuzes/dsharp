@@ -1,6 +1,6 @@
 # Member creation is agent-driven through a plugin tool, not a direct client action
 
-Status: Accepted (2026-11-23)
+Status: Accepted (2026-11-23) · Amended (2026-11-25): the member model may be overridden per spawn through the injected instruction (see the last Consequence)
 
 ## Context
 
@@ -27,3 +27,4 @@ Removed with this decision: the `spawnMember` remote (client-side spawn), the te
 - The injected instruction is visible in the session log — auditable by design, and the modal previews it before sending.
 - `roster_spawn` availability is a deployment fact: a profile that restricts tools or mounts no subagent runtime surfaces its typed error instead of creating a member.
 - Template editing affects only the next injection; already-created members keep the prompt they were spawned with.
+- (2026-11-25) The member model is the one thing the user may override per spawn: the dialog's picker starts from the template default and the choice is written into the instruction as the exact `model` argument of `roster_spawn` (object, or `null` to inherit). It therefore reaches the host through the agent's tool call like `template` and `task`. The tool's precedence is explicit > template default > inherit, an omitted argument keeps the template default, and an invalid explicit model is refused rather than degraded. A host-side staged intent was considered and deferred until dropped arguments are observed.

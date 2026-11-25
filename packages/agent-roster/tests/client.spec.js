@@ -472,7 +472,7 @@ test('run(session) opens the modal through the overlay seat and cancel closes it
   const root = find(view.vdom, (node) => node.props?.['data-agent-roster'] !== undefined)
   assert.ok(root, 'the scoped root renders')
   assert.deepEqual(root.children.map((child) => child.props['data-agent-roster-section']),
-    ['templates', 'preview', 'task'])
+    ['templates', 'model', 'preview', 'task'])
   const cancel = inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined)
   await view.interact(() => { cancel.props.onClick() })
   assert.equal(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), undefined)
@@ -492,7 +492,11 @@ test('the modal lists templates, auto-selects the first, and previews the exact 
   assert.ok(instruction.startsWith('Use the agent-roster template «Researcher» to create a team member for me.'))
   assert.ok(instruction.includes('Template description: Finds and reads sources'))
   assert.ok(instruction.includes('Standing instruction the member must run with (do not rewrite it):\n---\nYou research topics thoroughly.\n---'))
-  assert.ok(instruction.includes('Call the roster_spawn tool with template: "tpl-researcher" (omit task).'))
+  // The per-spawn model (2026-11-25) always travels in the instruction: the
+  // template has no default, so the member inherits the session model.
+  assert.ok(instruction.includes('Member model for this spawn: inherit the session model'))
+  assert.ok(instruction.includes('Call the roster_spawn tool with template: "tpl-researcher" and model: null (omit task).'))
+  assert.ok(instruction.includes('Pass the model value exactly as given'))
   assert.ok(instruction.includes('Do not describe the member in chat instead of creating it'))
   assert.equal(instruction.includes('Current task for this member:'), false)
 })
@@ -514,7 +518,7 @@ test('the task field is appended to the instruction and to the tool-call line', 
   const preview = find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined)
   const instruction = preview.children[0]
   assert.ok(instruction.includes('Current task for this member: review the payments module'))
-  assert.ok(instruction.includes('and the current task text above as task'))
+  assert.ok(instruction.includes('and model: null, and the current task text above as task'))
   assert.equal(instruction.includes('(omit task)'), false)
 })
 
@@ -719,4 +723,101 @@ test('a not-ok listTemplates result renders the failure line, not the empty note
   const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
   assert.ok(note, 'the failure note renders')
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty'), undefined)
+})
+// ---------------------------------------------------------------------------
+// Per-spawn model override (2026-11-25): the member-model picker in the modal
+// ---------------------------------------------------------------------------
+
+/** Templates carrying default models, so an override has something to beat. */
+const ROUTED_RESEARCHER = { ...TEMPLATES[0], defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' } }
+const ROUTED_SCOUT = { ...TEMPLATES[1], name: 'Scout', defaultModel: { provider: 'acme', model: 'scout-1' } }
+const withCatalog = { session: { modelCatalog: catalogFace } }
+const serving = (...templates) => healthyRoster({ listTemplates: async () => ({ ok: true, value: templates }) })
+
+/** The member-model picker trigger (asserted present so a missing picker fails as an assertion, not a TypeError). */
+function modelTrigger(view) {
+  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.ok(trigger, 'the member-model picker renders')
+  return trigger
+}
+function effortTrigger(view) {
+  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
+  assert.ok(trigger, 'the reasoning-effort picker renders')
+  return trigger
+}
+const previewText = (view) => find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined).children[0]
+const REASONER = JSON.stringify(['deepseek', 'reasoner'])
+const CHAT = JSON.stringify(['deepseek', 'chat'])
+
+async function confirmModal(view) {
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+}
+
+test('the member model is prefilled from the template default and stated in the instruction', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
+  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
+  const instruction = previewText(view)
+  assert.ok(instruction.includes('Member model for this spawn: deepseek / reasoner · high'))
+  assert.ok(instruction.includes('and model: {"provider":"deepseek","model":"reasoner","reasoning_effort":"high"} (omit task).'))
+})
+
+test('picking another model overrides the template default, drops the template effort, and rides into the injected message', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], CHAT)
+  // chat advertises no efforts: the effort control is hidden and the
+  // template's `high` must not leak into the new route.
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), undefined)
+  const instruction = previewText(view)
+  assert.ok(instruction.includes('Member model for this spawn: deepseek / chat'))
+  assert.ok(instruction.includes('and model: {"provider":"deepseek","model":"chat"} (omit task).'))
+  assert.equal(instruction.includes('reasoning_effort'), false)
+  await confirmModal(view)
+  assert.ok(view.sessions.calls[1].content[0].text.includes('and model: {"provider":"deepseek","model":"chat"}'))
+})
+
+test('choosing inherit sends model null even when the template has a default', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', '')
+  // Inherit state: the raw value is '' and the marker attribute says 'inherit'.
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], '')
+  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
+  assert.ok(previewText(view).includes('Member model for this spawn: inherit the session model'))
+  await confirmModal(view)
+  const sent = view.sessions.calls[1].content[0].text
+  assert.ok(sent.includes('and model: null (omit task).'))
+  assert.equal(sent.includes('reasoner'), false)
+})
+
+test('switching templates resets the member model to the new template default', async () => {
+  // No catalog face here: the picker still names each default through its
+  // lossless synthetic row, so a missing catalog never blocks the choice.
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT) })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
+  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
+  await view.interact(() => { scout.props.onClick() })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
+  assert.ok(previewText(view).includes('Member model for this spawn: acme / scout-1'))
+})
+
+test('an explicit reasoning model offers its efforts and the chosen effort rides along', async () => {
+  const view = await openModal({ extras: withCatalog })
+  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), undefined)
+  await pickMenuOption(view, 'data-agent-roster-model', REASONER)
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), 'the effort picker appears for a reasoning model')
+  await pickMenuOption(view, 'data-agent-roster-effort', 'high')
+  const instruction = previewText(view)
+  assert.ok(instruction.includes('Member model for this spawn: deepseek / reasoner · high'))
+  assert.ok(instruction.includes('"reasoning_effort":"high"'))
+})
+
+test('re-picking the template default model restores its stored effort', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
+  await pickMenuOption(view, 'data-agent-roster-model', REASONER)
+  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
+  assert.ok(previewText(view).includes('"reasoning_effort":"high"'))
 })

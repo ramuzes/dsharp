@@ -296,3 +296,69 @@ test('the caller signal is forwarded to startActivation (tool cancellation)', as
   await spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(RESEARCHER) })
   assert.equal(subagents.activations[1].signal instanceof AbortSignal, true)
 })
+
+// ---------------------------------------------------------------------------
+// Per-spawn model override (2026-11-25): the user may override the template's
+// model and reasoning effort for one member. Precedence: explicit object or
+// null beats the template default; an omitted choice keeps the default.
+// ---------------------------------------------------------------------------
+
+/** A template carrying a default route, so overrides have something to beat. */
+const ROUTED = { ...RESEARCHER, defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' } }
+
+test('an explicit per-spawn model overrides the template default, effort included', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const result = await spawnFromTemplate(strictScope(), { subagents }, {
+    agent: root,
+    template: RoleTemplate.parse(ROUTED),
+    model: { provider: 'acme', model: 'cheap', reasoningEffort: 'low' },
+  })
+  assert.deepEqual(subagents.activations[0].agentOptions, { provider: 'acme', model: 'cheap', reasoningEffort: 'low' })
+  assert.deepEqual(result.model, { provider: 'acme', model: 'cheap', reasoningEffort: 'low' })
+})
+
+test('an explicit per-spawn model may drop the effort: the template effort does not leak', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  await spawnFromTemplate(strictScope(), { subagents }, {
+    agent: root,
+    template: RoleTemplate.parse(ROUTED),
+    model: { provider: 'acme', model: 'cheap' },
+  })
+  assert.deepEqual(subagents.activations[0].agentOptions, { provider: 'acme', model: 'cheap' })
+})
+
+test('an explicit null model clears the template default: the member inherits the session route', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const result = await spawnFromTemplate(strictScope(), { subagents }, {
+    agent: root,
+    template: RoleTemplate.parse(ROUTED),
+    model: null,
+  })
+  assert.equal('agentOptions' in subagents.activations[0], false)
+  assert.equal(result.model, null)
+})
+
+// Characterization: the back-compat half of the matrix. An agent calling the
+// tool the pre-override way must get exactly the behavior it had before.
+test('an omitted model keeps the template default (the pre-override contract)', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  await spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(ROUTED) })
+  assert.deepEqual(subagents.activations[0].agentOptions, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+})
+
+test('an invalid explicit model rejects with roster/bad-request and spawns nothing', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  for (const model of [{ provider: '', model: 'x' }, { provider: 'acme' }, 'acme/cheap', 42]) {
+    await assert.rejects(
+      () => spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(ROUTED), model }),
+      (error) => remoteErrorOf(error)?.code === 'roster/bad-request',
+      `expected roster/bad-request for ${JSON.stringify(model)}`,
+    )
+  }
+  assert.equal(subagents.activations.length, 0)
+})

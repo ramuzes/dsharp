@@ -135,16 +135,19 @@ export async function resolveTemplateRef(store, reference) {
  * tree, allocate a free sibling name, and hand the rendered template to
  * `subagents.startActivation` with parent delivery.
  *
- * The child's model is the template's `defaultModel` when present, otherwise
- * omitted so the child inherits the parent's current route. The activation's
+ * The child's model: an explicit per-spawn choice wins — an object names the
+ * route, `null` clears the template default so the child inherits the parent's
+ * current route — then the template's `defaultModel`, otherwise omitted
+ * (inherit). The activation's
  * `result` promise is owned by the runtime for parent delivery; the manager
  * acknowledges it itself (manager.ts:897 `void activation.result.promise.catch`),
  * so not awaiting it here cannot dangle an unhandled rejection.
  *
  * @param {object} scope - plugin ctx; only its get() name lookup is touched.
  * @param {{ subagents?: object }} deps - optional host services (test seam/DI).
- * @param {{ agent?: object, template: object, task?: unknown }} input - the
- *   calling agent, the resolved template record, and the optional task.
+ * @param {{ agent?: object, template: object, task?: unknown, model?: import('./store.js').ModelRef | null }} input - the
+ *   calling agent, the resolved template record, the optional task, and the
+ *   optional per-spawn model choice (object or null; omitted = template default).
  * @returns {Promise<{ name: string, childSessionId?: string, model: object | null }>}
  *   the activation's model-facing name, the child session id when exposed,
  *   and the applied model (null = inherited).
@@ -174,6 +177,26 @@ export async function spawnFromTemplate(scope, deps, input) {
     // Empty provider/model strings are schema-legal but not a usable route;
     // treating them as a selection would send the child a broken route.
     if (parsed.success && parsed.data.provider !== '' && parsed.data.model !== '') model = parsed.data
+  }
+  // Per-spawn override: an explicit choice — an object, or `null` which
+  // clears the template default — beats the template; an omitted choice keeps
+  // it. Unlike stored data an explicit choice is REFUSED when invalid: the
+  // caller asked for one particular route, so silently running another would
+  // create the wrong member.
+  const explicit = input?.model
+  if (explicit !== undefined) {
+    const parsedChoice = explicit === null ? undefined : ModelRef.safeParse(explicit)
+    if (explicit === null) {
+      model = null
+    } else if (!parsedChoice.success || parsedChoice.data.provider === '' || parsedChoice.data.model === '') {
+      const issues = parsedChoice.success
+        ? [{ path: 'provider, model', message: 'provider and model must be non-empty' }]
+        : parsedChoice.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      throw new RemoteError('roster/bad-request',
+        `model rejected / 模型不合法: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`, { issues })
+    } else {
+      model = parsedChoice.data
+    }
   }
 
   const root = subagents.rootOf(agent)

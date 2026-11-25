@@ -111,6 +111,21 @@ export function registerRosterTools(scope, service, deps, options = {}) {
         type: 'string',
         description: 'Optional one-off task for this member, taken from the current conversation (e.g. "review the payments module").',
       },
+      model: {
+        description: 'Model for this member only, overriding the template default. Pass exactly the object the instruction gave; null makes the member inherit the session model. Omit only when the instruction gives no model.',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              provider: { type: 'string', required: true, description: 'Provider id.' },
+              model: { type: 'string', required: true, description: 'Model id within the provider.' },
+              reasoning_effort: { type: 'string', description: 'Optional reasoning effort id.' },
+            },
+          },
+          { type: 'null' },
+        ],
+      },
     },
     output: TEXT_OUTPUT,
     isConcurrencySafe: false,
@@ -126,6 +141,9 @@ export function registerRosterTools(scope, service, deps, options = {}) {
           agent,
           template,
           task: args?.task,
+          // `undefined` (omitted) must stay omitted: it means "keep the
+          // template default", while `null` means "inherit the session model".
+          ...(args?.model === undefined ? {} : { model: toModelRef(args.model) }),
           signal: exec?.signal,
         })
         return bounded({

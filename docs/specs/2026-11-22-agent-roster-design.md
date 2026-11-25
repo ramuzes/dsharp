@@ -1,5 +1,10 @@
 # Agent roster — reusable role templates for team members
 
+## Change 2026-11-25 — per-spawn model override
+
+- ADDED: the "+" dialog carries a **member model** picker (model and reasoning effort) that starts from the template's default and may override it for this one spawn — including "inherit the session model", which clears a template default. The template itself is never edited by it.
+- MODIFIED: the member instruction states the chosen model and the exact `model` JSON for `roster_spawn`, and the tool gains an optional nullable `model` argument. Precedence: an explicit object or `null` beats the template default, which beats inheriting the session route; an omitted argument keeps the pre-change behavior.
+
 ## Change 2026-11-23 — agent-driven member creation (form 2)
 
 - REMOVED: AI-assisted drafting in every form — the draft session, the `draft` remote, the Settings toggle/draft-model block, the four draft Config fields, ADR-0010's mechanism. A template IS the instruction the user would otherwise type; nothing must write it for them.
@@ -28,6 +33,7 @@ A new plugin, **agent-roster** (package `dsh-agent-roster`), that turns a profil
 - a **role template is exactly what the user would otherwise say to the lead agent**: a name, a one-line description, the standing instruction (responsibility boundary and main goal), and an optional model preference;
 - from the composer's "+" menu, picking a template (plus an optional one-off task) **injects that instruction into the current session**, so the lead agent runs its normal agent loop and creates the member through the plugin's `roster_spawn` tool;
 - the template's model preference is applied **reliably** at creation (it cannot be left to prompt interpretation — see the design note);
+- from the session, the member's model and reasoning effort can be **overridden for that one spawn** — including back to "inherit the session model" — without editing the template;
 - templates are managed once in Settings and are reusable in every session;
 - the plugin UI is fully bilingual (Chinese and English); all docs and code comments are English.
 
@@ -37,9 +43,10 @@ A new plugin, **agent-roster** (package `dsh-agent-roster`), that turns a profil
 2. As a session user, I want to attach a one-off task to the pick ("review the payments module"), so that the same role can be pointed at this session's work.
 3. As a session user, I want to see the exact instruction that will be injected before it is sent, so that the template never surprises me.
 4. As a roster owner, I want each template to carry a model preference that is actually used, so that cheap work runs on a cheap model without prompt-stuffing.
-5. As a roster owner, I want to create, edit, and delete templates on the plugin's Settings page, so that the roster stays curated without touching YAML.
-6. As a session user, I want to ask the lead agent in conversation to save the role we just used as a template, so that templates capture real working context.
-7. As a Chinese- or English-language user, I want every plugin surface in my language.
+5. As a session user, I want to give one member a different model or reasoning effort than its template default, just for this spawn, so that the template stays a sane default and this one member gets what the task needs.
+6. As a roster owner, I want to create, edit, and delete templates on the plugin's Settings page, so that the roster stays curated without touching YAML.
+7. As a session user, I want to ask the lead agent in conversation to save the role we just used as a template, so that templates capture real working context.
+8. As a Chinese- or English-language user, I want every plugin surface in my language.
 
 ### Out of scope
 
@@ -55,7 +62,7 @@ A new plugin, **agent-roster** (package `dsh-agent-roster`), that turns a profil
 
 The plugin has a small host half and a client half. The host half owns the roster (a storage-domain table), exposes template CRUD as a Remote for the Settings page, registers `roster_spawn` as an agent tool (the single creation path), and keeps the authoring tools `roster_template_save/list`. The client half adds one "+"-menu command whose modal lists templates, previews the exact instruction, takes an optional task, and injects that instruction into the current session as a user message. The lead agent then calls `roster_spawn`; members appear in the standard Subagents panel.
 
-The user flow: click "+" → "Add agent member" → pick a template → optionally type the task → confirm. The conversation shows the injected instruction, the lead agent calls `roster_spawn`, the member starts under the current tree's root with the template's standing prompt and model.
+The user flow: click "+" → "Add agent member" → pick a template → optionally pick the member model and reasoning effort (it starts from the template's default) → optionally type the task → confirm. The conversation shows the injected instruction, the lead agent calls `roster_spawn`, the member starts under the current tree's root with the template's standing prompt and model.
 
 ### Implementation decisions
 
@@ -70,12 +77,16 @@ Standing instruction the member must run with (do not rewrite it):
 ---
 <prompt>
 ---
+Member model for this spawn: <provider> / <model>[ · <effort>]     ← or: inherit the session model
 Current task for this member: <task>          ← this line only when a task was given
-Call the roster_spawn tool with template: "<id>" (omit task).   ← or: and the current task text above as task.
+Call the roster_spawn tool with template: "<id>" and model: <JSON | null> (omit task).   ← or: …, and the current task text above as task.
+Pass the model value exactly as given; null means the member inherits the session model.
 Do not describe the member in chat instead of creating it, and do not pass the standing instruction yourself.
 ```
 
-**`roster_spawn` (host tool).** Parameters `{ template: string, task?: string }` — `template` accepts the record id or its exact name. It resolves the template, then calls `subagents.startActivation` with `label` = template name, `name` = slugified template name (then `-2`, `-3`… among the root's existing children; `lead` yields `lead-member`), `prompt` = the standing prompt plus the optional task as a marked section, and `agentOptions` from the template's `defaultModel` (omitted → the child inherits the parent's route). Returns `{ name }`. Typed errors: `roster/bad-request`, `roster/not-found`, `roster/ambiguous-name`, `roster/no-subagents` (defense in depth — the tool only registers when the runtime is injected, see below).
+**`roster_spawn` (host tool).** Parameters `{ template: string, task?: string, model?: ModelRef | null }` — `template` accepts the record id or its exact name; `model` is the per-spawn override in the tool-facing spelling (`{ provider, model, reasoning_effort? }` or `null`). It resolves the template, then calls `subagents.startActivation` with `label` = template name, `name` = slugified template name (then `-2`, `-3`… among the root's existing children; `lead` yields `lead-member`), `prompt` = the standing prompt plus the optional task as a marked section, and `agentOptions` from the template's `defaultModel` (omitted → the child inherits the parent's route). Returns `{ name }`. Typed errors: `roster/bad-request`, `roster/not-found`, `roster/ambiguous-name`, `roster/no-subagents` (defense in depth — the tool only registers when the runtime is injected, see below).
+
+**Per-spawn model override.** The dialog's picker starts from the template's default (a default the session catalog does not list stays selectable through a lossless synthetic row, so a degraded catalog never blocks the choice); switching templates resets it to the new template's default; choosing another model starts that model on its own default effort, and re-picking the template's model restores its stored effort. The choice is written into the instruction and reaches the host through the agent's `roster_spawn` call, exactly as `template` and `task` already do. Accepted trade-off: an agent that drops the `model` argument falls back to the template default, and the tool's result reports the model actually applied so the mismatch is visible in the conversation. A host-side "staged intent" (the dialog registers the choice first and the agent passes only a token) would make the choice impossible to drop, at the cost of a Remote method and expiring stored state; it is deliberately not built until mismatches are observed.
 
 **Registration and availability.** The tools callback injects `['tools', 'subagents']` — `roster_spawn` resolves the caller's tree root and the subagent runtime through that second service, and cordis throws when a callback touches a service it did not inject. The mount therefore records `tools-pending` after `done` and lets the callback overwrite it with `tools-registered` / `tools-failed`; a host that never provides those services (a deployment without the subagent runtime) stops at `tools-pending` rather than claiming a terminal success. In that deployment the plugin can do nothing useful anyway: member creation is its core capability.
 
@@ -85,12 +96,12 @@ Do not describe the member in chat instead of creating it, and do not pass the s
 
 **Settings section** (`settings.section`, id `agent-roster`): the roster manager — list, add, edit, delete, per-template default model. No AI-draft block.
 
-**Shared UI**: the model chooser is the host model-picker dropdown pattern (CSS anchor positioning + portaled `MenuSurface` + provider-grouped rows, copied and renamed per the practices rule); role fields and row rendering are shared between the modal preview and the Settings editor.
+**Shared UI**: the model chooser is the host model-picker dropdown pattern (CSS anchor positioning + portaled `MenuSurface` + provider-grouped rows, copied and renamed per the practices rule); the same `ModelRefEditor` (model plus reasoning effort) serves the Settings template editor and the dialog's per-spawn override.
 
 ### Testing decisions
 
-- **Unit (node --test)** — strict fakes as before (inject-only proxy scopes, wrapper-typed config, zod-validating storage fake, a subagent-runtime fake with the real activation signature, a session-store fake with the real `prompt()` contract). New coverage: the injected message text is exactly the pinned shape; `roster_spawn` resolves by id and by exact name, rejects unknown/ambiguous templates, applies the template model (and omits `agentOptions` otherwise), appends the task section, and allocates names.
-- **Client tests** render against real React (`react-test-renderer`): command contribution, template list and instruction preview, task field, exact `prompt()` call, failure line. The removed surfaces (draft, team gating, model selector, name field) must leave no dead references.
+- **Unit (node --test)** — strict fakes as before (inject-only proxy scopes, wrapper-typed config, zod-validating storage fake, a subagent-runtime fake with the real activation signature, a session-store fake with the real `prompt()` contract). New coverage: the injected message text is exactly the pinned shape; `roster_spawn` resolves by id and by exact name, rejects unknown/ambiguous templates, applies the per-spawn model precedence (explicit object or `null` > template default > inherit; an invalid explicit model rejects with `roster/bad-request`), appends the task section, and allocates names.
+- **Client tests** render against real React (`react-test-renderer`): command contribution, template list and instruction preview, task field, exact `prompt()` call, failure line, and the per-spawn model picker (prefill from the template default, override, inherit, effort coupling, reset on template switch, the exact `model` JSON in the injected text). The removed surfaces (draft, team gating, name field) must leave no dead references.
 - **Live-host verification**: background host, stage records, served boot graph, then: template CRUD round-trip; "+" → template → confirm injects the message into the session (visible in its log); the lead agent's `roster_spawn` tool call creates a member with the template model (verified in the child session's `modelSelection`); a template's edit is reflected in the next injection.
 
 ## Further notes

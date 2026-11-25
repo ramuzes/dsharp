@@ -10,6 +10,10 @@ into the current conversation**, the lead agent runs its normal loop and
 calls the `roster_spawn` tool, and the host creates the member with the
 template's prompt (frozen, never rewritten) and model.
 
+The member's model and reasoning effort can be overridden for a single spawn
+from the same dialog — the picker starts from the template's default, and
+choosing "inherit the session model" clears it — without editing the template.
+
 Also included: the model-facing `roster_template_save` / `roster_template_list`
 authoring tools, and an **Agent roster** manager page in Settings (create /
 edit / delete, per-template default model). Members are ordinary subagents —
