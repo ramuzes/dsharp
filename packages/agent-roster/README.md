@@ -5,10 +5,14 @@ it into one-click team building. A template is exactly what you would
 otherwise type to the lead agent: a name, a one-line description, the
 standing instruction (responsibility boundary and main goal), and an
 optional model. From the composer's "+" menu you pick a template, optionally
-add this session's task, and confirm — the plugin **injects that instruction
-into the current conversation**, the lead agent runs its normal loop and
-calls the `roster_spawn` tool, and the host creates the member with the
-template's prompt (frozen, never rewritten) and model.
+override the model and add a first task, and confirm — the plugin runs the
+`/roster` command, which the transcript records the way it records
+`/compact` (a compact command entry: no message from you, no turn of the
+lead). The member is created with the template's prompt (frozen, never
+rewritten) and **stands by** until it is given work; a first task typed in
+the dialog becomes its first assignment. `/roster <template>` can also be
+typed directly. The lead agent can create members itself with the
+`roster_spawn` tool.
 
 The member's model and reasoning effort can be overridden for a single spawn
 from the same dialog — the picker starts from the template's default, and
@@ -49,7 +53,10 @@ tools-failed`, or a `wire-failed` record carrying the error text.
 tools callback: the plugin registers `roster_spawn` only once both `tools` and
 `subagents` are available (on a host without a subagent runtime it stays
 there, which is honest — member creation is the plugin's core capability). The
-`tools-registered` record's detail carries `{ authoring }` — whether the
+`/roster` command registers on its own callback (`commands`, `subagents`);
+whichever callback lands last writes one terminal record naming both mounts
+(`command-registered` when only the command has mounted, `command-failed` on
+a failed command registration). The `tools-registered` record's detail carries `{ authoring, command }` — whether the
 authoring pair was included (the stage claims the spawn tool, which is
 always registered). Point `AGENT_ROSTER_STATUS_FILE` elsewhere for tests or
 multi-instance setups — the target resolves at write time, and the writer

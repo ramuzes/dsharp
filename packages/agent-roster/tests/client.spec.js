@@ -192,25 +192,25 @@ function makeCtx({ roster, extras, sessions: sessionsConfig } = {}) {
   const recorded = { commands: [], injects: [], registers: [], namespaces: [], mounts: [] }
   const remoteNamespaces = {}
   for (const [name, face] of Object.entries(extras ?? {})) remoteNamespaces[`remote.${name}`] = face
-  // The sessions fake mirrors the real contract: using(target, options,
-  // operation) hands back a reference whose binding.session.prompt(content,
-  // mode) is the composer-equivalent admission. Both hops are recorded.
+  // The sessions fake mirrors the real contract (api/session-controller
+  // src/client/sessions/session.ts): using(target, options, operation) hands
+  // back a reference whose binding.session.command(line) admits one
+  // slash-command line and answers { ok, value: { matched } } — the outcome
+  // itself is rendered by the host as a flow node, never echoed to the caller.
   const sessionCalls = []
   const sessions = {
     calls: sessionCalls,
     fail: sessionsConfig?.fail ?? null,
-    promptResult: sessionsConfig?.promptResult ?? { ok: true, value: { accepted: true } },
-    promptError: sessionsConfig?.promptError ?? null,
+    commandResult: sessionsConfig?.commandResult ?? { ok: true, value: { matched: true } },
     using: async (target, options, operation) => {
       sessionCalls.push({ target, options })
       if (sessions.fail !== null) throw sessions.fail
       return operation({
         binding: {
           session: {
-            prompt: async (content, mode) => {
-              sessionCalls.push({ content, mode })
-              if (sessions.promptError !== null) throw sessions.promptError
-              return sessions.promptResult
+            command: async (line) => {
+              sessionCalls.push({ command: line })
+              return sessions.commandResult
             },
           },
         },
@@ -326,10 +326,13 @@ const TEMPLATES = [
 function healthyRoster(overrides = {}) {
   const saved = []
   const deleted = []
+  const staged = []
   const face = {
     saved,
     deleted,
+    staged,
     listTemplates: async () => ({ ok: true, value: TEMPLATES }),
+    stageSpawn: async (input) => { staged.push(input); return { ok: true, value: { staged: true } } },
     saveTemplate: async (input) => {
       saved.push(input)
       return { ok: true, value: { ...TEMPLATES[0], ...input, id: input.id ?? 'tpl-new' } }
@@ -447,19 +450,19 @@ test('locale dictionaries have zh/en key parity and interpolate {param}', () => 
   const { zh, en } = recorded.namespaces[0].dicts
   assert.deepEqual(keys(zh).sort(), keys(en).sort())
   const t = makeT()
-  assert.equal(t('inject.sent', { name: 'Reviewer' }), 't:inject.sent(name=Reviewer)')
+  assert.equal(t('command.sent', { name: 'Reviewer' }), 't:command.sent(name=Reviewer)')
 })
 
-test('apply mounts the agentRoster remote namespace with exactly three method descriptors', () => {
+test('apply mounts the agentRoster remote namespace with exactly four method descriptors', () => {
   const { recorded } = applyPlugin({})
   assert.equal(recorded.mounts.length, 1)
   const mount = recorded.mounts[0]
   assert.equal(mount.package, 'dsh-agent-roster')
-  assert.deepEqual(mount.descriptors.map((d) => d.method).sort(), ['deleteTemplate', 'listTemplates', 'saveTemplate'])
+  assert.deepEqual(mount.descriptors.map((d) => d.method).sort(), ['deleteTemplate', 'listTemplates', 'saveTemplate', 'stageSpawn'])
 })
 
 // ---------------------------------------------------------------------------
-// The "+" modal — instruction composition and injection
+// The "+" modal — staging the member request and running /roster
 // ---------------------------------------------------------------------------
 
 test('run(session) opens the modal through the overlay seat and cancel closes it', async () => {
@@ -471,99 +474,210 @@ test('run(session) opens the modal through the overlay seat and cancel closes it
   assert.equal(modal.props.closeLabel, 't:modal.close')
   const root = find(view.vdom, (node) => node.props?.['data-agent-roster'] !== undefined)
   assert.ok(root, 'the scoped root renders')
+  // Templates, the per-spawn model, the first task. There is no instruction
+  // preview any more: the dialog injects nothing into the conversation
+  // (ADR-0012) — it stages a request and runs /roster.
   assert.deepEqual(root.children.map((child) => child.props['data-agent-roster-section']),
-    ['templates', 'model', 'preview', 'task'])
+    ['templates', 'model', 'task'])
   const cancel = inModal(modal, (node) => node.props?.['data-agent-roster-cancel'] !== undefined)
   await view.interact(() => { cancel.props.onClick() })
   assert.equal(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), undefined)
 })
 
-test('the modal lists templates, auto-selects the first, and previews the exact instruction', async () => {
+/** Templates carrying default models, so an override has something to beat. */
+const ROUTED_RESEARCHER = { ...TEMPLATES[0], defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' } }
+const ROUTED_SCOUT = { ...TEMPLATES[1], name: 'Scout', defaultModel: { provider: 'acme', model: 'scout-1' } }
+const withCatalog = { session: { modelCatalog: catalogFace } }
+const serving = (...templates) => healthyRoster({ listTemplates: async () => ({ ok: true, value: templates }) })
+const REASONER = JSON.stringify(['deepseek', 'reasoner'])
+const CHAT = JSON.stringify(['deepseek', 'chat'])
+
+/** The member-model picker trigger (asserted present so a missing picker fails as an assertion, not a TypeError). */
+function modelTrigger(view) {
+  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
+  assert.ok(trigger, 'the member-model picker renders')
+  return trigger
+}
+function effortTrigger(view) {
+  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
+  assert.ok(trigger, 'the reasoning-effort picker renders')
+  return trigger
+}
+const effortAreaOn = (view) => find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on')
+
+async function confirmModal(view) {
+  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
+}
+/** Confirm and return the one request the dialog staged. */
+async function stagedRequest(view) {
+  await confirmModal(view)
+  assert.equal(view.roster.staged.length, 1, 'exactly one request was staged')
+  return view.roster.staged[0]
+}
+/** The command lines the dialog ran against the session. */
+const commandLines = (view) => view.sessions.calls.filter((call) => call.command !== undefined).map((call) => call.command)
+const errorBanner = (view) => find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'error')
+
+test('confirm stages the request for this session and runs /roster — nothing is injected into the conversation', async () => {
   const view = await openModal()
-  const rows = findAll(view.vdom, (node) => typeof node.props?.['data-agent-roster-template'] === 'string')
-  assert.deepEqual(rows.map((row) => row.props['data-agent-roster-template']), ['tpl-researcher', 'tpl-reviewer'])
-  assert.equal(rows[0].props['aria-selected'], 'true')
-  assert.equal(rows[1].props['aria-selected'], 'false')
-  const preview = find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined)
-  assert.ok(preview, 'the instruction preview renders')
-  const instruction = preview.children[0]
-  // Pinned shape (SPEC §Design): template identity, frozen standing prompt,
-  // the exact tool call, and the no-rewrite instruction. No task line yet.
-  assert.ok(instruction.startsWith('Use the agent-roster template «Researcher» to create a team member for me.'))
-  assert.ok(instruction.includes('Template description: Finds and reads sources'))
-  assert.ok(instruction.includes('Standing instruction the member must run with (do not rewrite it):\n---\nYou research topics thoroughly.\n---'))
-  // The per-spawn model (2026-11-25) always travels in the instruction: the
-  // template has no default, so the member inherits the session model.
-  assert.ok(instruction.includes('Member model for this spawn: inherit the session model'))
-  assert.ok(instruction.includes('Call the roster_spawn tool with template: "tpl-researcher" and model: null (omit task).'))
-  assert.ok(instruction.includes('Pass the model value exactly as given'))
-  assert.ok(instruction.includes('Do not describe the member in chat instead of creating it'))
-  assert.equal(instruction.includes('Current task for this member:'), false)
+  const request = await stagedRequest(view)
+  // An untouched template without a default: inherit the session model, no task.
+  assert.deepEqual(request, { sessionId: 'sess-1', templateId: 'tpl-researcher', model: null, task: '' })
+  assert.deepEqual(view.sessions.calls, [
+    { target: 'sess-1', options: { source: 'agent-roster' } },
+    { command: '/roster Researcher' },
+  ], 'the session receives one command line and never a prompt')
+  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success')
+  assert.ok(banner, 'the success banner renders')
+  assert.ok(texts(banner).includes('t:command.sent(name=Researcher)'))
 })
 
-test('picking another template re-renders the preview for that template', async () => {
+test('picking another template stages that template and names it on the command line', async () => {
   const view = await openModal()
   const reviewer = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
   await view.interact(() => { reviewer.props.onClick() })
-  const preview = find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined)
-  const instruction = preview.children[0]
-  assert.ok(instruction.includes('«Reviewer»'))
-  assert.ok(instruction.includes('template: "tpl-reviewer"'))
-  assert.ok(instruction.includes('You review diffs critically.'))
+  const request = await stagedRequest(view)
+  assert.equal(request.templateId, 'tpl-reviewer')
+  assert.deepEqual(commandLines(view), ['/roster Reviewer'])
 })
 
-test('the task field is appended to the instruction and to the tool-call line', async () => {
+test('the task field travels to the staging as typed; the host trims it', async () => {
   const view = await openModal()
   await typeInto(view, 'data-agent-roster-task', '  review the payments module  ')
-  const preview = find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined)
-  const instruction = preview.children[0]
-  assert.ok(instruction.includes('Current task for this member: review the payments module'))
-  assert.ok(instruction.includes('and model: null, and the current task text above as task'))
-  assert.equal(instruction.includes('(omit task)'), false)
+  // The dialog forwards the field verbatim; AgentRosterService.stageSpawn
+  // trims (tests/host.spec.js "task trimmed"), so there is one trimming rule.
+  assert.equal((await stagedRequest(view)).task, '  review the payments module  ')
 })
 
-test('confirm injects the instruction through sessions.using → prompt(queue) and reports success', async () => {
-  const view = await openModal()
-  await typeInto(view, 'data-agent-roster-task', 'review the payments module')
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  const confirm = inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
-  assert.equal(confirm.props.disabled, false)
-  await view.interact(() => { confirm.props.onClick() })
-  const calls = view.sessions.calls
-  assert.equal(calls.length, 2, 'using() plus the prompt() call')
-  assert.equal(calls[0].target, 'sess-1')
-  assert.deepEqual(calls[0].options, { source: 'agent-roster' })
-  assert.equal(calls[1].mode, 'queue')
-  assert.equal(calls[1].content.length, 1)
-  assert.equal(calls[1].content[0].type, 'text')
-  assert.ok(calls[1].content[0].text.includes('template: "tpl-researcher"'))
-  assert.ok(calls[1].content[0].text.includes('Current task for this member: review the payments module'))
-  // Success banner names the template; no spawn happened plugin-side.
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success')
-  assert.ok(banner, 'the success banner renders')
-  assert.ok(texts(banner).some((line) => line === 't:inject.sent(name=Researcher)'))
-  assert.equal(view.roster.saveTemplate === undefined, false)
+test('the member model starts from the template default, effort included', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
+  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
 })
 
-test('a rejected prompt renders the error line and keeps the modal open', async () => {
-  const view = await openModal({ sessions: { promptResult: { ok: false, error: { code: 'session/agent-busy', message: 'agent busy' } } } })
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'error')
+test('picking another model overrides the template default and drops the template effort', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], CHAT)
+  // chat advertises no efforts: the control is hidden and the template's `high`
+  // must not leak into the new route.
+  assert.equal(effortAreaOn(view), undefined)
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'chat' })
+})
+
+test('choosing inherit stages model null even when the template has a default', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', '')
+  // Inherit state: the raw value is '' and the marker attribute says 'inherit'.
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], '')
+  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
+  assert.equal((await stagedRequest(view)).model, null)
+})
+
+test('switching templates resets the member model to the new template default', async () => {
+  // No catalog face here: the picker still names each default through its
+  // lossless synthetic row, so a missing catalog never blocks the choice.
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT) })
+  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
+  await view.interact(() => { scout.props.onClick() })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'acme', model: 'scout-1' })
+})
+
+test('an explicit reasoning model offers its efforts and the chosen effort is staged', async () => {
+  const view = await openModal({ extras: withCatalog })
+  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
+  assert.equal(effortAreaOn(view), undefined)
+  await pickMenuOption(view, 'data-agent-roster-model', REASONER)
+  assert.ok(effortAreaOn(view), 'the effort picker appears for a reasoning model')
+  await pickMenuOption(view, 'data-agent-roster-effort', 'high')
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+})
+
+test('re-picking the template default model restores its stored effort', async () => {
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
+  await pickMenuOption(view, 'data-agent-roster-model', REASONER)
+  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+})
+
+test('changing only the effort keeps the template model', async () => {
+  // The pick must capture the model that is in effect, not turn the spawn into
+  // "inherit": the user asked for another effort, not for another model.
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-effort', 'low')
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'low' })
+})
+
+test('a stored default with an empty provider or model is treated as no default', async () => {
+  const broken = { ...TEMPLATES[0], defaultModel: { provider: 'acme', model: '' } }
+  const view = await openModal({ roster: serving(broken), extras: withCatalog })
+  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
+  assert.equal((await stagedRequest(view)).model, null)
+})
+
+test('a stored effort the catalog no longer advertises stays selectable and is staged', async () => {
+  // chat advertises no efforts; a stored `high` must not be shown as "model
+  // default" while still being sent.
+  const stale = { ...TEMPLATES[0], defaultModel: { provider: 'deepseek', model: 'chat', reasoningEffort: 'high' } }
+  const view = await openModal({ roster: serving(stale), extras: withCatalog })
+  assert.ok(effortAreaOn(view), 'the stored effort is offered')
+  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
+  assert.ok(texts(effortTrigger(view)).includes('high'))
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'chat', reasoningEffort: 'high' })
+})
+
+test('an override is remembered per template while the dialog stays open', async () => {
+  // Deliberate (SPEC): switching templates shows the NEW template's default;
+  // switching back restores the pick made for that template.
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
+  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
+  const back = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-researcher')
+  await view.interact(() => { scout.props.onClick() })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
+  await view.interact(() => { back.props.onClick() })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], CHAT)
+  assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'chat' })
+})
+
+test('a refused staging renders its error and runs no command', async () => {
+  const view = await openModal({
+    roster: healthyRoster({ stageSpawn: async () => ({ ok: false, error: { code: 'roster/not-found', message: 'Template gone' } }) }),
+  })
+  await confirmModal(view)
+  const banner = errorBanner(view)
   assert.ok(banner, 'the error banner renders')
-  assert.equal(banner.props['data-agent-roster-error'], 'session/agent-busy')
-  assert.ok(texts(banner).some((line) => line.includes('t:inject.failed')))
-  assert.ok(texts(banner).some((line) => line.includes('agent busy')))
+  assert.equal(banner.props['data-agent-roster-error'], 'roster/not-found')
+  assert.ok(texts(banner).some((line) => line.includes('Template gone')))
+  assert.deepEqual(commandLines(view), [], 'no command runs on a refused request')
   assert.ok(find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node), 'still open')
 })
 
-test('an unavailable sessions service degrades to the unavailable error, never a crash', async () => {
-  const view = await openModal({ sessions: { fail: new Error('sessions unavailable') } })
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-  const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'error')
+test('a command the host does not know is reported, not silently ignored', async () => {
+  // matched:false means no /roster is registered on this host (the host half
+  // missing or too old).
+  const view = await openModal({ sessions: { commandResult: { ok: true, value: { matched: false } } } })
+  await confirmModal(view)
+  const banner = errorBanner(view)
   assert.ok(banner, 'the error banner renders')
-  assert.ok(texts(banner).some((line) => line.includes('t:inject.failed')))
+  assert.ok(texts(banner).some((line) => line.includes('t:command.unmatched')))
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success'), undefined)
+})
+
+test('a refused command admission renders its error with the upstream code', async () => {
+  const view = await openModal({
+    sessions: { commandResult: { ok: false, error: { code: 'session/agent-busy', message: 'agent busy' } } },
+  })
+  await confirmModal(view)
+  const banner = errorBanner(view)
+  assert.ok(banner, 'the error banner renders')
+  assert.equal(banner.props['data-agent-roster-error'], 'session/agent-busy')
+  assert.ok(texts(banner).some((line) => line.includes('agent busy')))
 })
 
 test('a missing roster namespace degrades to the unavailable line, never a crash', async () => {
@@ -590,7 +704,6 @@ test('an empty roster points at the Settings page instead of offering a dead con
   assert.ok(note, 'the empty note renders')
   const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
   assert.equal(inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.disabled, true)
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined), undefined)
 })
 
 // ---------------------------------------------------------------------------
@@ -723,144 +836,4 @@ test('a not-ok listTemplates result renders the failure line, not the empty note
   const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
   assert.ok(note, 'the failure note renders')
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty'), undefined)
-})
-// ---------------------------------------------------------------------------
-// Per-spawn model override (2026-11-25): the member-model picker in the modal
-// ---------------------------------------------------------------------------
-
-/** Templates carrying default models, so an override has something to beat. */
-const ROUTED_RESEARCHER = { ...TEMPLATES[0], defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' } }
-const ROUTED_SCOUT = { ...TEMPLATES[1], name: 'Scout', defaultModel: { provider: 'acme', model: 'scout-1' } }
-const withCatalog = { session: { modelCatalog: catalogFace } }
-const serving = (...templates) => healthyRoster({ listTemplates: async () => ({ ok: true, value: templates }) })
-
-/** The member-model picker trigger (asserted present so a missing picker fails as an assertion, not a TypeError). */
-function modelTrigger(view) {
-  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-model'] !== undefined)
-  assert.ok(trigger, 'the member-model picker renders')
-  return trigger
-}
-function effortTrigger(view) {
-  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-effort'] !== undefined)
-  assert.ok(trigger, 'the reasoning-effort picker renders')
-  return trigger
-}
-const previewText = (view) => find(view.vdom, (node) => node.props?.['data-agent-roster-preview'] !== undefined).children[0]
-const REASONER = JSON.stringify(['deepseek', 'reasoner'])
-const CHAT = JSON.stringify(['deepseek', 'chat'])
-
-async function confirmModal(view) {
-  const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
-  await view.interact(() => { inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined).props.onClick() })
-}
-
-test('the member model is prefilled from the template default and stated in the instruction', async () => {
-  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
-  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
-  const instruction = previewText(view)
-  assert.ok(instruction.includes('Member model for this spawn: deepseek / reasoner · high'))
-  assert.ok(instruction.includes('and model: {"provider":"deepseek","model":"reasoner","reasoning_effort":"high"} (omit task).'))
-})
-
-test('picking another model overrides the template default, drops the template effort, and rides into the injected message', async () => {
-  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
-  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], CHAT)
-  // chat advertises no efforts: the effort control is hidden and the
-  // template's `high` must not leak into the new route.
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), undefined)
-  const instruction = previewText(view)
-  assert.ok(instruction.includes('Member model for this spawn: deepseek / chat'))
-  assert.ok(instruction.includes('and model: {"provider":"deepseek","model":"chat"} (omit task).'))
-  assert.equal(instruction.includes('reasoning_effort'), false)
-  await confirmModal(view)
-  assert.ok(view.sessions.calls[1].content[0].text.includes('and model: {"provider":"deepseek","model":"chat"}'))
-})
-
-test('choosing inherit sends model null even when the template has a default', async () => {
-  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
-  await pickMenuOption(view, 'data-agent-roster-model', '')
-  // Inherit state: the raw value is '' and the marker attribute says 'inherit'.
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], '')
-  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
-  assert.ok(previewText(view).includes('Member model for this spawn: inherit the session model'))
-  await confirmModal(view)
-  const sent = view.sessions.calls[1].content[0].text
-  assert.ok(sent.includes('and model: null (omit task).'))
-  assert.equal(sent.includes('reasoner'), false)
-})
-
-test('switching templates resets the member model to the new template default', async () => {
-  // No catalog face here: the picker still names each default through its
-  // lossless synthetic row, so a missing catalog never blocks the choice.
-  const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT) })
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
-  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
-  await view.interact(() => { scout.props.onClick() })
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
-  assert.ok(previewText(view).includes('Member model for this spawn: acme / scout-1'))
-})
-
-test('an explicit reasoning model offers its efforts and the chosen effort rides along', async () => {
-  const view = await openModal({ extras: withCatalog })
-  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), undefined)
-  await pickMenuOption(view, 'data-agent-roster-model', REASONER)
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), 'the effort picker appears for a reasoning model')
-  await pickMenuOption(view, 'data-agent-roster-effort', 'high')
-  const instruction = previewText(view)
-  assert.ok(instruction.includes('Member model for this spawn: deepseek / reasoner · high'))
-  assert.ok(instruction.includes('"reasoning_effort":"high"'))
-})
-
-test('re-picking the template default model restores its stored effort', async () => {
-  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
-  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
-  await pickMenuOption(view, 'data-agent-roster-model', REASONER)
-  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
-  assert.ok(previewText(view).includes('"reasoning_effort":"high"'))
-})
-
-test('changing only the effort keeps the template model (review finding MAJOR)', async () => {
-  // The pick must capture the model that is in effect, not turn the spawn into
-  // "inherit": the user asked for another effort, not for another model.
-  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
-  await pickMenuOption(view, 'data-agent-roster-effort', 'low')
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
-  const instruction = previewText(view)
-  assert.ok(instruction.includes('Member model for this spawn: deepseek / reasoner · low'))
-  assert.ok(instruction.includes('and model: {"provider":"deepseek","model":"reasoner","reasoning_effort":"low"}'))
-  assert.equal(instruction.includes('inherit the session model'), false)
-})
-
-test('a stored default with an empty provider or model is treated as no default', async () => {
-  const broken = { ...TEMPLATES[0], defaultModel: { provider: 'acme', model: '' } }
-  const view = await openModal({ roster: serving(broken), extras: withCatalog })
-  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
-  assert.ok(previewText(view).includes('and model: null'))
-})
-
-test('a stored effort the catalog no longer advertises stays visible and selectable', async () => {
-  // chat advertises no efforts; a stored `high` must not be shown as "model
-  // default" while still being sent.
-  const stale = { ...TEMPLATES[0], defaultModel: { provider: 'deepseek', model: 'chat', reasoningEffort: 'high' } }
-  const view = await openModal({ roster: serving(stale), extras: withCatalog })
-  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), 'the stored effort is offered')
-  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
-  assert.ok(texts(effortTrigger(view)).includes('high'))
-  assert.ok(previewText(view).includes('Member model for this spawn: deepseek / chat · high'))
-})
-
-test('an override is remembered per template while the dialog stays open', async () => {
-  // Deliberate (SPEC): switching templates shows the NEW template's default;
-  // switching back restores the pick made for that template.
-  const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT), extras: withCatalog })
-  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
-  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
-  const back = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-researcher')
-  await view.interact(() => { scout.props.onClick() })
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
-  await view.interact(() => { back.props.onClick() })
-  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], CHAT)
 })

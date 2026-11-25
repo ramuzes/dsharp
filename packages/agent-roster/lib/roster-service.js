@@ -19,6 +19,7 @@
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
+import { parseModelChoice, resolveTemplateRef } from './spawn.js'
 
 /**
  * The WRITE schema: the stored record shape plus the rule that a default model
@@ -43,10 +44,13 @@ export class AgentRosterService extends TypertRemoteService {
    *   tests drive methods via Object.create(prototype), the feishu
    *   diagnostics.spec precedent).
    * @param {ReturnType<typeof import('./store.js').openRosterStore>} store
+   * @param {ReturnType<typeof import('./staging.js').createStaging>} staging - the
+   *   dialog's one-shot member requests, consumed by the `/roster` command.
    */
-  constructor(ctx, store) {
+  constructor(ctx, store, staging) {
     super(ctx, 'agentRoster', { namespace: 'agentRoster' })
     this.store = store
+    this.staging = staging
   }
 
   /** Every stored template, insertion order. @Remote */
@@ -108,6 +112,29 @@ export class AgentRosterService extends TypertRemoteService {
   }
 
   /**
+   * Stage the "+" dialog's member request for one session (ADR-0012). The
+   * `/roster` command takes it from here; nothing is spawned through this
+   * Remote. The template is resolved NOW, so an unknown one fails in the
+   * dialog instead of inside the command node, and the model is validated by
+   * the same rule the spawn applies.
+   * @param {{ sessionId: string, templateId: string, model?: import('./store.js').ModelRef | null, task?: string }} input
+   * @returns {Promise<{ staged: true }>}
+   * @Remote
+   */
+  async stageSpawn(input) {
+    const sessionId = readString(input?.sessionId)
+    const templateRef = readString(input?.templateId).trim()
+    if (sessionId === '' || templateRef === '') {
+      throw new RemoteError('roster/bad-request',
+        'sessionId and templateId are required / sessionId 与 templateId 不能为空', { field: 'sessionId, templateId' })
+    }
+    const model = input?.model === undefined || input?.model === null ? null : parseModelChoice(input.model)
+    await resolveTemplateRef(this.store, templateRef)
+    this.staging.put(sessionId, { templateRef, model, task: readString(input?.task).trim() })
+    return { staged: true }
+  }
+
+  /**
    * Delete one template by id.
    * @param {string} id
    * @returns {Promise<{ deleted: true }>} — `roster/not-found` otherwise.
@@ -137,6 +164,7 @@ export class AgentRosterService extends TypertRemoteService {
         Object.freeze({ method: 'listTemplates', invocation: direct }),
         Object.freeze({ method: 'saveTemplate', invocation: direct }),
         Object.freeze({ method: 'deleteTemplate', invocation: direct }),
+        Object.freeze({ method: 'stageSpawn', invocation: direct }),
       ]),
     }),
   })

@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "角色花名册",
-    "description": "一份全 profile 共用的角色模板库，把组建团队变成一键操作：“+”菜单把所选模板的指令注入当前会话，由 lead agent 通过 roster_spawn 工具创建成员（模板指令冻结；模型默认取模板配置，可在生成时单独覆盖）。附带 roster_template_save / roster_template_list 工具，以及设置页的角色花名册管理。成员就是普通子代理。",
+    "description": "一份全 profile 共用的角色模板库，把组建团队变成一键操作：“+”菜单通过 /roster 命令创建成员——会话记录与 /compact 相同，不在对话里留下消息，也不占用 lead 的一轮——成员创建后待命等待派活（模板指令冻结；模型默认取模板配置，可在生成时单独覆盖）。附带 roster_template_save / roster_template_list 工具，以及设置页的角色花名册管理。成员就是普通子代理。",
     "detail": "docs/DETAIL.zh.md"
   }
 }

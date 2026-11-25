@@ -7,11 +7,13 @@
  * module-table identities, so nothing is bundled) and returns a cordis
  * plugin object (packages/airboard/client.js:18-27 shape).
  *
- * ADR-0011 shape: the "+"-menu modal composes one instruction from a role
- * template (name, description, frozen standing prompt, optional task) and
- * injects it into the current session as a user message; the lead agent
- * runs its loop and calls the `roster_spawn` tool, which performs the
- * deterministic spawn with the template's model. The client never spawns.
+* ADR-0012 shape: the "+"-menu modal collects a template, an optional
+ * per-spawn model and an optional first task, stages that request through the
+ * `agentRoster` remote and runs `/roster` on the session. The command is the
+ * host's act-without-a-model-message path (two log-only lifecycle events, the
+ * `/compact` precedent): no user bubble, no lead turn. The member itself is
+ * created host-side by the command handler through the subagent runtime; the
+ * lead can still create members itself with the `roster_spawn` tool.
  * The Settings section is the roster manager (list/add/edit/delete and the
  * per-template default model); the templates are the whole configuration —
  * there is no drafting surface and no teamwork gating.
@@ -67,13 +69,14 @@
  *   shows this section's entry on the bundle row (settings shell
  *   contract). The section body is the roster manager: templates are the
  *   only configuration the plugin has.
- * - `sessions` client service (inject list) — the object layer the member
- *   instruction is injected through: `ctx.sessions.using(sessionId, {
- *   source }, ref => ref.binding.session.prompt(content, 'queue'))`
- *   (api/session-controller/src/client/contract/session.ts:98-104;
- *   in-tree precedent ui-commands/src/client/service.ts:105-113). This is
- *   the composer-equivalent path: same acceptance, queueing, and log
- *   visibility a typed message gets (ADR-0011).
+ * - `sessions` client service (inject list) — the object layer the `/roster`
+ *   command line is admitted through: `ctx.sessions.using(sessionId, {
+ *   source }, ref => ref.binding.session.command('/roster <name>'))`
+ *   (api/session-controller/src/client/sessions/session.ts `command()`:
+ *   "the full command line, leading slash included… the host executor durably
+ *   logs the lifecycle; outcomes render as flow nodes, never as a response
+ *   echo"). Precedent for reaching a session object: ui-commands/src/client/
+ *   service.ts `sessions.using(…)` (ADR-0012).
  */
 window.__ModuleLoader__.load({
   id: 'dsh-agent-roster',
@@ -105,16 +108,16 @@ window.__ModuleLoader__.load({
       'templates.error': '模板加载失败',
       'templates.empty': '还没有角色模板',
       'templates.none': '还没有模板。请先到 设置 > Agent roster 新建一个角色模板。',
-      'preview.title': '将发送到当前会话的指令',
       'spawn.model.label': '成员模型',
       'spawn.model.inherit': '继承当前会话模型',
       'task.label': '本次任务（可选）',
       'task.placeholder': '交给这位成员的本次任务，例如：审查 payments 模块',
-      'inject.action': '创建成员',
-      'inject.sending': '发送中…',
-      'inject.sent': '已把「{name}」的创建指令发送到当前会话，agent 将据此创建成员',
-      'inject.failed': '发送失败',
-      'inject.unavailable': '会话消息通道不可用，无法发送创建指令',
+      'command.action': '创建成员',
+      'command.sending': '创建中…',
+      'command.sent': '已提交创建成员「{name}」的请求，结果见会话中的命令记录',
+      'command.failed': '创建失败',
+      'command.unmatched': '宿主没有 /roster 命令：请确认 Agent roster 插件已启用且为最新版本',
+      'command.unavailable': '会话命令通道不可用，无法创建成员',
       'model.effort.label': '推理力度（可选）',
       'model.effort.default': '模型默认',
       'custom.name.label': '角色名称',
@@ -153,16 +156,16 @@ window.__ModuleLoader__.load({
       'templates.error': 'Template load failed',
       'templates.empty': 'No role templates yet',
       'templates.none': 'No templates yet. Create one in Settings > Agent roster first.',
-      'preview.title': 'Instruction that will be sent to this session',
       'spawn.model.label': 'Member model',
       'spawn.model.inherit': 'Inherit the session model',
       'task.label': 'Task for this member (optional)',
       'task.placeholder': 'This session\'s task for the member, e.g. review the payments module',
-      'inject.action': 'Create member',
-      'inject.sending': 'Sending…',
-      'inject.sent': 'Sent the request for \u00ab{name}\u00bb to this session; the agent will create the member',
-      'inject.failed': 'Sending failed',
-      'inject.unavailable': 'The session message channel is unavailable; cannot send the request',
+      'command.action': 'Create member',
+      'command.sending': 'Creating…',
+      'command.sent': 'Requested member «{name}»; the outcome appears in the command record of this conversation',
+      'command.failed': 'Creation failed',
+      'command.unmatched': 'The host has no /roster command: make sure the Agent roster plugin is enabled and up to date',
+      'command.unavailable': 'The session command channel is unavailable; cannot create the member',
       'model.effort.label': 'Reasoning effort (optional)',
       'model.effort.default': 'Model default',
       'custom.name.label': 'Role name',
@@ -237,10 +240,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The Host half's three remote methods (lib/roster-service.js) as
+     * The Host half's four remote methods (lib/roster-service.js) as
      * version-1 invocation descriptors. Wire parameter names mirror the Host
-     * method signatures: object-input methods take one `input`, delete one
-     * `id` string, listTemplates none; every result is src-json. The
+     * method signatures: object-input methods (saveTemplate, stageSpawn) take
+     * one `input`, delete one `id` string, listTemplates none; every result
+     * is src-json. The
      * id/service/namespace/invocation shape follows the chrome-cdp
      * client.js:389-396 pattern over typert InvocationDescriptor.
      */
@@ -264,6 +268,7 @@ window.__ModuleLoader__.load({
       { method: 'listTemplates', parameters: [] },
       { method: 'saveTemplate', parameters: [jsonParameter('input')] },
       { method: 'deleteTemplate', parameters: [jsonParameter('id')] },
+      { method: 'stageSpawn', parameters: [jsonParameter('input')] },
     ]
 
     /**
@@ -726,58 +731,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Compose the instruction injected into the current session (SPEC §Design).
-     * Pinned shape: the agent must call `roster_spawn` with the template id and
-     * must not restate or rewrite the standing prompt — that is what keeps the
-     * template frozen while the agent contributes conversation context.
-     * @param {{ id: string, name: string, description: string, prompt: string }} template
-     * @param {string} [task] - optional one-off task typed in the modal.
-     * @param {import('./store.js').ModelRef | null} model - the member model
-     *   for this spawn: an explicit route, or null to inherit the session
-     *   model. Always stated (2026-11-25), so the agent never infers it from
-     *   the template and the user's choice reaches roster_spawn verbatim.
-     * @returns {string} the exact user message to inject.
-     */
-    function composeMemberInstruction(template, task, model) {
-      const trimmedTask = typeof task === 'string' ? task.trim() : ''
-      const inherit = model === null || model === undefined
-      const route = inherit
-        ? 'inherit the session model'
-        : `${model.provider} / ${model.model}` + (model.reasoningEffort ? ` · ${model.reasoningEffort}` : '')
-      // Tool-facing spelling (`reasoning_effort`) in a fixed key order: the
-      // agent copies this JSON verbatim into roster_spawn's `model` argument.
-      const modelArg = inherit
-        ? 'null'
-        : JSON.stringify({
-          provider: model.provider,
-          model: model.model,
-          ...(model.reasoningEffort ? { reasoning_effort: model.reasoningEffort } : {}),
-        })
-      return [
-        `Use the agent-roster template «${template.name}» to create a team member for me.`,
-        `Template description: ${template.description === '' ? '(none)' : template.description}`,
-        'Standing instruction the member must run with (do not rewrite it):',
-        '---',
-        template.prompt,
-        '---',
-        `Member model for this spawn: ${route}`,
-        ...(trimmedTask === '' ? [] : [`Current task for this member: ${trimmedTask}`]),
-        `Call the roster_spawn tool with template: ${JSON.stringify(template.id)} and model: ${modelArg}`
-          + (trimmedTask === '' ? ' (omit task).' : ', and the current task text above as task.'),
-        'Pass the model value exactly as given; null means the member inherits the session model.',
-        'Do not describe the member in chat instead of creating it, and do not pass the standing instruction yourself.',
-      ].join('\n')
-    }
-
-    /**
-     * The "+"-menu modal (ADR-0011): pick a template, preview the exact
-     * instruction, optionally add this session's task, then inject it into the
-     * conversation. The plugin does NOT spawn here — the lead agent does, by
-     * calling `roster_spawn`; this keeps the agent loop in charge of context
-     * while the template's prompt stays frozen. The member MODEL is the one
-     * surface the user may override per spawn (2026-11-25): the picker starts
-     * from the template's default and the choice travels in the instruction,
-     * so it reaches roster_spawn without editing the template.
+     * The "+"-menu modal (ADR-0012): pick a template, optionally override the
+     * member model and give a first task, then confirm. Confirming stages the
+     * request and runs `/roster` — nothing is injected into the conversation.
+     * The member MODEL is the one surface the user may override per spawn: the
+     * picker starts from the template's default and the choice is staged, so
+     * it reaches the spawn without editing the template.
      * @param {any} props - `sessionId`, `close()`, the locale seat's `t`.
      */
     function RosterModal(props) {
@@ -828,7 +787,6 @@ window.__ModuleLoader__.load({
       const modelRows = React.useMemo(() => rowsWithRef(rows, defaultRef), [rows, defaultRef])
       const byKey = React.useMemo(() => rowsByKey(modelRows), [modelRows])
       const memberModel = modelRefOf(modelChoice === '' ? undefined : byKey.get(modelChoice), effortChoice)
-      const instruction = selected === null ? '' : composeMemberInstruction(selected, task, memberModel)
       const canConfirm = selected !== null && !sending
       /** Pick the member model: another model starts on its own default effort;
        * re-picking the template's model restores its stored effort. */
@@ -849,22 +807,29 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * Inject the instruction through the composer-equivalent path
-       * (`sessions.using(...) → session.prompt(content, 'queue')`, SPEC §Design):
-       * the same acceptance, queueing, and visibility a typed message gets.
+       * Create the member the way `/compact` compacts: stage what the user
+       * chose through the remote, then run `/roster` on this session. The
+       * command leaves two log-only lifecycle events in the transcript and no
+       * model message (dsh packages/interaction/commands README); its outcome
+       * renders as a flow node, so the admission `{ matched }` is all this
+       * dialog ever sees.
        */
       const confirm = async () => {
         if (!canConfirm) return
         setSending(true)
         setOutcome(null)
         try {
+          const ns = rosterNs()
+          if (ns?.stageSpawn === undefined) throw new Error(t('command.unavailable'))
+          // Staging resolves the template NOW, so an unknown one fails here,
+          // in front of the user, instead of inside the command node.
+          await settle(ns.stageSpawn({ sessionId, templateId: selected.id, model: memberModel, task }))
           const sessions = optService('sessions')
-          if (sessions?.using === undefined) {
-            throw new Error(t('inject.unavailable'))
-          }
+          if (sessions?.using === undefined) throw new Error(t('command.unavailable'))
           await sessions.using(sessionId, { source: 'agent-roster' }, async (reference) => {
-            const result = await reference.binding.session.prompt([{ type: 'text', text: instruction }], 'queue')
-            if (result?.ok === false) throw result.error ?? new Error(t('inject.failed'))
+            const result = await reference.binding.session.command(`/roster ${selected.name}`)
+            if (result?.ok === false) throw result.error ?? new Error(t('command.failed'))
+            if (result.value?.matched !== true) throw new Error(t('command.unmatched'))
             return result
           })
           setOutcome({ ok: true })
@@ -895,7 +860,7 @@ window.__ModuleLoader__.load({
             'data-agent-roster-confirm': '',
             disabled: !canConfirm,
             onClick: () => { void confirm() },
-          }, sending ? t('inject.sending') : t('inject.action'))),
+          }, sending ? t('command.sending') : t('command.action'))),
       },
       h('div', { className: 'agent-roster', 'data-agent-roster': '' },
         outcome === null
@@ -906,14 +871,14 @@ window.__ModuleLoader__.load({
               'data-agent-roster-banner': 'success',
               role: 'status',
               'aria-live': 'polite',
-            }, t('inject.sent', { name: selected?.name ?? '' }))
+            }, t('command.sent', { name: selected?.name ?? '' }))
             : h('div', {
               className: 'agent-roster-banner agent-roster-banner-error',
               'data-agent-roster-banner': 'error',
               'data-agent-roster-error': typeof outcome.error?.code === 'string' ? outcome.error.code : '',
               role: 'alert',
             },
-            h('span', { className: 'agent-roster-error-label' }, t('inject.failed')),
+            h('span', { className: 'agent-roster-error-label' }, t('command.failed')),
             errorDetail(outcome.error)),
         h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'templates' },
           h('div', { className: 'agent-roster-label' }, t('templates.title')),
@@ -964,11 +929,6 @@ window.__ModuleLoader__.load({
             onEffort: pickEffort,
             disabled: sending,
           }),
-        selected === null
-          ? null
-          : h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'preview' },
-            h('div', { className: 'agent-roster-label' }, t('preview.title')),
-            h('pre', { className: 'agent-roster-instruction', 'data-agent-roster-preview': '' }, instruction)),
         selected === null
           ? null
           : h('section', { className: 'agent-roster-section', 'data-agent-roster-section': 'task' },

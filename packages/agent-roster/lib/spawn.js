@@ -74,22 +74,83 @@ export function allocateName(base, taken = []) {
 }
 
 /**
- * Assemble the child's initial prompt: the standing instructions alone, or
- * the standing instructions plus the kickoff task under the exact separator
- * contract pinned by the plan (verbatim).
- * @param {string} standing - the template's standing prompt.
- * @param {string} [task] - optional task assigned by the user at spawn time.
- * @returns {string} `standing`, or `${standing}\n\n---\n\nInitial task
- *   (assigned by the user at spawn time):\n${task}`.
+ * Validate an explicit per-spawn model choice and return it as a ModelRef.
+ * Unlike stored data an explicit choice is REFUSED when invalid: the caller
+ * asked for one particular route, so silently running another would create
+ * the wrong member. Shared by the spawn, the tools and the dialog's staging.
+ * @param {unknown} value - `{ provider, model, reasoningEffort? }`.
+ * @returns {{ provider: string, model: string, reasoningEffort?: string }}
+ * @throws {RemoteError} `roster/bad-request` with the issues.
  */
-export function assembleSpawnPrompt(standing, task) {
-  const base = readString(standing)
-  // Trim: the task now arrives from a model's tool call, which routinely
-  // pads arguments; the child should not inherit stray whitespace.
+export function parseModelChoice(value) {
+  const parsed = ModelRef.safeParse(value)
+  if (!parsed.success || parsed.data.provider === '' || parsed.data.model === '' || parsed.data.reasoningEffort === '') {
+    // An empty effort is refused for the same reason the host's own
+    // delegation tool refuses it (tool-subagent/src/index.ts:92).
+    const issues = parsed.success
+      ? [{ path: 'provider, model, reasoningEffort', message: 'must be non-empty' }]
+      : parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    throw new RemoteError('roster/bad-request',
+      `model rejected / 模型不合法: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`, { issues })
+  }
+  return parsed.data
+}
+
+/**
+ * Delivery mode for one member's activation (dsh
+ * packages/subagent/subagent/src/manager.ts, `notifySettlement` →
+ * `sendWaking(parent, message, parent.status === 'idle' ? 'queue' : 'steer')`).
+ *
+ * `parent` makes the runtime post a settle notice to the lead when the
+ * member's turn ends, and an idle lead then runs a turn. `caller` returns
+ * before that notice (the function's first line) while the member still
+ * enters the parent catalog (types.ts: "Local children always enter the
+ * parent catalog"), so it stays discoverable and continuable.
+ *
+ * A member given a first task owes the lead a result; a standby member owes
+ * nothing and must not wake anybody. The 2026-11-25 incident: a freshly
+ * added member's settlement notice started a lead turn that could only say
+ * the member's report was irrelevant.
+ * @param {unknown} task - the user-given first task, if any.
+ * @returns {'parent' | 'caller'}
+ */
+export function spawnDeliveryOf(task) {
+  return readString(task).trim() === '' ? 'caller' : 'parent'
+}
+
+/**
+ * The member's opening message — its FIRST USER MESSAGE (never its system
+ * prompt): a role definition framed as identity, then either an explicit
+ * stand-by order or the user's first task.
+ *
+ * Why the framing matters: the runtime presents this message to the member as
+ * "Agent lead sent a message: …", and DSH injects the creating session's
+ * timeline tree title into the child's context. A bare role prompt ("your job
+ * is to read all the related code…") therefore reads as a task, and the
+ * member picks that inherited title as its topic (2026-11-25 incident).
+ * @param {unknown} name - the member's allocated name.
+ * @param {unknown} standing - the template's standing instruction.
+ * @param {unknown} [task] - optional first task assigned by the user.
+ * @returns {string}
+ */
+export function assembleMemberOpening(name, standing, task) {
+  // Trim: the task may arrive from a model's tool call, which routinely pads
+  // its arguments; the member should not inherit stray whitespace.
   const kickoff = readString(task).trim()
-  return kickoff === ''
-    ? base
-    : `${base}\n\n---\n\nInitial task (assigned by the user at spawn time):\n${kickoff}`
+  return [
+    `You have joined the team of agent "${ROOT_AGENT_NAME}" as the member "${readString(name)}".`,
+    'Your role definition. It states who you are for your whole residency — it is not a task to perform now:',
+    '---',
+    readString(standing),
+    '---',
+    ...(kickoff === '' ? [
+      'No task has been assigned yet. Nothing you inherited from the session that created you — timeline trees, plans, titles, repository state — is an assignment to you.',
+      'Do not explore, read files, or produce reports now, and do not send any message: just reply with one short line confirming that you are ready, then end your turn and wait. Work will reach you through messages from other agents or through the shared task board.',
+    ] : [
+      'Your first task, assigned by the user when you were added — carry it out now:',
+      kickoff,
+    ]),
+  ].join('\n')
 }
 
 /**
@@ -184,23 +245,8 @@ export async function spawnFromTemplate(scope, deps, input) {
   // caller asked for one particular route, so silently running another would
   // create the wrong member.
   const explicit = input?.model
-  if (explicit !== undefined) {
-    const parsedChoice = explicit === null ? undefined : ModelRef.safeParse(explicit)
-    if (explicit === null) {
-      model = null
-    } else if (!parsedChoice.success || parsedChoice.data.provider === '' || parsedChoice.data.model === ''
-      || parsedChoice.data.reasoningEffort === '') {
-      // An empty effort is refused for the same reason the host's own
-      // delegation tool refuses it (tool-subagent/src/index.ts:92).
-      const issues = parsedChoice.success
-        ? [{ path: 'provider, model', message: 'provider and model must be non-empty' }]
-        : parsedChoice.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
-      throw new RemoteError('roster/bad-request',
-        `model rejected / 模型不合法: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`, { issues })
-    } else {
-      model = parsedChoice.data
-    }
-  }
+  if (explicit === null) model = null
+  else if (explicit !== undefined) model = parseModelChoice(explicit)
 
   const root = subagents.rootOf(agent)
   // Free-name allocation against the root's committed direct-child names
@@ -217,13 +263,13 @@ export async function spawnFromTemplate(scope, deps, input) {
   // BEFORE publication. A tool call has a caller signal; when it fires, the
   // spawn is abandoned before publication.
   const signal = input?.signal instanceof AbortSignal ? input.signal : new AbortController().signal
-  const prompt = assembleSpawnPrompt(template.prompt, input?.task)
+  const task = readString(input?.task).trim()
   const activation = await subagents.startActivation({
     provider: SPAWN_PROVIDER,
     parent: root,
     label: readString(template.name),
     name,
-    prompt: [{ type: 'text', text: prompt }],
+    prompt: [{ type: 'text', text: assembleMemberOpening(name, template.prompt, task) }],
     ...(model !== null
       ? {
         agentOptions: {
@@ -236,7 +282,8 @@ export async function spawnFromTemplate(scope, deps, input) {
       }
       : {}),
     signal,
-    delivery: 'parent',
+    // A first task reports to the lead; a standby member settles silently.
+    delivery: spawnDeliveryOf(task),
   })
   return {
     name: activation.name,

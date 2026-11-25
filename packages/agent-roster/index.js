@@ -20,6 +20,8 @@ import Schema from '@deepseek-ai/schemastery'
 import { readBoolean } from './lib/wire.js'
 import { openStatus } from './lib/status.js'
 import { openRosterStore } from './lib/store.js'
+import { createStaging } from './lib/staging.js'
+import { registerRosterCommand } from './lib/roster-command.js'
 import { AgentRosterService } from './lib/roster-service.js'
 import { registerRosterTools } from './lib/agent-tools.js'
 
@@ -83,8 +85,12 @@ export function apply(ctx, config) {
       // self-registers with ctx and its lifecycle follows the fiber (the
       // chrome-cdp registerStatus / feishu apply construction pattern).
       store = openRosterStore(ctx, status)
-      const factory = serviceFactory ?? ((ctx2, store2) => new AgentRosterService(ctx2, store2))
-      const roster = factory(ctx, store)
+      // The dialog stages its member request here; the /roster command (its
+      // own inject callback below) takes it (ADR-0012).
+      const staging = createStaging()
+      const mounted = { tools: false, command: false }
+      const factory = serviceFactory ?? ((ctx2, store2, staging2) => new AgentRosterService(ctx2, store2, staging2))
+      const roster = factory(ctx, store, staging)
       status.write('service-registered')
       status.write('done')
       // The tools inject below may not run for a long time (or ever, on a host
@@ -117,7 +123,8 @@ export function apply(ctx, config) {
           // index.js:257-259 / airboard index.js:262-265 pattern).
           try {
             const offTools = registerRosterTools(toolScope, roster, { store, subagents: toolScope.subagents }, { authoring: exposeAgentTools })
-            status.write('tools-registered', { authoring: exposeAgentTools })
+            mounted.tools = true
+            status.write('tools-registered', { authoring: exposeAgentTools, command: mounted.command })
             return () => { offTools() }
           } catch (error) {
             status.write('tools-failed', String(error))
@@ -125,6 +132,27 @@ export function apply(ctx, config) {
           }
         })
       }
+
+      // ---- the /roster command (ADR-0012) -----------------------------------
+      // How the "+" dialog creates a member: it stages the request through the
+      // remote and runs `/roster`, which leaves two log-only lifecycle events
+      // and no model message (the `/compact` path). Registered independently
+      // of the tools so a host without the commands service keeps roster_spawn.
+      // Both services are injected on purpose (AGENTS.md 3): the handler
+      // spawns through `subagents`.
+      ctx.inject(['commands', 'subagents'], (commandScope) => {
+        try {
+          const offCommand = registerRosterCommand(commandScope, { store, staging })
+          mounted.command = true
+          // One terminal record names both mounts, whichever lands last.
+          status.write(mounted.tools ? 'tools-registered' : 'command-registered',
+            { authoring: exposeAgentTools, command: true })
+          return offCommand
+        } catch (error) {
+          status.write('command-failed', String(error))
+          throw error
+        }
+      })
 
       // Release the opened domain with this fiber (caller-owns-handle,
       // lib/store.js dispose) so a remount never hits 'already-open'.

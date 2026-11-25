@@ -1,6 +1,6 @@
 # Member creation is agent-driven through a plugin tool, not a direct client action
 
-Status: Accepted (2026-11-23) · Amended (2026-11-25): the member model may be overridden per spawn through the injected instruction (see the last Consequence)
+Status: Accepted (2026-11-23) · Revised (2026-11-25) by ADR-0012 for the dialog half: the dialog creates members through the `/roster` command instead of an injected instruction; `roster_spawn` remains for the lead, under the standby opening and delivery rules · Amended (2026-11-25): the member model may be overridden per spawn through the injected instruction (see the last Consequence)
 
 ## Context
 

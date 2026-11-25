@@ -23,8 +23,8 @@
  * values (service patch semantics), default_model null clears them.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import { resolveTemplateRef, spawnFromTemplate } from './spawn.js'
+import { failureText as failure } from './wire.js'
 
 /** Plain-text tool output (session-query's TEXT_OUTPUT shape). */
 const TEXT_OUTPUT = {
@@ -43,17 +43,6 @@ function bounded(payload) {
   return text.slice(0, MAX_OUTPUT_CHARS) + TRUNCATION_MARKER
 }
 
-/** Map one tool failure to model-facing text; never rethrow into the host. */
-function failure(error) {
-  // Typed roster/ failures discriminate by code, never instanceof (the
-  // protocol's rule — @deepseek-ai/dsh-typert-protocol RemoteError); their
-  // messages are already bilingual for the UI, usable verbatim.
-  const remote = remoteErrorOf(error)
-  if (remote !== undefined) {
-    return `roster call failed (${remote.code}): ${remote.message}`
-  }
-  return `roster call failed: ${error?.message ?? String(error)}`
-}
 
 /**
  * Map the tool-facing default_model parameter to the service's ModelRef key

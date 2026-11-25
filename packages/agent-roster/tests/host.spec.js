@@ -27,6 +27,7 @@ import { join } from 'node:path'
 import { remoteErrorOf, remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import { apply, Config, setServiceFactoryForTests } from '../index.js'
 import { readString, readBoolean } from '../lib/wire.js'
+import { createStaging } from '../lib/staging.js'
 import { openRosterStore, RoleTemplate } from '../lib/store.js'
 import { AgentRosterService } from '../lib/roster-service.js'
 
@@ -156,7 +157,7 @@ test('apply reads config through wrappers', async () => {
     // Task 5: with exposeAgentTools reading true, apply adds exactly one
     // inject callback — the tools registration scope (tests/tools.spec.js
     // drives and asserts it).
-    assert.equal(host.injects.length, 1, 'exactly the tools inject callback')
+    assert.equal(host.injects.length, 2, 'the tools callback and the /roster command callback')
     assert.deepEqual(host.injects[0].names, ['tools', 'subagents'])
     assert.equal(host.effects.length, 1, 'wiring wrapped in exactly one ctx.effect')
     assert.ok(wrapperReads >= 1, 'exposeAgentTools must be read through the wrapper getter')
@@ -348,13 +349,14 @@ test('degrades to memory store with storage-degraded status', async () => {
 
 })
 
-test('AgentRosterService carries Remote markers for the three CRUD methods', () => {
+test('AgentRosterService carries Remote markers for template CRUD and stageSpawn', () => {
   // remoteMethods reads markers off getPrototypeOf(service): pass an instance.
   const markers = remoteMethods(Object.create(AgentRosterService.prototype))
-  // ADR-0011: the remote surface is template CRUD only — spawn is an agent
-  // tool, and the draft/teamStatus/spawnMember methods are gone.
+  // ADR-0011 kept the remote surface to template CRUD (spawn is an agent
+  // tool); ADR-0012 adds stageSpawn — the dialog stages its request here and
+  // the /roster command consumes it. Nothing spawns through the remote.
   assert.deepEqual(markers.map((m) => m.method).sort(),
-    ['deleteTemplate', 'listTemplates', 'saveTemplate'])
+    ['deleteTemplate', 'listTemplates', 'saveTemplate', 'stageSpawn'])
   for (const marker of markers) {
     assert.deepEqual(marker.invocation, { kind: 'direct' }, `${marker.method} is a direct invocation`)
     assert.equal(marker.mode, undefined, 'unary method')
@@ -466,4 +468,58 @@ test('apply containment: a service failure writes wire-failed, rethrows, and sti
     else process.env.AGENT_ROSTER_STATUS_FILE = prev
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// stageSpawn (ADR-0012): the dialog's one-shot request for the /roster command
+// ---------------------------------------------------------------------------
+
+/** The REAL service over the REAL store and a REAL staging (no cordis Context needed). */
+async function makeStagedService(...templates) {
+  const { service, store } = await makeRoster()
+  service.staging = createStaging({ ttlMs: 60_000, now: () => 0 })
+  for (const t of templates) await store.put(RoleTemplate.parse(t))
+  return { service, store, staging: service.staging }
+}
+
+test('stageSpawn stores a one-shot request bound to the session, task trimmed', async () => {
+  const { service, staging } = await makeStagedService({ id: 't1', name: 'Reviewer', prompt: 'Review diffs.', createdAt: T0, updatedAt: T0 })
+  const out = await service.stageSpawn({
+    sessionId: 'sess-1', templateId: 't1',
+    model: { provider: 'acme', model: 'cheap', reasoningEffort: 'low' }, task: '  review payments  ',
+  })
+  assert.deepEqual(out, { staged: true })
+  assert.deepEqual(staging.take('sess-1'), {
+    templateRef: 't1', model: { provider: 'acme', model: 'cheap', reasoningEffort: 'low' }, task: 'review payments',
+  })
+  assert.equal(staging.take('sess-1'), undefined, 'single use')
+})
+
+test('stageSpawn accepts model null (inherit) and stages by exact template name too', async () => {
+  const { service, staging } = await makeStagedService({ id: 't1', name: 'Reviewer', prompt: 'Review diffs.', createdAt: T0, updatedAt: T0 })
+  await service.stageSpawn({ sessionId: 'sess-1', templateId: 'Reviewer', model: null })
+  assert.deepEqual(staging.take('sess-1'), { templateRef: 'Reviewer', model: null, task: '' })
+})
+
+test('stageSpawn refuses an unknown template immediately so the dialog can show it', async () => {
+  const { service, staging } = await makeStagedService()
+  await assert.rejects(
+    () => service.stageSpawn({ sessionId: 'sess-1', templateId: 'nobody', model: null, task: '' }),
+    (error) => error?.code === 'roster/not-found',
+  )
+  assert.equal(staging.size, 0, 'nothing is left staged for a refused request')
+})
+
+test('stageSpawn rejects a missing sessionId or templateId and an invalid model', async () => {
+  const { service, staging } = await makeStagedService({ id: 't1', name: 'Reviewer', prompt: 'Review diffs.', createdAt: T0, updatedAt: T0 })
+  for (const input of [
+    { templateId: 't1', model: null },
+    { sessionId: 'sess-1', model: null },
+    { sessionId: 'sess-1', templateId: 't1', model: { provider: '', model: 'x' } },
+    { sessionId: 'sess-1', templateId: 't1', model: { provider: 'acme', model: 'cheap', reasoningEffort: '' } },
+    { sessionId: 'sess-1', templateId: 't1', model: 'acme/cheap' },
+  ]) {
+    await assert.rejects(() => service.stageSpawn(input), (error) => error?.code === 'roster/bad-request', JSON.stringify(input))
+  }
+  assert.equal(staging.size, 0)
 })

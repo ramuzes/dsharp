@@ -24,6 +24,7 @@ import { apply, setServiceFactoryForTests } from '../index.js'
 import { openRosterStore } from '../lib/store.js'
 import { AgentRosterService } from '../lib/roster-service.js'
 import { registerRosterTools } from '../lib/agent-tools.js'
+import { assembleMemberOpening } from '../lib/spawn.js'
 
 /** Fixed timestamp for fake-service returns. */
 const T0 = '2026-11-22T12:00:00.000Z'
@@ -287,7 +288,8 @@ test('apply registers the tools inject and all three tools when exposeAgentTools
     const host = makeFakeHost()
     setServiceFactoryForTests(() => makeRecordingService())
     apply(host.ctx, { exposeAgentTools: { get: () => true } })
-    assert.equal(host.injects.length, 1, 'exactly one inject callback')
+    // Two independent callbacks: the tools, and the /roster command (ADR-0012).
+    assert.equal(host.injects.length, 2, 'the tools callback and the command callback')
     // roster_spawn resolves the tree root through `subagents`, so that name
     // must be injected on the same callback (AGENTS.md 3).
     assert.deepEqual(host.injects[0].names, ['tools', 'subagents'],
@@ -334,7 +336,7 @@ test('exposeAgentTools false still injects and registers roster_spawn alone', as
     apply(host.ctx, { exposeAgentTools: { get: () => false } })
     // The "+" flow depends on roster_spawn, so the callback always runs; the
     // toggle only removes the authoring pair.
-    assert.equal(host.injects.length, 1)
+    assert.equal(host.injects.length, 2)
     const scope = makeToolsScope()
     scope.subagents = makeSubagents()
     host.injects[0].fn(scope)
@@ -371,7 +373,8 @@ test('roster_spawn resolves a template by exact name and creates the member', as
   const spec = ctx.subagents.calls.startActivation[0]
   assert.equal(spec.label, 'Researcher')
   assert.equal(spec.name, 'researcher')
-  assert.equal(spec.prompt[0].text, 'You research thoroughly.\n\n---\n\nInitial task (assigned by the user at spawn time):\nreview payments')
+  assert.equal(spec.delivery, 'parent', 'a member given a task reports its result to the lead')
+  assert.equal(spec.prompt[0].text, assembleMemberOpening('researcher', 'You research thoroughly.', 'review payments'))
   assert.equal(spec.delivery, 'parent')
   const parsed = JSON.parse(out)
   assert.equal(parsed.created, 'researcher')
@@ -508,4 +511,77 @@ test('roster_template_save refuses a default model with an empty provider or mod
     )
   }
   assert.equal((await service.listTemplates()).length, 0)
+})
+
+test('roster_spawn without a task creates a standby member that settles silently', async () => {
+  const ctx = await spawnToolHarness()
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  await ctx.tool.execute({ template: ctx.saved.id }, { agent: caller, callId: 'c1' })
+  const spec = ctx.subagents.calls.startActivation[0]
+  assert.equal(spec.delivery, 'caller', 'no settle notice, so an idle lead is not woken')
+  assert.ok(spec.prompt[0].text.includes('No task has been assigned yet.'))
+  assert.equal(spec.prompt[0].text.includes('Your first task'), false)
+})
+
+test('apply registers the /roster command on its own inject callback (commands + subagents)', async () => {
+  await withStatusFile(async (file) => {
+    const host = makeFakeHost()
+    setServiceFactoryForTests(() => makeRecordingService())
+    apply(host.ctx, { exposeAgentTools: { get: () => true } })
+    const callback = host.injects.find((entry) => entry.names.includes('commands'))
+    assert.ok(callback, 'one callback injects the commands service')
+    // The handler spawns through the runtime: `subagents` must be injected on
+    // the same callback (AGENTS.md 3).
+    assert.deepEqual(callback.names, ['commands', 'subagents'])
+    const registered = []
+    const scope = {
+      subagents: makeSubagents(),
+      commands: {
+        register: (definition) => {
+          registered.push(definition)
+          return () => { registered.splice(registered.indexOf(definition), 1) }
+        },
+      },
+    }
+    const off = callback.fn(scope)
+    assert.deepEqual(registered.map((definition) => definition.name), ['roster'])
+    assert.equal(typeof off, 'function')
+    let record = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(record.stage, 'command-registered', 'the stage names what mounted')
+    assert.equal(record.detail.authoring, true)
+    assert.equal(record.detail.command, true)
+    await off()
+    assert.equal(registered.length, 0, 'the inject disposer unregisters the command')
+  })
+})
+
+test('after both callbacks ran the status record names the tools and the command', async () => {
+  await withStatusFile(async (file) => {
+    const host = makeFakeHost()
+    setServiceFactoryForTests(() => makeRecordingService())
+    apply(host.ctx, { exposeAgentTools: { get: () => true } })
+    const scope = makeToolsScope()
+    scope.subagents = makeSubagents()
+    scope.commands = { register: () => () => {} }
+    for (const callback of host.injects) callback.fn(scope)
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(record.stage, 'tools-registered')
+    assert.deepEqual(record.detail, { authoring: true, command: true })
+  })
+})
+
+test('a failed command registration writes command-failed with the error text and rethrows', async () => {
+  await withStatusFile(async (file) => {
+    const host = makeFakeHost()
+    setServiceFactoryForTests(() => makeRecordingService())
+    apply(host.ctx, { exposeAgentTools: { get: () => true } })
+    const boom = new Error('command "roster" is already registered')
+    const scope = { subagents: makeSubagents(), commands: { register: () => { throw boom } } }
+    const callback = host.injects.find((entry) => entry.names.includes('commands'))
+    assert.throws(() => callback.fn(scope), (error) => error === boom, 'contained, then rethrown loudly')
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(record.stage, 'command-failed')
+    assert.equal(record.detail, String(boom))
+  })
 })

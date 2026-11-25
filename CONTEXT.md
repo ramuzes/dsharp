@@ -116,10 +116,17 @@ _Avoid_: team (DSH team mode is the per-session coordination flag), library, reg
 
 ### Member spawn (成员生成)
 
-Creating a team member by instantiating a role template as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. Creation is agent-driven: the "+" flow injects the template's instruction into the conversation and the lead agent calls the `roster_spawn` tool. The standing prompt rides as the child's first user message (frozen — the model never rewrites it), exactly as a model-driven spawn would carry it. The member's model defaults to the template's and may be overridden for that one spawn (a spawn override), including back to inheriting the session model; a spawn override never edits the template.
-_Avoid_: agent creation (that is sessionController's ordinary-session path), preset selection, direct client-side spawn
+Creating a team member by instantiating a role template as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. Two ways in: the "+" dialog stages its request and runs the `roster` command, and the lead agent may call the `roster_spawn` tool from the conversation — both through one host-side spawn. The standing prompt is framed in the child's opening message as its role (frozen — the model never rewrites it), never as a task. The member's model defaults to the template's and may be overridden for that one spawn (a spawn override), including back to inheriting the session model; a spawn override never edits the template.
+_Avoid_: agent creation (that is sessionController's ordinary-session path), preset selection, injection (the dialog never puts words in the user's mouth)
 
-### Member instruction (成员指令)
+### Roster command (/roster)
 
-The exact user message the "+" flow injects into the current conversation: the template's name, description and frozen standing prompt, the optional task, and the instruction to create the member through `roster_spawn`. Previewed before sending and visible in the session log after.
+The host command that creates a member. The transcript records it like `/compact`: a compact command entry with its outcome, no user message, no model turn. Typed with a template name it adds a standby member with that template's defaults; run by the dialog it uses the request the dialog staged for that session.
+_Avoid_: slash-command UI only (the dialog runs it too), agent tool (that is `roster_spawn`)
+
+### Standby member (待命成员)
+
+A member created without a first task. Its opening tells it that inherited context is not an assignment and to reply once and wait; it settles without notifying the lead, stays in the parent catalog, and is given work later through messages or the shared task board.
+_Avoid_: idle agent (it is resident and continuable, not stopped), background task (nothing is being computed)
+
 _Avoid_: system prompt (the child's system prompt comes from its own composition, never from the template), task description (that is only the optional part)

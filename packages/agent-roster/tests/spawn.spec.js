@@ -22,7 +22,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
-import { slugify, allocateName, assembleSpawnPrompt, resolveTemplateRef, spawnFromTemplate } from '../lib/spawn.js'
+import { slugify, allocateName, assembleMemberOpening, spawnDeliveryOf, resolveTemplateRef, spawnFromTemplate } from '../lib/spawn.js'
 import { openRosterStore, RoleTemplate } from '../lib/store.js'
 
 /** Fixed timestamp for hand-built records. */
@@ -135,13 +135,36 @@ test('allocateName returns base then suffixed variants against taken names', () 
   assert.equal(allocateName('x'.repeat(40), ['x'.repeat(32)]).length <= 32, true)
 })
 
-test('assembleSpawnPrompt matches the exact string contract', () => {
-  assert.equal(assembleSpawnPrompt('Standing.', ''), 'Standing.')
-  assert.equal(assembleSpawnPrompt('Standing.', '   '), 'Standing.')
-  assert.equal(
-    assembleSpawnPrompt('Standing.', 'Do X.'),
-    'Standing.\n\n---\n\nInitial task (assigned by the user at spawn time):\nDo X.',
-  )
+test('assembleMemberOpening states the role as identity, never as a task', () => {
+  const standby = assembleMemberOpening('researcher', 'You research thoroughly.', '')
+  // Framed as joining a team with a role definition — not as work to do. The
+  // 2026-11-25 incident: a bare role prompt read as a task and the member
+  // spent two minutes producing an unsolicited report.
+  assert.ok(standby.startsWith('You have joined the team of agent "lead" as the member "researcher".'))
+  assert.ok(standby.includes('---\nYou research thoroughly.\n---'))
+  assert.equal(standby.includes('Your first task'), false)
+  // A standby member is told explicitly that inherited context is not work
+  // (DSH injects the creating session's timeline tree title into children).
+  assert.ok(standby.includes('No task has been assigned yet.'))
+  assert.ok(standby.includes('is an assignment to you'))
+  assert.ok(standby.includes('reply with one short line confirming that you are ready'))
+})
+
+test('assembleMemberOpening turns a user-given task into the first task, verbatim and trimmed', () => {
+  const opening = assembleMemberOpening('researcher', 'You research thoroughly.', '  review the payments module  ')
+  assert.ok(opening.includes('Your first task, assigned by the user when you were added'))
+  assert.ok(opening.endsWith('review the payments module'))
+  assert.equal(opening.includes('No task has been assigned yet.'), false)
+})
+
+test('spawnDeliveryOf: a member given a task reports to the lead; a standby member settles silently', () => {
+  // `parent` delivery makes the runtime post a settle notice that wakes an
+  // idle lead (subagent manager.ts notifySettlement / sendWaking); `caller`
+  // delivery never notifies, and the member still enters the parent catalog
+  // (subagent types.ts: "Local children always enter the parent catalog").
+  assert.equal(spawnDeliveryOf(''), 'caller')
+  assert.equal(spawnDeliveryOf('   '), 'caller')
+  assert.equal(spawnDeliveryOf('Do X.'), 'parent')
 })
 
 // ---------------------------------------------------------------------------
@@ -196,8 +219,10 @@ test('happy path: the template spawns under the caller tree root with exact acti
   assert.equal(spec.parent, root, 'parented at the tree root, not the caller')
   assert.equal(spec.label, 'Researcher')
   assert.equal(spec.name, 'researcher')
-  assert.equal(spec.delivery, 'parent')
-  assert.deepEqual(spec.prompt, [{ type: 'text', text: 'You research thoroughly.' }])
+  // No task: the member is told to stand by and settles without waking the lead.
+  assert.equal(spec.delivery, 'caller')
+  assert.equal(spec.prompt[0].text, assembleMemberOpening('researcher', 'You research thoroughly.', undefined))
+  assert.ok(spec.prompt[0].text.includes('No task has been assigned yet.'))
   assert.equal('agentOptions' in spec, false, 'inherit means the key is omitted')
 })
 
@@ -217,9 +242,10 @@ test('the task rides the prompt through the exact separator contract', async () 
     template: RoleTemplate.parse(RESEARCHER),
     task: '  review the payments module  ',
   })
+  assert.equal(subagents.activations[0].delivery, 'parent', 'a first task reports its result to the lead')
   assert.equal(
     subagents.activations[0].prompt[0].text,
-    'You research thoroughly.\n\n---\n\nInitial task (assigned by the user at spawn time):\nreview the payments module',
+    assembleMemberOpening('researcher', 'You research thoroughly.', 'review the payments module'),
   )
 })
 
