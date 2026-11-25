@@ -2,6 +2,8 @@
 
 ## 2026-11-23 · 0.2.0 — agent-driven creation (ADR-0011), verified on the live profile
 
+> Historical record: this round verified the 0.2.0 injection flow, which ADR-0012 replaced (the dialog now runs `/roster`). Kept for its evidence and method; see the 0.4.0 section above for the current flow.
+
 This round's shape changed completely (the "+" flow now injects an instruction
 and the lead agent calls `roster_spawn`), so the pass criterion changed too:
 prove the **model-facing** path end to end on the real host — template save,

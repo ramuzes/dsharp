@@ -166,8 +166,8 @@ const service = (scope, deps, name) => (deps?.[name] !== undefined ? deps[name] 
 
 /**
  * Resolve a template by record id or by EXACT display name — the two forms a
- * model may pass (it sees ids from `roster_template_list` and names from the
- * injected instruction).
+ * callers may pass (the lead sees ids from `roster_template_list`; the
+ * `/roster` command receives whatever the user typed).
  * @param {{ all(): Promise<Array<{ id: string, name: string }>>, byId(id: string): Promise<object | undefined> }} store
  * @param {unknown} reference - id or exact name.
  * @returns {Promise<object>} the matching template record.

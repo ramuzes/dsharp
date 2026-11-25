@@ -101,7 +101,7 @@ export function registerRosterTools(scope, service, deps, options = {}) {
         description: 'Optional one-off task for this member, taken from the current conversation (e.g. "review the payments module").',
       },
       model: {
-        description: 'Model for this member only, overriding the template default. Pass exactly the object the instruction gave; null makes the member inherit the session model. Omit only when the instruction gives no model.',
+        description: 'Model for this member only. An object overrides the template default; null makes the member inherit the session model; omit it to keep the template default',
         oneOf: [
           {
             type: 'object',

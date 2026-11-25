@@ -16,6 +16,7 @@
  * @param {{ ttlMs?: number, now?: () => number }} [options]
  * @returns {{
  *   readonly size: number,
+ *   peek(sessionId: string): { templateRef: string, model: object | null, task: string } | undefined,
  *   put(sessionId: string, request: { templateRef: string, model: object | null, task: string }): void,
  *   take(sessionId: string): { templateRef: string, model: object | null, task: string } | undefined,
  * }}
@@ -39,6 +40,11 @@ export function createStaging({ ttlMs = 120_000, now = () => Date.now() } = {}) 
     put(sessionId, request) {
       prune()
       slots.set(sessionId, { request, expiresAt: now() + ttlMs })
+    },
+    /** The pending request of one session WITHOUT consuming it (expired ones read as absent). */
+    peek(sessionId) {
+      prune()
+      return slots.get(sessionId)?.request
     },
     take(sessionId) {
       prune()

@@ -100,9 +100,10 @@ export function apply(ctx, config) {
       status.write('tools-pending')
 
       // ---- model-facing tools ---------------------------------------------
-      // `roster_spawn` is ALWAYS registered: the "+" flow injects an
-      // instruction that asks the agent to call it (ADR-0011), so gating it
-      // would break member creation. Only the authoring pair follows the
+      // `roster_spawn` is registered regardless of the toggle: the lead
+      // creates members with it from the conversation (ADR-0011; the dialog
+      // itself creates members through the `/roster` command, ADR-0012), so
+      // gating it would take that path away. Only the authoring pair follows the
       // `exposeAgentTools` toggle, which is structural (non-volatile Config):
       // edits apply after a plugin reload, not live. 'tools' is injected on
       // purpose — accessing

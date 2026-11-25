@@ -526,20 +526,22 @@ test('confirm stages the request for this session and runs /roster — nothing i
   assert.deepEqual(request, { sessionId: 'sess-1', templateId: 'tpl-researcher', model: null, task: '' })
   assert.deepEqual(view.sessions.calls, [
     { target: 'sess-1', options: { source: 'agent-roster' } },
-    { command: '/roster Researcher' },
-  ], 'the session receives one command line and never a prompt')
+    // Bare on purpose: a lost staged request must surface as the usage text,
+    // never fall back to adding a member with the template defaults.
+    { command: '/roster' },
+  ], 'the session receives one bare command line and never a prompt')
   const banner = find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success')
   assert.ok(banner, 'the success banner renders')
   assert.ok(texts(banner).includes('t:command.sent(name=Researcher)'))
 })
 
-test('picking another template stages that template and names it on the command line', async () => {
+test('picking another template stages that template; the command line stays bare', async () => {
   const view = await openModal()
   const reviewer = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
   await view.interact(() => { reviewer.props.onClick() })
   const request = await stagedRequest(view)
   assert.equal(request.templateId, 'tpl-reviewer')
-  assert.deepEqual(commandLines(view), ['/roster Reviewer'])
+  assert.deepEqual(commandLines(view), ['/roster'])
 })
 
 test('the task field travels to the staging as typed; the host trims it', async () => {
@@ -836,4 +838,32 @@ test('a not-ok listTemplates result renders the failure line, not the empty note
   const note = find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'error')
   assert.ok(note, 'the failure note renders')
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-note'] === 'empty'), undefined)
+})
+
+test('a host half without stageSpawn is reported as too old and runs no command', async () => {
+  const view = await openModal({ roster: healthyRoster({ stageSpawn: undefined }) })
+  await confirmModal(view)
+  const banner = errorBanner(view)
+  assert.ok(banner, 'the error banner renders')
+  assert.ok(texts(banner).some((line) => line.includes('t:command.noStage')), 'a dedicated message, not the channel one')
+  assert.deepEqual(commandLines(view), [])
+})
+
+test('a second confirm while the first is in flight stages nothing more', async () => {
+  let release
+  const pending = new Promise((resolve) => { release = resolve })
+  const view = await openModal({ sessions: { commandResult: pending } })
+  const confirmButton = () => {
+    const modal = find(view.vdom, (node) => node.props?.['data-fake-modal'] !== undefined && node)
+    return inModal(modal, (node) => node.props?.['data-agent-roster-confirm'] !== undefined)
+  }
+  await view.interact(() => { confirmButton().props.onClick() })
+  assert.equal(view.roster.staged.length, 1)
+  assert.equal(confirmButton().props.disabled, true, 'the confirm is disabled while in flight')
+  await view.interact(() => { confirmButton().props.onClick() })
+  assert.equal(view.roster.staged.length, 1, 'the guarded click stages nothing')
+  release({ ok: true, value: { matched: true } })
+  await view.interact()
+  assert.deepEqual(commandLines(view), ['/roster'])
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success'), 'the first request completes')
 })

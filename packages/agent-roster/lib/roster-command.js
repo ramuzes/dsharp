@@ -11,12 +11,15 @@
  * `/compact` is the first-party reference (compaction/command-compact).
  *
  * Two ways in, one spawn:
- *   - the dialog: stage the request (lib/staging.js), then run a bare
- *     `/roster` — the handler takes the staged request of its session;
+ *   - the dialog: stage the request (lib/staging.js), then run a BARE
+ *     `/roster` — the handler uses the staged request of its session. Bare on
+ *     purpose: if the request was lost (host remount, expiry) the command
+ *     answers its usage instead of silently adding a member with the template
+ *     defaults and none of the user's choices (review 2026-11-25);
  *   - typed: `/roster <template name or id>` — that template, its default
  *     model, no task (a standby member).
- * A staged request always wins over the typed argument: it is what the user
- * confirmed in the dialog moments earlier.
+ * A typed argument beside a pending dialog request must name the same
+ * template; the command refuses otherwise and the request stays pending.
  *
  * Containment (AGENTS.md): the handler never throws — the commands executor
  * settles a thrown handler as an error too, but its text would be the raw
@@ -58,12 +61,37 @@ export function createRosterCommand({ store, staging, spawn }) {
     input: { hint: 'template name or id' },
     async handler(invocation) {
       const sessionId = readString(invocation.agent?.session?.id)
-      // Taken BEFORE anything can fail: single use whatever happens next.
-      const staged = staging.take(sessionId)
-      const ref = (staged === undefined ? readString(invocation.rawInput) : readString(staged.templateRef)).trim()
+      const typed = readString(invocation.rawInput).trim()
+      // PEEK, not take: the refusals below must leave a pending dialog request
+      // in place. It is taken — single use — only once the run is committed.
+      const staged = staging.peek(sessionId)
+      const ref = (staged === undefined ? typed : readString(staged.templateRef)).trim()
       if (ref === '') return { kind: 'error', text: USAGE }
       try {
-        const template = await resolveTemplateRef(store, ref)
+        let template
+        if (staged === undefined) {
+          // Typed use: that template, its default model, no task.
+          template = await resolveTemplateRef(store, typed)
+        } else {
+          // A typed argument beside a pending dialog request must name the same
+          // template. Otherwise the request the user confirmed in the dialog
+          // would silently run under another name; refuse and leave it pending.
+          if (typed !== '' && typed !== ref) {
+            const named = await resolveTemplateRef(store, typed)
+            const pending = await resolveTemplateRef(store, ref)
+            if (named.id !== pending.id) {
+              return {
+                kind: 'error',
+                text: `/${NAME}: a request for "${pending.name}" is still pending for this session. `
+                  + `Run /${NAME} with no argument to use it, or wait for it to expire. `
+                  + `/ 本会话还有一条待处理的「${pending.name}」创建请求：不带参数运行 /${NAME} 使用它，或等待其过期。`,
+              }
+            }
+          }
+          // Committed: consumed now, whatever happens next.
+          staging.take(sessionId)
+          template = await resolveTemplateRef(store, ref)
+        }
         const result = await spawn({
           agent: invocation.agent,
           template,
@@ -76,7 +104,7 @@ export function createRosterCommand({ store, staging, spawn }) {
         if (invocation.signal.aborted) return { kind: 'error', text: 'Member creation cancelled. / 创建成员已取消。' }
         return { kind: 'error', text: failureText(error) }
       }
-    },
+    }
   }
 }
 

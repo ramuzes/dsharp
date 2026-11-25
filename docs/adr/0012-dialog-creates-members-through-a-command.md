@@ -17,8 +17,8 @@ DSH facts that decide the shape (v0.2.3-alpha.2 source):
 
 ## Decision
 
-- The dialog stages what the user chose — template, per-spawn model, first task — through `agentRoster.stageSpawn` (a one-shot request bound to the session, expiring), then runs `/roster <template name>` on the session. The transcript shows a compact command node and its outcome; no user bubble is written and no lead turn is spent.
-- `/roster` is a global host command. Typed as `/roster <template name or id>` it adds a standby member with the template's defaults; with a staged request of the invoking session it uses that request instead (the staged request wins over the typed argument).
+- The dialog stages what the user chose — template, per-spawn model, first task — through `agentRoster.stageSpawn` (a one-shot request bound to the session, expiring), then runs a **bare** `/roster` on the session (bare on purpose: a request lost in between — host remount, expiry — then answers the usage text instead of silently creating a member with the template defaults and none of the user's choices). The transcript shows a compact command node and its outcome; no user bubble is written and no lead turn is spent.
+- `/roster` is a global host command. Typed as `/roster <template name or id>` it adds a standby member with the template's defaults; with a staged request of the invoking session it uses that request instead. A typed argument beside a pending request must name the same template; otherwise the command refuses and the request stays pending.
 - The command and `roster_spawn` create members through the same `spawnFromTemplate`.
 - A member's opening message frames the role as identity ("who you are for your whole residency — not a task to perform now"), then either an explicit stand-by order (no task: inherited context is not an assignment; do nothing but reply one line and end the turn) or the user's first task.
 - Delivery: `parent` when the member is given a first task (it owes the lead a result), `caller` otherwise (a standby member settles silently and never wakes the lead).

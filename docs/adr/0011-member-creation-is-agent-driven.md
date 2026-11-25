@@ -23,6 +23,8 @@ Removed with this decision: the `spawnMember` remote (client-side spawn), the te
 
 ## Consequences
 
+> Dialog half superseded by ADR-0012 (2026-11-25): the bullets below about the injected instruction and the deferred "staged intent" describe what the dialog used to do; today only the lead's `roster_spawn` path remains as written here.
+
 - Creation has two hops: the injected user message (a real conversation turn, costs the session's model) and the agent's tool call. Accepted: that turn is where session context enters the member's task.
 - The injected instruction is visible in the session log — auditable by design, and the modal previews it before sending.
 - `roster_spawn` availability is a deployment fact: a profile that restricts tools or mounts no subagent runtime surfaces its typed error instead of creating a member.

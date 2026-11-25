@@ -29,7 +29,7 @@
  *   (packages/client/ui-primitives/src/index.ts:51): open/onClose/title/
  *   closeLabel/description/footer props, mask + Escape + aria-modal handled
  *   by the primitive (Modal.tsx ModalBaseProps) — kept intact; this task
- *   only gates the `onClose` it hands over (while the instruction is being injected).
+ *   only gates the `onClose` it hands over (while the member request is in flight).
  * - `conversation.input.overlay` list slot, scope session
  *   (packages/client/ui-conversation/src/client/contract/slots.ts:310) —
  *   the placement ui-message-feedback uses for its dialog
@@ -117,6 +117,7 @@ window.__ModuleLoader__.load({
       'command.sent': '已提交创建成员「{name}」的请求，结果见会话中的命令记录',
       'command.failed': '创建失败',
       'command.unmatched': '宿主没有 /roster 命令：请确认 Agent roster 插件已启用且为最新版本',
+      'command.noStage': '宿主侧插件过旧，不支持从弹窗创建成员；请更新并重新加载 Agent roster',
       'command.unavailable': '会话命令通道不可用，无法创建成员',
       'model.effort.label': '推理力度（可选）',
       'model.effort.default': '模型默认',
@@ -165,6 +166,7 @@ window.__ModuleLoader__.load({
       'command.sent': 'Requested member «{name}»; the outcome appears in the command record of this conversation',
       'command.failed': 'Creation failed',
       'command.unmatched': 'The host has no /roster command: make sure the Agent roster plugin is enabled and up to date',
+      'command.noStage': 'The host half is too old to create members from the dialog; update and reload Agent roster',
       'command.unavailable': 'The session command channel is unavailable; cannot create the member',
       'model.effort.label': 'Reasoning effort (optional)',
       'model.effort.default': 'Model default',
@@ -207,8 +209,8 @@ window.__ModuleLoader__.load({
     /**
      * Optional lookup of one client service by name — `remote.agentRoster`
      * (our mounted namespace), `remote.session` (the model catalog), and
-     * `sessions` (the session object layer the member instruction is injected
-     * through). Try-guarded ctx.get: undefined when the service is absent on
+     * `sessions` (the session object layer the `/roster` command line is
+     * admitted through). Try-guarded ctx.get: undefined when the service is absent on
      * this host, so every consumer degrades instead of throwing.
      */
     const optService = (name) => {
@@ -325,9 +327,9 @@ window.__ModuleLoader__.load({
     }
 
     // -------------------------------------------------------------------------
-    // Shared building blocks: the Settings roster manager's add/edit forms and
-    // the modal's instruction preview render the same role fields and the same
-    // ModelRef selector.
+    // Shared building blocks: the Settings roster manager's add/edit forms
+    // render the role fields, and both they and the modal's member-model
+    // picker render the same ModelRef selector.
     // -------------------------------------------------------------------------
 
     /**
@@ -820,14 +822,17 @@ window.__ModuleLoader__.load({
         setOutcome(null)
         try {
           const ns = rosterNs()
-          if (ns?.stageSpawn === undefined) throw new Error(t('command.unavailable'))
+          if (ns?.stageSpawn === undefined) throw new Error(t('command.noStage'))
           // Staging resolves the template NOW, so an unknown one fails here,
           // in front of the user, instead of inside the command node.
           await settle(ns.stageSpawn({ sessionId, templateId: selected.id, model: memberModel, task }))
           const sessions = optService('sessions')
           if (sessions?.using === undefined) throw new Error(t('command.unavailable'))
           await sessions.using(sessionId, { source: 'agent-roster' }, async (reference) => {
-            const result = await reference.binding.session.command(`/roster ${selected.name}`)
+            // Bare on purpose: a lost staged request then surfaces as the
+            // command's usage text instead of a member created with the
+            // template defaults and none of the user's choices.
+            const result = await reference.binding.session.command('/roster')
             if (result?.ok === false) throw result.error ?? new Error(t('command.failed'))
             if (result.value?.matched !== true) throw new Error(t('command.unmatched'))
             return result

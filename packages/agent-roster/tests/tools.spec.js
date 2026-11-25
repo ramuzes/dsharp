@@ -34,6 +34,17 @@ const EXEC = { callId: 'call-1' }
 
 const toolOf = (scope, name) => scope.registered.find((t) => t.name === name)
 
+/** An inject scope exposing ONLY the named services: anything else throws, as cordis does (AGENTS.md 3). */
+function strictScope(services) {
+  return new Proxy({ ...services }, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') return undefined
+      if (Object.prototype.hasOwnProperty.call(target, prop)) return target[prop]
+      throw new Error(`cannot get property ${String(prop)} without inject`)
+    },
+  })
+}
+
 /** Fake inject scope exposing ONLY the injected `tools` service. */
 function makeToolsScope() {
   const registered = []
@@ -544,7 +555,7 @@ test('apply registers the /roster command on its own inject callback (commands +
         },
       },
     }
-    const off = callback.fn(scope)
+    const off = callback.fn(strictScope(scope))
     assert.deepEqual(registered.map((definition) => definition.name), ['roster'])
     assert.equal(typeof off, 'function')
     let record = JSON.parse(readFileSync(file, 'utf8'))
@@ -564,7 +575,7 @@ test('after both callbacks ran the status record names the tools and the command
     const scope = makeToolsScope()
     scope.subagents = makeSubagents()
     scope.commands = { register: () => () => {} }
-    for (const callback of host.injects) callback.fn(scope)
+    for (const callback of host.injects) callback.fn(strictScope(scope))
     const record = JSON.parse(readFileSync(file, 'utf8'))
     assert.equal(record.stage, 'tools-registered')
     assert.deepEqual(record.detail, { authoring: true, command: true })
@@ -579,7 +590,7 @@ test('a failed command registration writes command-failed with the error text an
     const boom = new Error('command "roster" is already registered')
     const scope = { subagents: makeSubagents(), commands: { register: () => { throw boom } } }
     const callback = host.injects.find((entry) => entry.names.includes('commands'))
-    assert.throws(() => callback.fn(scope), (error) => error === boom, 'contained, then rethrown loudly')
+    assert.throws(() => callback.fn(strictScope(scope)), (error) => error === boom, 'contained, then rethrown loudly')
     const record = JSON.parse(readFileSync(file, 'utf8'))
     assert.equal(record.stage, 'command-failed')
     assert.equal(record.detail, String(boom))
