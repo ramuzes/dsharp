@@ -612,7 +612,13 @@ window.__ModuleLoader__.load({
         // DOM stays stable under this pattern too).
         onEffort !== undefined
           ? (() => {
-            const effortRows = (chosen?.efforts ?? []).map((item) => ({ key: String(item?.id ?? ''), label: String(item?.name ?? item?.id ?? '') }))
+            const advertised = (chosen?.efforts ?? []).map((item) => ({ key: String(item?.id ?? ''), label: String(item?.name ?? item?.id ?? '') }))
+            // A stored effort the catalog no longer advertises stays
+            // selectable, so the trigger never reads "model default" while
+            // that effort is still the value being sent.
+            const effortRows = effort !== '' && !advertised.some((row) => row.key === effort)
+              ? [...advertised, { key: effort, label: effort }]
+              : advertised
             const visible = effortRows.length > 0
             return h('div', {
               className: 'agent-roster-effort',
@@ -681,9 +687,15 @@ window.__ModuleLoader__.load({
         }))
     }
 
-    /** One stored ModelRef as a stable key: JSON [provider, model], or null. */
+    /**
+     * One stored ModelRef as a stable key: JSON [provider, model], or null.
+     * A ref whose provider or model is empty is no usable route and reads as
+     * "no default" (null) everywhere — the picker, the chip, and the synthetic
+     * editor row — instead of becoming an explicit choice the host refuses.
+     */
     const refKey = (ref) => ref !== null && typeof ref === 'object'
-      && typeof ref.provider === 'string' && typeof ref.model === 'string'
+      && typeof ref.provider === 'string' && ref.provider !== ''
+      && typeof ref.model === 'string' && ref.model !== ''
       ? JSON.stringify([ref.provider, ref.model])
       : null
 
@@ -827,6 +839,10 @@ window.__ModuleLoader__.load({
         setOutcome(null)
       }
       const pickEffort = (id) => {
+        // An effort pick is a choice about the model in effect: capture that
+        // model too, or the pick would read as "inherit the session model"
+        // while the user only asked for another effort (review 2026-11-25).
+        setChoice(modelChoice)
         setEffort(id)
         setChoiceFor(effectiveId)
         setOutcome(null)

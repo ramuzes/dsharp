@@ -188,7 +188,10 @@ export async function spawnFromTemplate(scope, deps, input) {
     const parsedChoice = explicit === null ? undefined : ModelRef.safeParse(explicit)
     if (explicit === null) {
       model = null
-    } else if (!parsedChoice.success || parsedChoice.data.provider === '' || parsedChoice.data.model === '') {
+    } else if (!parsedChoice.success || parsedChoice.data.provider === '' || parsedChoice.data.model === ''
+      || parsedChoice.data.reasoningEffort === '') {
+      // An empty effort is refused for the same reason the host's own
+      // delegation tool refuses it (tool-subagent/src/index.ts:92).
       const issues = parsedChoice.success
         ? [{ path: 'provider, model', message: 'provider and model must be non-empty' }]
         : parsedChoice.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))

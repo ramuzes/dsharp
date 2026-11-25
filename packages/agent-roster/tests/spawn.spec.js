@@ -353,7 +353,9 @@ test('an omitted model keeps the template default (the pre-override contract)', 
 test('an invalid explicit model rejects with roster/bad-request and spawns nothing', async () => {
   const root = { id: 'root-1', name: LEAD }
   const subagents = fakeSubagents({ root })
-  for (const model of [{ provider: '', model: 'x' }, { provider: 'acme' }, 'acme/cheap', 42]) {
+  // An empty effort is refused too: the host's own delegation tool requires a
+  // non-empty effort (tool-subagent/src/index.ts:92).
+  for (const model of [{ provider: '', model: 'x' }, { provider: 'acme' }, 'acme/cheap', 42, { provider: 'acme', model: 'cheap', reasoningEffort: '' }]) {
     await assert.rejects(
       () => spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(ROUTED), model }),
       (error) => remoteErrorOf(error)?.code === 'roster/bad-request',

@@ -461,3 +461,51 @@ test('an invalid model argument maps to model-facing text instead of throwing', 
   assert.match(out, /roster call failed \(roster\/bad-request\)/)
   assert.equal(ctx.subagents.calls.startActivation.length, 0)
 })
+
+test('a wrong-typed model argument is rejected by the real tools library before the tool runs', async () => {
+  // The REAL @deepseek-ai/dsh-tools validates arguments against the parameter
+  // schema in its execute wrapper (lib/index.js:864): a value matching no
+  // `oneOf` branch throws ToolArgsError (INVALID_ARGS) and never reaches the
+  // plugin. This is the evidence that the nullable-object schema is accepted
+  // and enforced by the framework the host runs.
+  const ctx = await spawnToolHarness()
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  for (const model of ['acme/cheap', 42, { provider: 'acme' }]) {
+    await assert.rejects(
+      () => ctx.tool.execute({ template: ctx.saved.id, model }, { agent: caller, callId: 'c1' }),
+      (error) => error?.code === 'INVALID_ARGS' && /"model" must match exactly one oneOf branch/.test(String(error?.message)),
+      `expected INVALID_ARGS for ${JSON.stringify(model)}`,
+    )
+  }
+  assert.equal(ctx.subagents.calls.startActivation.length, 0)
+})
+
+test('roster_spawn refuses a schema-valid but empty reasoning effort without spawning', async () => {
+  // Schema-valid (a string), so it reaches the plugin: an empty effort is no
+  // usable effort and must not quietly become "no effort".
+  const ctx = await spawnToolHarness()
+  const caller = { id: 'root-1', name: 'lead' }
+  ctx.subagents.rootOf = () => caller
+  const out = await ctx.tool.execute(
+    { template: ctx.saved.id, model: { provider: 'acme', model: 'cheap', reasoning_effort: '' } },
+    { agent: caller, callId: 'c1' },
+  )
+  assert.match(out, /roster call failed \(roster\/bad-request\)/)
+  assert.equal(ctx.subagents.calls.startActivation.length, 0)
+})
+
+test('roster_template_save refuses a default model with an empty provider or model', async () => {
+  // The real service over the real store: a stored ref with empty parts is
+  // unusable as a route, so the write boundary rejects it instead of leaving a
+  // default that only fails at spawn time.
+  const { service } = makeRoster()
+  for (const defaultModel of [{ provider: '', model: 'm' }, { provider: 'acme', model: '' }]) {
+    await assert.rejects(
+      () => service.saveTemplate({ name: 'Broken', prompt: 'p', defaultModel }),
+      (error) => error?.code === 'roster/bad-request' && Array.isArray(error?.details?.issues),
+      `expected roster/bad-request for ${JSON.stringify(defaultModel)}`,
+    )
+  }
+  assert.equal((await service.listTemplates()).length, 0)
+})

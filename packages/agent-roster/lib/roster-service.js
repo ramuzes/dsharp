@@ -20,6 +20,19 @@ import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protoc
 import { readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
 
+/**
+ * The WRITE schema: the stored record shape plus the rule that a default model
+ * is a usable route — empty provider or model parts are refused here, where
+ * both callers (the Settings editor and roster_template_save) meet, instead of
+ * being stored and refused only at spawn time. Deliberately stricter than the
+ * READ schema (`RoleTemplate`): a record written before this rule must still
+ * load, and one bad record must never take the whole roster listing down.
+ */
+const RoleTemplateInput = RoleTemplate.extend({
+  defaultModel: ModelRef.refine((ref) => ref.provider !== '' && ref.model !== '',
+    { message: 'provider and model must be non-empty' }).nullable().default(null),
+})
+
 /** Prototype marker key the protocol reads (REMOTE_METHOD_DESCRIPTOR). */
 const REMOTE_METHODS = '@deepseek-ai/dsh-typert-protocol/remote-methods'
 
@@ -73,7 +86,7 @@ export class AgentRosterService extends TypertRemoteService {
     const now = new Date().toISOString()
     let record
     try {
-      record = RoleTemplate.parse({
+      record = RoleTemplateInput.parse({
         ...(existing ?? {}),
         name,
         description: input?.description === undefined ? existing?.description ?? '' : readString(input.description),

@@ -821,3 +821,46 @@ test('re-picking the template default model restores its stored effort', async (
   assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
   assert.ok(previewText(view).includes('"reasoning_effort":"high"'))
 })
+
+test('changing only the effort keeps the template model (review finding MAJOR)', async () => {
+  // The pick must capture the model that is in effect, not turn the spawn into
+  // "inherit": the user asked for another effort, not for another model.
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-effort', 'low')
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], REASONER)
+  const instruction = previewText(view)
+  assert.ok(instruction.includes('Member model for this spawn: deepseek / reasoner · low'))
+  assert.ok(instruction.includes('and model: {"provider":"deepseek","model":"reasoner","reasoning_effort":"low"}'))
+  assert.equal(instruction.includes('inherit the session model'), false)
+})
+
+test('a stored default with an empty provider or model is treated as no default', async () => {
+  const broken = { ...TEMPLATES[0], defaultModel: { provider: 'acme', model: '' } }
+  const view = await openModal({ roster: serving(broken), extras: withCatalog })
+  assert.equal(modelTrigger(view).props['data-agent-roster-model'], 'inherit')
+  assert.ok(previewText(view).includes('and model: null'))
+})
+
+test('a stored effort the catalog no longer advertises stays visible and selectable', async () => {
+  // chat advertises no efforts; a stored `high` must not be shown as "model
+  // default" while still being sent.
+  const stale = { ...TEMPLATES[0], defaultModel: { provider: 'deepseek', model: 'chat', reasoningEffort: 'high' } }
+  const view = await openModal({ roster: serving(stale), extras: withCatalog })
+  assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-effort-area'] === 'on'), 'the stored effort is offered')
+  assert.equal(effortTrigger(view).props['data-agent-roster-menu-value'], 'high')
+  assert.ok(texts(effortTrigger(view)).includes('high'))
+  assert.ok(previewText(view).includes('Member model for this spawn: deepseek / chat · high'))
+})
+
+test('an override is remembered per template while the dialog stays open', async () => {
+  // Deliberate (SPEC): switching templates shows the NEW template's default;
+  // switching back restores the pick made for that template.
+  const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT), extras: withCatalog })
+  await pickMenuOption(view, 'data-agent-roster-model', CHAT)
+  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
+  const back = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-researcher')
+  await view.interact(() => { scout.props.onClick() })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
+  await view.interact(() => { back.props.onClick() })
+  assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], CHAT)
+})
