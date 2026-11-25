@@ -433,6 +433,7 @@ window.__ModuleLoader__.load({
      * catalogs are small.
      * @param {any} props - `marker` (trigger data attribute), `markerValue`
      *   (its value for the current choice), `value` (current key; '' = the
+     *   `noneLabel` entry; omit `noneLabel` for a menu with no such entry),
      *   `noneLabel` entry), `noneLabel`, `groups` (catalogOptgroups shape;
      *   null = plain ungrouped rows), `rows` (ungrouped flat options),
      *   `onPick(key)`, `disabled`, `ariaLabel`, `triggerClass`.
@@ -551,8 +552,10 @@ window.__ModuleLoader__.load({
           ? (typeof document === 'undefined'
               ? h('div', { className: 'agent-roster-menu-inline' },
                   h('div', { className: 'agent-roster-menu-groups' },
-                    h('div', { key: 'none', role: 'group' },
-                      rowButton({ key: '', label: noneLabel }, value === '')),
+                    ...(noneLabel === undefined || noneLabel === null ? [] : [
+                      h('div', { key: 'none', role: 'group' },
+                        rowButton({ key: '', label: noneLabel }, value === '')),
+                    ]),
                     groups !== null && groups !== undefined
                       ? groups.map((group) => h(MenuGroup, { key: group.name, label: group.name },
                           group.rows.map((row) => rowButton(row, row.key === value))))
@@ -565,8 +568,10 @@ window.__ModuleLoader__.load({
                   style: { '--dsh-roster-anchor': anchorVar },
                 },
                   h('div', { className: 'agent-roster-menu-groups' },
-                    h('div', { key: 'none', role: 'group' },
-                      rowButton({ key: '', label: noneLabel }, value === '')),
+                    ...(noneLabel === undefined || noneLabel === null ? [] : [
+                      h('div', { key: 'none', role: 'group' },
+                        rowButton({ key: '', label: noneLabel }, value === '')),
+                    ]),
                     groups !== null && groups !== undefined
                       ? groups.map((group) => h(MenuGroup, { key: group.name, label: group.name },
                           group.rows.map((row) => rowButton(row, row.key === value))))
@@ -902,18 +907,24 @@ window.__ModuleLoader__.load({
           templates.phase === 'ready' && list.length === 0
             ? h('div', { className: 'agent-roster-note', 'data-agent-roster-note': 'empty' }, t('templates.none')) : null,
           templates.phase === 'ready' && list.length > 0
-            ? h('div', { className: 'agent-roster-templates', role: 'listbox', 'aria-label': t('templates.title') },
-              list.map((tpl) => h('button', {
-                type: 'button',
-                key: tpl.id,
-                role: 'option',
-                className: 'agent-roster-template',
-                'data-agent-roster-template': tpl.id,
-                'aria-selected': tpl.id === effectiveId ? 'true' : 'false',
-                onClick: () => { setSelectedId(tpl.id); setOutcome(null) },
-              },
-              h('span', { className: 'agent-roster-template-name' }, String(tpl.name ?? '')),
-              tpl.description === '' ? null : h('span', { className: 'agent-roster-template-desc' }, String(tpl.description)))))
+            ? h('div', { className: 'agent-roster-templates' },
+              // The same host-style dropdown as the model pickers (name-only
+              // rows, the current template checked): a large roster scrolls
+              // inside the portaled menu instead of overflowing the dialog.
+              h(ModelMenu, {
+                marker: 'data-agent-roster-template',
+                markerValue: effectiveId,
+                value: effectiveId,
+                groups: null,
+                rows: list.map((tpl) => ({ key: tpl.id, label: String(tpl.name ?? '') })),
+                onPick: (id) => { setSelectedId(id); setOutcome(null) },
+                disabled: sending,
+                ariaLabel: t('templates.title'),
+                triggerClass: 'agent-roster-menu-trigger-form',
+              }),
+              selected?.description
+                ? h('p', { className: 'agent-roster-hint', 'data-agent-roster-template-desc': '' }, String(selected.description))
+                : null)
             : null),
         selected === null
           ? null
@@ -1284,12 +1295,7 @@ window.__ModuleLoader__.load({
 .agent-roster-banner-success { color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-interactive-bg-hover); }
 .agent-roster-banner-error { display: flex; flex-direction: column; gap: 2px; color: var(--dsw-alias-label-error); background: var(--dsw-alias-interactive-bg-hover); }
 .agent-roster-error-label { font-weight: 500; }
-.agent-roster-templates { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; }
-.agent-roster-template { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 0.5px solid transparent; border-radius: var(--dsw-radius-md); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.agent-roster-template:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.agent-roster-template[aria-selected='true'] { border-color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-interactive-bg-active); }
-.agent-roster-template-name { font-size: 13px; font-weight: 500; line-height: 1.5; }
-.agent-roster-template-desc { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
+.agent-roster-templates { display: flex; flex-direction: column; gap: 6px; }
 .agent-roster-input { box-sizing: border-box; width: 100%; height: 34px; padding: 0 12px; font: inherit; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); }
 .agent-roster-input:focus-visible { outline: none; border-color: var(--dsw-alias-state-business-primary); }
 .agent-roster-input:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
@@ -1380,7 +1386,7 @@ window.__ModuleLoader__.load({
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
-.agent-roster-menu-groups { min-height: 0; overflow-x: hidden; overflow-y: auto; }
+.agent-roster-menu-groups { min-height: 0; max-height: min(60vh, 580px); overflow-x: hidden; overflow-y: auto; }
 .agent-roster-menu-option {
   box-sizing: border-box;
   display: flex;

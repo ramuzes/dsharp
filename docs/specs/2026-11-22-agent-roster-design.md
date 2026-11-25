@@ -92,7 +92,7 @@ The user flow: click "+" → "Add agent member" → pick a template → optional
 
 **Settings section** (`settings.section`, id `agent-roster`): the roster manager — list, add, edit, delete, per-template default model. No AI-draft block.
 
-**Shared UI**: the model chooser is the host model-picker dropdown pattern (CSS anchor positioning + portaled `MenuSurface` + provider-grouped rows, copied and renamed per the practices rule); the same `ModelRefEditor` (model plus reasoning effort) serves the Settings template editor and the dialog's per-spawn override.
+**Shared UI**: the model chooser is the host model-picker dropdown pattern (CSS anchor positioning + portaled `MenuSurface` + provider-grouped rows, copied and renamed per the practices rule); the same `ModelRefEditor` (model plus reasoning effort) serves the Settings template editor and the dialog's per-spawn override. Templates are chosen in the same host-style dropdown (name-only rows, the selected template's description under the trigger), so a large roster scrolls inside the menu instead of overflowing the dialog.
 
 ### Testing decisions
 

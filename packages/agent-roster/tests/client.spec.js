@@ -518,6 +518,39 @@ async function stagedRequest(view) {
 /** The command lines the dialog ran against the session. */
 const commandLines = (view) => view.sessions.calls.filter((call) => call.command !== undefined).map((call) => call.command)
 const errorBanner = (view) => find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'error')
+/** The template dropdown trigger (asserted present so a missing picker fails as an assertion). */
+function templateTrigger(view) {
+  const trigger = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] !== undefined)
+  assert.ok(trigger, 'the template dropdown trigger renders')
+  return trigger
+}
+
+test('the template picker is a dropdown whose trigger names the selected template', async () => {
+  const view = await openModal()
+  // No flat list of template buttons any more: one host-style dropdown, so a
+  // large roster never overflows the dialog (user request, 2026-11-25).
+  assert.equal(find(view.vdom, (node) => node.props?.role === 'listbox'), undefined)
+  assert.equal(templateTrigger(view).props['data-agent-roster-menu-value'], 'tpl-researcher')
+  assert.ok(texts(templateTrigger(view)).includes('Researcher'))
+})
+
+test('opening the template dropdown lists every template by name, the current one checked, with no empty option', async () => {
+  const view = await openModal()
+  await view.interact(() => { templateTrigger(view).props.onClick() })
+  const options = findAll(view.vdom, (node) => node.props?.['data-agent-roster-menu-option'] !== undefined)
+  assert.deepEqual(options.map((option) => option.props['data-agent-roster-menu-option']),
+    ['tpl-researcher', 'tpl-reviewer'], 'every template and no "none" row: a template is always selected')
+  assert.deepEqual(options.map((option) => option.props['aria-checked']), ['true', 'false'])
+  assert.ok(texts(options[1]).includes('Reviewer'))
+  assert.equal(texts(options[1]).includes('Reviews code diffs'), false, 'rows carry names only')
+})
+
+test('the selected template description shows under the trigger when it has one', async () => {
+  const view = await openModal()
+  const hint = find(view.vdom, (node) => node.props?.['data-agent-roster-template-desc'] !== undefined)
+  assert.ok(hint, 'the description line renders for a template with a description')
+  assert.ok(texts(hint).includes('Finds and reads sources'))
+})
 
 test('confirm stages the request for this session and runs /roster — nothing is injected into the conversation', async () => {
   const view = await openModal()
@@ -537,8 +570,7 @@ test('confirm stages the request for this session and runs /roster — nothing i
 
 test('picking another template stages that template; the command line stays bare', async () => {
   const view = await openModal()
-  const reviewer = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
-  await view.interact(() => { reviewer.props.onClick() })
+  await pickMenuOption(view, 'data-agent-roster-template', 'tpl-reviewer')
   const request = await stagedRequest(view)
   assert.equal(request.templateId, 'tpl-reviewer')
   assert.deepEqual(commandLines(view), ['/roster'])
@@ -582,8 +614,7 @@ test('switching templates resets the member model to the new template default', 
   // No catalog face here: the picker still names each default through its
   // lossless synthetic row, so a missing catalog never blocks the choice.
   const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT) })
-  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
-  await view.interact(() => { scout.props.onClick() })
+  await pickMenuOption(view, 'data-agent-roster-template', 'tpl-reviewer')
   assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
   assert.deepEqual((await stagedRequest(view)).model, { provider: 'acme', model: 'scout-1' })
 })
@@ -638,11 +669,11 @@ test('an override is remembered per template while the dialog stays open', async
   // switching back restores the pick made for that template.
   const view = await openModal({ roster: serving(ROUTED_RESEARCHER, ROUTED_SCOUT), extras: withCatalog })
   await pickMenuOption(view, 'data-agent-roster-model', CHAT)
-  const scout = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-reviewer')
-  const back = find(view.vdom, (node) => node.props?.['data-agent-roster-template'] === 'tpl-researcher')
-  await view.interact(() => { scout.props.onClick() })
+  const scout = 'tpl-reviewer'
+  const back = 'tpl-researcher'
+  await pickMenuOption(view, 'data-agent-roster-template', scout)
   assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'scout-1']))
-  await view.interact(() => { back.props.onClick() })
+  await pickMenuOption(view, 'data-agent-roster-template', back)
   assert.equal(modelTrigger(view).props['data-agent-roster-menu-value'], CHAT)
   assert.deepEqual((await stagedRequest(view)).model, { provider: 'deepseek', model: 'chat' })
 })
