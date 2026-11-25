@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-roster",
-  "version": "0.4.0",
+  "version": "0.2.2",
   "description": "A profile-wide roster of role templates with one-click team building: the \"+\" menu creates the member through the /roster command (recorded like /compact: no message in the conversation, no turn of the lead) and the member stands by until given work. Template prompt frozen; the model defaults to the template's and can be overridden per spawn. Includes roster_spawn / roster_template_save / roster_template_list agent tools and an Agent roster manager in Settings.",
   "type": "module",
   "main": "index.js",

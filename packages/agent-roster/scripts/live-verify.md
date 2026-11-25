@@ -1,8 +1,8 @@
 # dsh-agent-roster Live-Host Verification Runbook
 
-## 2026-11-25 · 0.4.0 — command-driven creation and standby members (ADR-0012), verified on the live profile
+## 2026-11-25 · 0.2.2 — command-driven creation and standby members (ADR-0012), verified on the live profile
 
-Environment: profile `web`, bundle `dsh-agent-roster-0.4.0.tgz` (commit `6926198`),
+Environment: profile `web`, bundle `dsh-agent-roster-0.2.2.tgz` (code of commit `6926198`; the unreleased versions were renumbered to patch releases: 0.3.0 → 0.2.1, 0.4.0 → 0.2.2),
 host 0.2.3-alpha.2. Bash cannot reach the host from the sandbox, so the evidence
 is the plugin's own stage record plus the session logs on disk.
 
@@ -43,7 +43,7 @@ the bare command line.
 
 ## 2026-11-23 · 0.2.0 — agent-driven creation (ADR-0011), verified on the live profile
 
-> Historical record: this round verified the 0.2.0 injection flow, which ADR-0012 replaced (the dialog now runs `/roster`). Kept for its evidence and method; see the 0.4.0 section above for the current flow.
+> Historical record: this round verified the 0.2.0 injection flow, which ADR-0012 replaced (the dialog now runs `/roster`). Kept for its evidence and method; see the 0.2.2 section above for the current flow.
 
 This round's shape changed completely (the "+" flow now injects an instruction
 and the lead agent calls `roster_spawn`), so the pass criterion changed too:
