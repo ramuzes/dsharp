@@ -16,6 +16,10 @@
  * token injected per-invocation as a Basic auth extraHeader via
  * GIT_CONFIG_KEY_n environment entries (see lib/git-exec.js).
  *
+ * Pushes are fast-forward-only unless the agent asks for force, and a force
+ * push is lease-protected on the tracking ref of the last fetch (see
+ * gitlab_git_push in lib/agent-tools.js).
+ *
  * Branch deletion is merged-only by design: local deletes go through
  * `git branch -d`, remote deletes verify via the compare API first.
  *

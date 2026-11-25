@@ -37,7 +37,30 @@ export const GITLAB_PROMPT_TEXT =
   + 'Branch deletion is merged-only: gitlab_stale_branches lists remote branches already merged, and gitlab_delete_branch refuses unmerged branches. '
   + 'Pipelines are triggered and watched with gitlab_pipeline_* / gitlab_job_get (job log tail), and scheduled pipelines with gitlab_schedule_*. '
   + 'Merge requests: gitlab_mr_create / gitlab_mr_update (state_event close cancels one) / gitlab_mr_comment (plain or line-position review) / gitlab_mr_get (include_changes reads the diff). '
+  + 'gitlab_mr_create fetches the target branch first and refuses while the source is behind it: gitlab_git_pull (rebase) then gitlab_git_push with force (lease-protected), and retry. '
   + 'Issues, milestones, and releases have gitlab_issue_* / gitlab_milestone_* / gitlab_release_* tools.'
+
+/**
+ * The local ref a force-push lease is taken on for a remote ref name:
+ * branches lease on their remote-tracking ref, tags on the tag itself.
+ * @returns {string | null} null when the remote ref is neither.
+ */
+function leaseTrackingRef(remoteRef) {
+  if (remoteRef.startsWith('refs/tags/')) return remoteRef
+  if (remoteRef.startsWith('refs/')) return null
+  return `refs/remotes/origin/${remoteRef}`
+}
+
+/**
+ * Fetch argv for a resolved fetch target (shared by fetch, and the freshness
+ * check before opening a merge request).
+ */
+function fetchArgsFor(target, { prune = true } = {}) {
+  const p = prune ? ['--prune'] : []
+  return target.mode === 'remote'
+    ? ['fetch', ...p, '--tags', 'origin']
+    : ['fetch', ...p, '--tags', target.url, '+refs/heads/*:refs/remotes/origin/*']
+}
 
 /** Map one tool failure to model-facing text; never rethrow into the host. */
 function failure(error) {
@@ -147,9 +170,7 @@ export function registerAgentTools(ctx, deps) {
       try {
         const dir = repoDir(args, exec)
         const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
-        const gitArgs = target.mode === 'remote'
-          ? ['fetch', ...(args.prune === false ? [] : ['--prune']), '--tags', 'origin']
-          : ['fetch', ...(args.prune === false ? [] : ['--prune']), '--tags', target.url, '+refs/heads/*:refs/remotes/origin/*']
+        const gitArgs = fetchArgsFor(target, { prune: args.prune !== false })
         const { stdout, stderr } = await gitRun(gitArgs, dir, exec, { token: token(), timeoutMs: gitTimeout() })
         return `Fetched.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
@@ -158,11 +179,12 @@ export function registerAgentTools(ctx, deps) {
 
   register(defineTool({
     name: 'gitlab_git_push',
-    description: 'Push a local branch or tag ref to the GitLab remote, Host-side with the configured token. No force-push: the remote ref is only fast-forwarded; rebase or merge first when the remote is ahead.',
+    description: 'Push a local branch or tag ref to the GitLab remote, Host-side with the configured token. By default the remote ref is only fast-forwarded. Set force after a rebase: the push is then lease-protected (it fails when the remote moved since the last gitlab_git_fetch instead of overwriting it).',
     parameters: {
       repo: { type: 'string', description: 'Repository directory inside the workspace (default: workspace root).' },
       from: { type: 'string', required: true, description: 'Local ref to push, e.g. "main", "feature/x", or "refs/tags/v1.2.0".' },
       to: { type: 'string', description: 'Remote ref to update (default: same as from).' },
+      force: { type: 'boolean', description: 'Allow a non-fast-forward push (e.g. after rebasing). Lease-protected: refused when the remote ref changed since the last fetch; gitlab_git_fetch then retry.' },
       project: { type: 'string', description: 'Project path/id; needed when the clone has no origin remote.' },
     },
     output: TEXT_OUTPUT,
@@ -175,9 +197,23 @@ export function registerAgentTools(ctx, deps) {
         // token rides the env-injected http.extraHeader for any https target.
         // The stored origin remote is never rewritten (an ssh origin stays ssh
         // for the user's own tooling).
-        const refspec = `${args.from}:${args.to ?? args.from}`
+        const remoteRef = args.to ?? args.from
+        const refspec = `${args.from}:${remoteRef}`
         const pushTarget = target.mode === 'remote' ? 'origin' : target.url
-        const { stdout, stderr } = await gitRun(['push', pushTarget, refspec], dir, exec, { token: token(), timeoutMs: gitTimeout() })
+        const forceArgs = []
+        if (args.force === true) {
+          // Lease on what the local clone last fetched for this remote ref. A
+          // bare --force-with-lease cannot do this: pushing to an explicit URL
+          // (ssh-origin clones) has no remote name to resolve a tracking ref
+          // from, and git rejects it as "stale info".
+          const tracking = leaseTrackingRef(remoteRef)
+          if (tracking === null) return `Refusing to force-push "${remoteRef}": only branch names and refs/tags/<name> are supported.`
+          const base = await gitRun(['rev-parse', '--verify', tracking], dir, exec, { timeoutMs: gitTimeout() })
+            .then((r) => r.stdout.trim(), () => null)
+          if (base === null || base === '') return `Refusing to force-push "${remoteRef}": the local clone has no tracking ref ${tracking} to lease on. Run gitlab_git_fetch first, then retry.`
+          forceArgs.push(`--force-with-lease=${remoteRef}:${base}`)
+        }
+        const { stdout, stderr } = await gitRun(['push', ...forceArgs, pushTarget, refspec], dir, exec, { token: token(), timeoutMs: gitTimeout() })
         return `Pushed ${refspec}.${stdout.trim() ? `\n${stdout.trim()}` : ''}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
       } catch (error) { return failure(error) }
     },
@@ -197,9 +233,7 @@ export function registerAgentTools(ctx, deps) {
       try {
         const dir = repoDir(args, exec)
         const target = await resolveFetchTarget({ run: (a, c, e) => gitRun(a, c, e, { timeoutMs: gitTimeout() }), repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
-        const fetchArgs = target.mode === 'remote'
-          ? ['fetch', '--prune', '--tags', 'origin']
-          : ['fetch', '--prune', '--tags', target.url, '+refs/heads/*:refs/remotes/origin/*']
+        const fetchArgs = fetchArgsFor(target)
         await gitRun(fetchArgs, dir, exec, { token: token(), timeoutMs: gitTimeout() })
         const upstream = args.branch ? `origin/${args.branch}` : '@{upstream}'
         const integrate = args.strategy === 'merge'
@@ -614,27 +648,70 @@ export function registerAgentTools(ctx, deps) {
   }))
 
   // ---- merge requests -------------------------------------------------------
+  /**
+   * Freshness check before a merge request is opened: fetch, then count the
+   * commits the target branch has that the source lacks. A source behind its
+   * target is refused, so the agent rebases first (a rebase flow needs a
+   * force push afterwards; the MR then shows only its own commits).
+   * @returns {Promise<{ check: 'current' | 'skipped' } | string>} the outcome, or refusal text.
+   */
+  const checkTargetFreshness = async (args, exec) => {
+    const dir = repoDir(args, exec)
+    const opts = { timeoutMs: gitTimeout() }
+    let target
+    try {
+      // No clone in the workspace (or one without a usable remote): nothing
+      // to compare against locally, the MR is opened unchecked.
+      target = await resolveFetchTarget({ run: gitRun, repoDir: dir, baseUrl: baseUrl(), project: args.project, exec })
+      await gitRun(fetchArgsFor(target), dir, exec, { token: token(), ...opts })
+      // The MR is cut from the pushed branch, so compare its remote-tracking
+      // ref; a branch not pushed yet falls back to its local tip.
+      const tracking = `refs/remotes/origin/${args.source_branch}`
+      const range = `..refs/remotes/origin/${args.target_branch}`
+      const count = () => gitRun(['rev-list', '--count', tracking + range], dir, exec, opts)
+        .catch(() => gitRun(['rev-list', '--count', args.source_branch + range], dir, exec, opts))
+      const { stdout } = await count()
+      const behind = Number.parseInt(stdout.trim(), 10)
+      if (Number.isFinite(behind) && behind > 0) {
+        return `Not creating the merge request yet: "${args.source_branch}" is ${behind} commit${behind === 1 ? '' : 's'} behind "${args.target_branch}" (fetched just now). `
+          + `Bring it up to date first — gitlab_git_checkout "${args.source_branch}", gitlab_git_pull { branch: "${args.target_branch}" } (rebase, the default strategy), `
+          + `gitlab_git_push { force: true } — then call gitlab_mr_create again.`
+      }
+      return { check: 'current' }
+    } catch (error) {
+      // No usable local clone is the normal case (API-only use); anything
+      // else still does not block the MR, but the reason is reported.
+      return { check: 'skipped', reason: error?.message ?? String(error) }
+    }
+  }
+
   register(defineTool({
     name: 'gitlab_mr_create',
-    description: 'Open a merge request: source branch → target branch with a title. Optionally remove the source branch and squash commits on merge.',
+    description: 'Open a merge request: source branch → target branch with a title. With a local clone (repo) the target branch is fetched first and the call is refused while the source is behind it: rebase and force-push, then retry. remove_source_branch follows the project default unless given.',
     parameters: {
       project: { type: 'string', required: true, description: 'Project path/id.' },
       source_branch: { type: 'string', required: true, description: 'Branch containing the work.' },
       target_branch: { type: 'string', required: true, description: 'Branch to merge into.' },
       title: { type: 'string', required: true, description: 'MR title.' },
       description: { type: 'string', description: 'MR description (markdown).' },
-      remove_source_branch: { type: 'boolean', description: 'Delete the source branch when merged (default false).' },
+      repo: { type: 'string', description: 'Local clone to check for target-branch updates first (default: workspace root). Skipped when no clone is there.' },
+      remove_source_branch: { type: 'boolean', description: 'Delete the source branch when merged. Omit to follow the project default.' },
       squash: { type: 'boolean', description: 'Squash commits when merging (default false).' },
     },
     output: TEXT_OUTPUT,
     execute: async (args, exec) => {
       try {
+        const freshness = await checkTargetFreshness(args, exec)
+        if (typeof freshness === 'string') return freshness
         const mr = await api.post(`/projects/${pid(args.project)}/merge_requests`, {
           source_branch: args.source_branch, target_branch: args.target_branch, title: args.title,
           ...(args.description !== undefined ? { description: args.description } : {}),
-          remove_source_branch: args.remove_source_branch ?? false, squash: args.squash ?? false,
+          // Omitted when not given: an explicit false would override the
+          // project's "enable delete source branch by default" setting.
+          ...(args.remove_source_branch !== undefined ? { remove_source_branch: args.remove_source_branch } : {}),
+          squash: args.squash ?? false,
         }, exec?.signal)
-        return JSON.stringify({ iid: mr.iid, title: mr.title, state: mr.state, web_url: mr.web_url })
+        return JSON.stringify({ iid: mr.iid, title: mr.title, state: mr.state, web_url: mr.web_url, target_check: freshness.check, ...(freshness.reason ? { target_check_reason: freshness.reason } : {}) })
       } catch (error) { return failure(error) }
     },
   }))

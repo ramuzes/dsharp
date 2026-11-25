@@ -22,7 +22,14 @@
   宿主环境变量注入），**绝不修改仓库的 origin 远端配置**。对 GitLab 的传输本身
   仅 HTTPS（Basic 认证头经环境变量注入，不进 argv 与磁盘配置）。
 - 分支删除仅限已合并：本地 `git branch -d`（永不 -D），远端删除先经 compare API
-  验证；无 force push。
+  验证。
+- `gitlab_git_push` 默认只允许快进；传入 `force: true` 才可强推。强推带租约保护
+  （基于上次 fetch 的跟踪引用做 `--force-with-lease`）：远端在此之后有变动就拒绝，
+  需先 fetch、整合后重试，不会覆盖别人的提交。
+- `gitlab_mr_create` 未传 `remove_source_branch` 时不发该字段，沿用项目“默认删除
+  源分支”的设置。存在本地克隆时会先 fetch，源分支落后目标分支就拒绝创建；agent
+  rebase（`gitlab_git_pull`，默认策略）并强推后重试。结果里的 `target_check` 标明
+  检查结果（`current`；没有可比较的克隆时为 `skipped` 并附原因）。
 - 所有输出对令牌及其 base64 形式统一消毒。
 
 ## 开发

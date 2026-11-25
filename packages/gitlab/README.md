@@ -26,7 +26,17 @@ host-side, so no per-call sandbox approvals are needed.
   remote is never modified. Remote transport to GitLab is HTTPS only
   (Basic-auth extraHeader via env, never in argv or on-disk config).
 - Branch deletion is merged-only: local `git branch -d` (never -D), remote
-  deletes verified via the compare API first; no force-push.
+  deletes verified via the compare API first.
+- `gitlab_git_push` is fast-forward-only unless `force: true` is given. A
+  force push is lease-protected (`--force-with-lease` on the tracking ref of
+  the last fetch): it is refused when the remote ref moved since — fetch,
+  integrate, retry — instead of overwriting someone else's work.
+- `gitlab_mr_create` omits `remove_source_branch` unless given, so the
+  project's "delete source branch by default" setting applies. With a local
+  clone it fetches first and refuses while the source branch is behind the
+  target; the agent rebases (`gitlab_git_pull`, the default strategy), force-
+  pushes, and retries. The result reports `target_check`
+  (`current`, or `skipped` with a reason when there is no clone to compare).
 - All output is redacted against the token and its base64 forms.
 
 ## Development
