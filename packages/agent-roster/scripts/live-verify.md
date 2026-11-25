@@ -1,5 +1,46 @@
 # dsh-agent-roster Live-Host Verification Runbook
 
+## 2026-11-25 · 0.4.0 — command-driven creation and standby members (ADR-0012), verified on the live profile
+
+Environment: profile `web`, bundle `dsh-agent-roster-0.4.0.tgz` (commit `6926198`),
+host 0.2.3-alpha.2. Bash cannot reach the host from the sandbox, so the evidence
+is the plugin's own stage record plus the session logs on disk.
+
+### Host half: both mounts
+
+`~/.dsh/agent-roster-status.json` right after the reinstall:
+
+```json
+{ "stage": "tools-registered", "detail": { "authoring": true, "command": true }, "at": "2026-11-25T12:12:23.099Z" }
+```
+
+`command: true` is written only after `commands.register` returned a disposer,
+so `/roster` is registered on the real host.
+
+### Standby semantics, proven with a probe
+
+`roster_spawn({ template: "33cfb332e7" })` — the very template that misbehaved
+in session `c2b1fbc6` — with no task, from the lead's own session:
+
+- child session `5bcaa24f-…`: `subagent/descriptor` label "Code Base Explorer",
+  model `glm-5.3-flash`;
+- the opening message (agent-message relay) carries the identity framing and
+  the stand-by order verbatim, and no result-delivery guidance (caller
+  delivery);
+- the inherited "Timeline delegation" context is present and ignored;
+- the member's whole turn is one assistant message and **0 tool calls** —
+  `Ready — standing by for assignments.` — with `turn/end completed` three
+  seconds after creation. The incident run took 15 tool calls and two minutes
+  and produced a full report;
+- the lead's log holds no `user/message` with `source.kind: "subagent-settled"`
+  for this member, while every earlier parent-delivered member has one: a
+  standby member settles without waking the lead.
+
+Not verified live (user acceptance in the GUI): the dialog's stage-and-run hop
+itself (`stageSpawn` → bare `/roster`), which needs the composer's "+" menu.
+The client suite covers it on real React down to the exact staged payload and
+the bare command line.
+
 ## 2026-11-23 · 0.2.0 — agent-driven creation (ADR-0011), verified on the live profile
 
 > Historical record: this round verified the 0.2.0 injection flow, which ADR-0012 replaced (the dialog now runs `/roster`). Kept for its evidence and method; see the 0.4.0 section above for the current flow.
