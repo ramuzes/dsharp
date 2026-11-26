@@ -457,8 +457,14 @@ test('real git: force push honours the lease with an origin remote and with the 
       assert.ok(/rejected/.test(plain), `${name}: a plain push must not rewrite: ${plain}`)
 
       // No tracking ref yet for this clone → refused, asks for a fetch.
-      const unborn = await makeClone(scratch, `${name}-unborn`, origin)
+      // A clone that never saw the remote branch: no tracking ref, no push
+      // (a setup push here would race the earlier steps for the same branch).
+      const unborn = join(scratch.tmp, `${name}-unborn`)
+      await scratch.run(['clone', '-q', scratch.bare, unborn])
+      await scratch.run(['checkout', '-q', '-b', 'feature/x'], unborn)
+      await scratch.run(['remote', 'set-url', 'origin', origin], unborn)
       await scratch.run(['update-ref', '-d', 'refs/remotes/origin/feature/x'], unborn)
+      await scratch.commit(unborn, 'unpushed')
       const noRef = await push.execute({ repo: unborn, from: 'feature/x', force: true })
       assert.ok(/Refusing to force-push.*gitlab_git_fetch/.test(noRef), `${name}: ${noRef}`)
 
