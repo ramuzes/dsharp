@@ -9,18 +9,18 @@
         "zh": "角色花名册"
       },
       "description": {
-        "en": "A profile-wide roster of role templates with one-click team building: a \"+\"-menu flow that injects the chosen template's instruction into the current conversation so the lead agent creates the member through the roster_spawn tool (template prompt frozen, template model applied). Includes roster_template_save / roster_template_list agent tools and an Agent roster manager in Settings. Members are ordinary subagents.",
-        "zh": "一份全 profile 共用的角色模板库，把组建团队变成一键操作：“+”菜单把所选模板的指令注入当前会话，由 lead agent 通过 roster_spawn 工具创建成员（模板指令冻结、模板模型生效）。附带 roster_template_save / roster_template_list 工具，以及设置页的角色花名册管理。成员就是普通子代理。"
+        "en": "A profile-wide roster of role templates with one-click team building: a \"+\"-menu flow that creates the member through the /roster command — recorded like /compact, with no message in the conversation and no turn of the lead — and the member stands by until given work (template prompt frozen; the model defaults to the template's and can be overridden per spawn). Includes roster_template_save / roster_template_list agent tools and an Agent roster manager in Settings. Members are ordinary subagents.",
+        "zh": "一份全 profile 共用的角色模板库，把组建团队变成一键操作：“+”菜单通过 /roster 命令创建成员——会话记录与 /compact 相同，不在对话里留下消息，也不占用 lead 的一轮——成员创建后待命等待派活（模板指令冻结；模型默认取模板配置，可在生成时单独覆盖）。附带 roster_template_save / roster_template_list 工具，以及设置页的角色花名册管理。成员就是普通子代理。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1hZ2VudC1yb3N0ZXI6IGEgcm9zdGVyIGNhcmQgb2YgbWVtYmVyIHJvd3Mgd2l0aCBhICIrIiBhZGQgYmFkZ2UgLS0+CiAgPHJlY3QgeD0iOCIgeT0iMTAiIHdpZHRoPSI0MCIgaGVpZ2h0PSI0NCIgcng9IjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFiOWU3NyIgc3Ryb2tlLXdpZHRoPSI0IiAvPgogIDxjaXJjbGUgY3g9IjE3IiBjeT0iMjIiIHI9IjMiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjI1IiB5MT0iMjIiIHgyPSI0MCIgeTI9IjIyIiBzdHJva2U9IiMxYjllNzciIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjE3IiBjeT0iMzIiIHI9IjMiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjI1IiB5MT0iMzIiIHgyPSI0MCIgeTI9IjMyIiBzdHJva2U9IiMxYjllNzciIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjE3IiBjeT0iNDIiIHI9IjMiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjI1IiB5MT0iNDIiIHgyPSIzNCIgeTI9IjQyIiBzdHJva2U9IiMxYjllNzciIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjUwIiBjeT0iNDgiIHI9IjkiIGZpbGw9IiMxYjllNzciIC8+CiAgPGxpbmUgeDE9IjQ2IiB5MT0iNDgiIHgyPSI1NCIgeTI9IjQ4IiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxsaW5lIHgxPSI1MCIgeTE9IjQ0IiB4Mj0iNTAiIHkyPSI1MiIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KPC9zdmc+Cg==",
       "versions": [
         {
-          "version": "0.2.0",
-          "publishTimestamp": 1795448910,
+          "version": "0.2.2",
+          "publishTimestamp": 1795659536,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
+            "commit": "4f77bf35f4818aa30c7289b47a4a3b3e89860839",
             "path": "packages/agent-roster"
           },
           "engines": {
@@ -43,11 +43,11 @@
       "versions": [
         {
           "version": "0.2.3",
-          "publishTimestamp": 1795448910,
+          "publishTimestamp": 1795659536,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
+            "commit": "4f77bf35f4818aa30c7289b47a4a3b3e89860839",
             "path": "packages/airboard"
           }
         }
@@ -67,11 +67,11 @@
       "versions": [
         {
           "version": "0.1.2",
-          "publishTimestamp": 1795448910,
+          "publishTimestamp": 1795659536,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
+            "commit": "4f77bf35f4818aa30c7289b47a4a3b3e89860839",
             "path": "packages/chrome-cdp"
           }
         }
@@ -91,11 +91,11 @@
       "versions": [
         {
           "version": "0.1.7",
-          "publishTimestamp": 1795448910,
+          "publishTimestamp": 1795659536,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
+            "commit": "4f77bf35f4818aa30c7289b47a4a3b3e89860839",
             "path": "packages/engram"
           },
           "engines": {
@@ -118,11 +118,11 @@
       "versions": [
         {
           "version": "0.1.3",
-          "publishTimestamp": 1795448910,
+          "publishTimestamp": 1795659536,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
+            "commit": "4f77bf35f4818aa30c7289b47a4a3b3e89860839",
             "path": "packages/feishu-gateway"
           }
         }
@@ -141,12 +141,12 @@
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIGRzaC1naXRsYWI6IGEgc3R5bGl6ZWQgZm94LXRhaWwgYnJhbmNoIG5vZGUgb3ZlciBhIHJlcG8gY2FyZCAtLT4KICA8cmVjdCB4PSI4IiB5PSIxMiIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQwIiByeD0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZTI0MzI5IiBzdHJva2Utd2lkdGg9IjQiIC8+CiAgPHBhdGggZD0iTTIyIDQ0IEwyMiAzMiBRMjIgMjQgMzAgMjQgTDM4IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmYzZkMjYiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiAvPgogIDxjaXJjbGUgY3g9IjIyIiBjeT0iNDQiIHI9IjQiIGZpbGw9IiNlMjQzMjkiIC8+CiAgPGNpcmNsZSBjeD0iMzgiIGN5PSIyNCIgcj0iNCIgZmlsbD0iI2ZjYTMyNiIgLz4KICA8cGF0aCBkPSJNNDYgMzIgTDQ2IDM4IEw0MCA0MSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmNhMzI2IiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgLz4KICA8Y2lyY2xlIGN4PSI0NiIgY3k9IjMyIiByPSIzIiBmaWxsPSIjZTI0MzI5IiAvPgo8L3N2Zz4K",
       "versions": [
         {
-          "version": "0.2.4",
-          "publishTimestamp": 1795448910,
+          "version": "0.3.0",
+          "publishTimestamp": 1795659536,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
+            "commit": "4f77bf35f4818aa30c7289b47a4a3b3e89860839",
             "path": "packages/gitlab"
           }
         }
@@ -165,11 +165,11 @@
       "versions": [
         {
           "version": "0.2.2",
-          "publishTimestamp": 1795448910,
+          "publishTimestamp": 1795659536,
           "source": {
             "type": "git",
             "url": "https://github.com/ramuzes/dsharp",
-            "commit": "8c26e5f507bb5c183d99c09f6840d0bfeb66cedd",
+            "commit": "4f77bf35f4818aa30c7289b47a4a3b3e89860839",
             "path": "packages/workspace-env"
           }
         }
