@@ -20,7 +20,7 @@ desktop distributions.
 | Field | Default | Notes |
 |---|---|---|
 | `server` | playwright | MCP engine; see table above. |
-| `mode` | - | Per engine, see table. url/ws need `endpoint`; launch uses Playwright's own browser (`headless`, `browser` apply). |
+| `mode` | extension | Per engine, see table. url/ws need `endpoint`; launch uses Playwright's own browser (`headless`, `browser` apply); extension attaches to the running browser via the Playwright Extension. |
 | `endpoint` | - | http(s) or ws(s) debug address; must not be set for auto/launch/extension. |
 | `channel` | stable | chrome-devtools + auto only: canary/dev/beta/stable. |
 | `headless` | false | playwright + launch only. |

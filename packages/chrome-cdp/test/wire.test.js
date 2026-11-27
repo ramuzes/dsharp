@@ -53,6 +53,20 @@ test('invalid mode/server combos throw at wiring time', () => {
   assert.throws(() => wireChromeCdp(ctx, { ...baseConfig, endpoint: undefined }, { mountPerSession: () => {} }), /endpoint is required/i)
 })
 
+test('an unconfigured mode mounts with the default (extension) instead of failing the load', () => {
+  const { ctx } = makeCtx()
+  const mounts = []
+  // A freshly installed profile has no config row for this plugin: mode and
+  // endpoint arrive absent (the schema fills mode with DEFAULT_MODE, index.js).
+  // Regression for the desktop first-run failure "mode must be one of launch /
+  // url / ws / extension for server playwright (got: undefined)".
+  wireChromeCdp(ctx, { ...baseConfig, mode: undefined, endpoint: undefined }, { mountPerSession: (c, o) => { mounts.push(o) } })
+  assert.equal(mounts.length, 1)
+  assert.deepEqual(mounts[0].args.slice(1), ['--extension'])
+  // A defaulted mode still may not carry an endpoint.
+  assert.throws(() => wireChromeCdp(ctx, { ...baseConfig, mode: undefined }, { mountPerSession: () => {} }), /endpoint must not be set in extension mode/i)
+})
+
 test('gate reads policy and per-server list live from the config', async () => {
   const { ctx, calls } = makeCtx()
   const cfg = { ...baseConfig }

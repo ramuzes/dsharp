@@ -9,11 +9,13 @@ import { readFileSync } from 'node:fs'
  * "as needed to satisfy real imports"; the table below mirrors the REAL
  * export set strictly: '@deepseek-ai/dsh-client-ui-primitives' offers
  * SettingsForm, SettingsValueField, SettingsSecretField, SettingsFormModel,
- * settingsTextField, settingsNumberField — and NO select or textarea
- * primitive (verified in the dsh checkout,
- * packages/client/ui-primitives/src/index.ts), so the fake offers no
- * SettingsSelectField either: a client that reached for one would fail here
- * exactly as it would in the browser module table.
+ * settingsTextField, settingsNumberField, Tag — and NO select primitive
+ * (verified in the dsh checkout, packages/client/ui-primitives/src/index.ts:
+ * SettingsValueField renders an <input>; ConfigField.tsx has a <select> but
+ * is not exported, and the client module table resolves package ids only —
+ * packages/client/modules/src/client/system.ts), so the fake offers no
+ * select either. The enum fields' dropdown is therefore the plugin's own DOM
+ * and is asserted as such below (host elements, not a primitive).
  */
 
 /** The module body under test, read lazily so the missing-file failure lands inside test 1. */
@@ -26,6 +28,7 @@ const clientSource = () => {
 /** Marker components standing in for the shared staged-form chrome. */
 function SettingsForm(props) { return { type: 'SettingsForm', props } }
 function SettingsValueField(props) { return { type: 'SettingsValueField', props } }
+function Tag(props) { return { type: 'Tag', props } }
 
 /**
  * Faithful twins of the real spec factories, transcribed from the dsh
@@ -144,6 +147,7 @@ const primitivesTable = () => ({
   SettingsFormModel: FakeFormModel,
   settingsTextField: settingsTextFieldFake,
   settingsNumberField: settingsNumberFieldFake,
+  Tag,
 })
 
 /** A strict fake ConfigForm for the chrome-cdp row. */
@@ -264,7 +268,25 @@ test('apply registers the dictionary, the bundle config card slot, and the chrom
   assert.equal(FakeFormModel.instances.at(-1).disposed, true)
 })
 
-test('the config card renders seven staged chrome-cdp-config fields and no secret control', () => {
+/**
+ * Expand the card's tree: every function component except the primitive
+ * markers is invoked (none of them takes children), host elements are kept
+ * and their children walked, so the dropdowns can be asserted as DOM.
+ */
+const PRIMITIVE_MARKERS = new Set([SettingsForm, SettingsValueField, Tag])
+function expand(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return []
+  if (Array.isArray(node)) return node.flatMap(expand)
+  if (typeof node !== 'object') return [node]
+  if (typeof node.type === 'function' && !PRIMITIVE_MARKERS.has(node.type)) return expand(node.type(node.props))
+  return [node, ...expand(node.children ?? [])]
+}
+/** Option nodes of a select. expand() also flattens the nested array the plugin passes for the choices (real React flattens children itself). */
+const optionsOf = (select) => expand(select).filter((node) => node.type === 'option')
+const optionValues = (select) => optionsOf(select).map((option) => option.props.value)
+const messages = (tree, id) => tree.filter((node) => node.type === 'p' && node.props.id === `${id}-message`).map((node) => node.children[0])
+
+test('the config card renders three dropdowns, four staged text fields, its stylesheet, and no secret control', () => {
   const loaded = boot(makeFakeReact().react)
   const captured = applyWith(loaded.plugin)
   const card = captured.slots[0].entry
@@ -275,36 +297,140 @@ test('the config card renders seven staged chrome-cdp-config fields and no secre
 
   assert.equal(typeof card.component({ view: 'summary', t, useConfig }), 'string')
   const element = card.component({ view: 'page', t, useConfig, ...actions })
-  assert.equal(element.type, 'Fragment', 'page view renders status section + form in a fragment')
+  assert.equal(element.type, 'Fragment', 'page view renders status section + stylesheet + form in a fragment')
   assert.equal(typeof element.children[0].type, 'function', 'status section rendered first')
-  const form = element.children[1]
+  const style = element.children[1]
+  assert.equal(style.type, 'style')
+  assert.match(style.children[0], /\.cdc-select\s*\{[^}]*var\(--dsw-alias-bg-layer-3\)/, 'the select is themed through the stock input token')
+  const form = element.children[2]
   assert.equal(form.type, SettingsForm)
-  const fields = form.children.filter((child) => typeof child.type === 'function')
-  assert.equal(fields.length, 7)
-  const rendered = fields.map((child) => child.type(child.props))
-  assert.ok(rendered.every((f) => f.type === SettingsValueField), 'no primitive outside the feishu precedent set')
-  assert.deepEqual(rendered.map((f) => f.props.id), [
+
+  const tree = expand(element)
+  const selects = tree.filter((node) => node.type === 'select')
+  assert.deepEqual(selects.map((select) => select.props.id), [
     'chrome-cdp-config-server',
     'chrome-cdp-config-mode',
+    'chrome-cdp-config-approval-policy',
+  ])
+  assert.deepEqual(tree.filter((node) => node.type === SettingsValueField).map((field) => field.props.id), [
     'chrome-cdp-config-endpoint',
     'chrome-cdp-config-channel',
-    'chrome-cdp-config-approval-policy',
     'chrome-cdp-config-read-only-tools',
     'chrome-cdp-config-tool-call-timeout-ms',
   ])
+  assert.ok(!tree.some((node) => node.type === 'input' && node.props.type === 'password'), 'no secret control')
+  // Options: the schema default first (value '' stages a clear), then the
+  // legal values with descriptive labels; mode lists the staged engine's only.
+  assert.deepEqual(optionValues(selects[0]), ['', 'playwright', 'chrome-devtools'])
+  assert.deepEqual(optionsOf(selects[0]).map((option) => option.children[0]), ['config.defaultOption', 'config.server.playwright', 'config.server.chrome-devtools'])
+  assert.deepEqual(optionValues(selects[1]), ['', 'launch', 'url', 'ws', 'extension'], 'playwright modes only')
+  assert.deepEqual(optionValues(selects[2]), ['', 'sensitive', 'all', 'none'])
+  assert.equal(selects[0].props.value, '', 'an unset engine renders as its default option')
+  assert.equal(selects[1].props.value, 'url', 'the stored mode is the selected option')
 
   // Staging routes through the face's actions and invalid drafts mark the
   // field. React's useSyncExternalStore subscribes before reading, so the
   // test subscribes first too — cache invalidation rides the subscription.
   const off = face.hooks.config.subscribe(() => {})
-  rendered[0].props.onEdit('bogus')
+  selects[0].props.onChange({ target: { value: 'bogus' } })
   assert.equal(face.hooks.config.getSnapshot().server.invalid, true, 'illegal server blocks the save')
-  rendered[0].props.onEdit('playwright')
+  selects[0].props.onChange({ target: { value: 'playwright' } })
   assert.equal(face.hooks.config.getSnapshot().server.invalid, false)
-  rendered[1].props.onEdit('ws')
+  selects[1].props.onChange({ target: { value: 'ws' } })
   const next = face.hooks.config.getSnapshot()
   assert.equal(next.mode.text, 'ws')
   assert.equal(next.mode.invalid, false)
+  // A staged value previews as overridden: the real Tag badge plus the reset.
+  const staged = expand(card.component({ view: 'page', t, useConfig, ...actions }))
+  const modeSelect = staged.find((node) => node.type === 'select' && node.props.id === 'chrome-cdp-config-mode')
+  assert.equal(modeSelect.props.value, 'ws')
+  const badges = staged.filter((node) => node.type === Tag)
+  assert.deepEqual(badges.map((badge) => badge.children[0]), ['config.overridden', 'config.overridden'], 'server and mode both preview as overridden')
+  const modeFieldRoot = staged.find((node) => node.type === 'div' && node.props.className === 'cdc-field'
+    && expand(node).some((inner) => inner.type === 'select' && inner.props.id === 'chrome-cdp-config-mode'))
+  const reset = expand(modeFieldRoot).find((node) => node.type === 'button' && node.children[0] === 'config.reset')
+  assert.equal(typeof reset.props.onClick, 'function')
+  reset.props.onClick()
+  assert.equal(face.hooks.config.getSnapshot().mode.text, '', 'the mode field\'s own reset stages a clear back to the default')
+  // Choosing the default option is the same clear.
+  selects[1].props.onChange({ target: { value: '' } })
+  assert.equal(face.hooks.config.getSnapshot().mode.text, '')
+  assert.equal(face.hooks.config.getSnapshot().mode.invalid, false)
+  off()
+})
+
+test('a server/mode pair the host would reject is spelled out and blocks Save until resolved', () => {
+  const captured = applyWith(boot(makeFakeReact().react).plugin)
+  const card = captured.slots[0].entry
+  const face = card.declaration.inject()
+  const off = face.hooks.config.subscribe(() => {})
+  const tCalls = []
+  const render = () => {
+    const element = card.component({
+      view: 'page',
+      t: (key, params) => { tCalls.push({ key, params }); return key },
+      useConfig: (selector) => selector(face.hooks.config.getSnapshot()),
+      edit: face.edit, resetField: face.resetField, save: face.save, discard: face.discard,
+    })
+    const tree = expand(element)
+    return { form: element.children[2], tree, mode: tree.find((node) => node.type === 'select' && node.props.id === 'chrome-cdp-config-mode') }
+  }
+
+  // extension under playwright (the fake form's initial engine) is legal.
+  face.edit('mode', 'extension')
+  let view = render()
+  assert.equal(view.form.props.state.invalid, false)
+  assert.deepEqual(messages(view.tree, 'chrome-cdp-config-mode'), ['config.modeHint'])
+
+  // Switching the engine to chrome-devtools keeps the staged mode selectable
+  // at the head of a now-shorter list, flags it, explains, and blocks Save.
+  face.edit('server', 'chrome-devtools')
+  view = render()
+  assert.equal(view.mode.props.value, 'extension', 'the control shows exactly what is staged')
+  assert.deepEqual(optionValues(view.mode), ['', 'extension', 'auto', 'url', 'ws'])
+  assert.equal(view.mode.props['aria-invalid'], 'true')
+  assert.deepEqual(messages(view.tree, 'chrome-cdp-config-mode'), ['config.modeConflict'])
+  assert.deepEqual(tCalls.find((call) => call.key === 'config.modeConflict').params, {
+    mode: 'extension', server: 'chrome-devtools', legal: 'auto / url / ws',
+  })
+  assert.equal(view.form.props.state.invalid, true, 'Save blocked while the pair conflicts')
+
+  // Picking a chrome-devtools mode clears the conflict.
+  face.edit('mode', 'auto')
+  view = render()
+  assert.deepEqual(optionValues(view.mode), ['', 'auto', 'url', 'ws'])
+  assert.equal(view.mode.props['aria-invalid'], undefined)
+  assert.deepEqual(messages(view.tree, 'chrome-cdp-config-mode'), ['config.modeHint'])
+  assert.equal(view.form.props.state.invalid, false)
+  off()
+})
+
+test('an inherited mode the staged engine forbids is flagged by the default it resolves to', () => {
+  const configForm = fakeConfigForm()
+  const base = configForm.getSnapshot()
+  configForm.getSnapshot = () => ({ ...base, value: { ...base.value, mode: undefined } })
+  const captured = applyWith(boot(makeFakeReact().react).plugin, { configForm })
+  const card = captured.slots[0].entry
+  const face = card.declaration.inject()
+  const off = face.hooks.config.subscribe(() => {})
+  const tCalls = []
+  face.edit('server', 'chrome-devtools')
+  const element = card.component({
+    view: 'page',
+    t: (key, params) => { tCalls.push({ key, params }); return key },
+    useConfig: (selector) => selector(face.hooks.config.getSnapshot()),
+    edit: face.edit, resetField: face.resetField, save: face.save, discard: face.discard,
+  })
+  const tree = expand(element)
+  const mode = tree.find((node) => node.type === 'select' && node.props.id === 'chrome-cdp-config-mode')
+  assert.equal(mode.props.value, '', 'nothing staged: the default option is shown')
+  assert.deepEqual(optionValues(mode), ['', 'auto', 'url', 'ws'], 'no stray option for a mode the engine forbids')
+  assert.deepEqual(tCalls.find((call) => call.key === 'config.defaultOption' && call.params.value === 'config.mode.extension').params,
+    { value: 'config.mode.extension' }, 'the default option is named after the schema default')
+  assert.deepEqual(tCalls.find((call) => call.key === 'config.modeConflict').params, {
+    mode: 'extension', server: 'chrome-devtools', legal: 'auto / url / ws',
+  })
+  assert.equal(element.children[2].props.state.invalid, true, 'the inherited conflict blocks Save as well')
   off()
 })
 

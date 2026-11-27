@@ -17,6 +17,12 @@ import { createRequire } from 'node:module'
 
 export const SERVERS = ['playwright', 'chrome-devtools']
 export const DEFAULT_SERVER = 'playwright'
+// A fresh profile has no config row at all (the bundle patch inserts the row
+// without one), so an unconfigured mode must not fail the load: default to the
+// one mode that needs neither a debug endpoint nor a Playwright-managed
+// browser. Valid for the default server (playwright); a server/mode mismatch
+// still fails loudly at wiring time (buildServerArgs below).
+export const DEFAULT_MODE = 'extension'
 
 const ENTRIES = {
   // playwright's exports map hides ./cli.js, so resolve the package root

@@ -18,7 +18,7 @@
  * endpoint/channel/headless/browser/toolCallTimeoutMs) are bound at
  * activation and apply after plugin reload.
  */
-import { buildSpawn, READ_ONLY_BY_SERVER, DEFAULT_SERVER, serverVersion } from './servers.js'
+import { buildSpawn, READ_ONLY_BY_SERVER, DEFAULT_SERVER, DEFAULT_MODE, serverVersion } from './servers.js'
 import { registerApprovalGate } from './gate.js'
 import { registerStatus } from './status.js'
 import { mountPerSession } from './mount.js'
@@ -37,9 +37,12 @@ export function wireChromeCdp(ctx, config, deps = {}) {
   // Structural settings are validated here so bad config fails the load
   // ("Bad config fails the load with a precise error", docs/cordis-tutorial/05-config.md).
   // Unwrap BEFORE buildSpawn: on the host these arrive as Volatile references.
+  // server/mode fall back to the same defaults the schema declares (index.js),
+  // so a config with those keys absent wires identically with or without the
+  // schema in the path (plain-object callers, unit tests).
   const structural = {
     server: readVolatile(config.server, DEFAULT_SERVER),
-    mode: readVolatile(config.mode, undefined),
+    mode: readVolatile(config.mode, DEFAULT_MODE),
     endpoint: readVolatile(config.endpoint, undefined),
     channel: readVolatile(config.channel, undefined),
     headless: readVolatile(config.headless, false),

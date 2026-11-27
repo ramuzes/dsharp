@@ -18,7 +18,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import { wireChromeCdp } from './lib/wire.js'
 import { APPROVAL_POLICIES } from './lib/gate.js'
-import { SERVERS } from './lib/servers.js'
+import { SERVERS, DEFAULT_MODE } from './lib/servers.js'
 
 export const name = 'chrome-cdp'
 // Self-contained mount: no browser-use subsystem required (desktop parity).
@@ -27,9 +27,11 @@ export const inject = ['agents', 'tools']
 
 export const Config = Schema.object({
   // Server + mode + endpoint are validated together at wiring time
-  // (lib/servers.js) so an illegal combination fails the load.
+  // (lib/servers.js) so an illegal combination fails the load. mode defaults so
+  // a freshly installed profile (no config row) mounts instead of failing with
+  // "mode must be one of ... (got: undefined)".
   server: Schema.union(SERVERS.map((s) => Schema.const(s))).default('playwright').volatile(),
-  mode: Schema.union(['auto', 'url', 'ws', 'launch', 'extension'].map((m) => Schema.const(m))).volatile(),
+  mode: Schema.union(['auto', 'url', 'ws', 'launch', 'extension'].map((m) => Schema.const(m))).default(DEFAULT_MODE).volatile(),
   endpoint: Schema.string().volatile(),
   channel: Schema.string().pattern(/^[a-z][a-z0-9-]*$/).default('stable').volatile(),
   headless: Schema.boolean().default(false).volatile(),

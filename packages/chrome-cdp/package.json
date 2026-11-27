@@ -1,6 +1,6 @@
 {
   "name": "dsh-chrome-cdp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Operate the user's real Chrome over CDP via chrome-devtools-mcp: per-Session exclusive attach, per-action approval gate, Plugins-page config card",
   "type": "module",
   "exports": {

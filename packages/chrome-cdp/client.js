@@ -20,20 +20,21 @@
  * packages/client/ui-primitives/src/index.ts): the settings-form module
  * exports SettingsForm, SettingsValueField, SettingsSecretField,
  * SettingsFormModel, settingsTextField, settingsNumberField — there is no
- * select and no multiline/textarea primitive. The two enum fields (mode,
- * approvalPolicy) therefore render as text fields whose hints list the legal
- * values, and readOnlyTools edits one tool name per line in a single-line
- * input (space/comma/newline separated). Field specs follow the
- * SettingsFieldSpec contract (form-model.ts:64-74) and mirror the host
- * Config schema (index.js) so an illegal draft marks the field invalid and
- * blocks the save instead of staging a write the host would reject blindly.
+ * select and no multiline/textarea primitive. The three enum fields (server,
+ * mode, approvalPolicy) therefore render through a LOCAL select control
+ * (SettingsSelectField below) that mirrors SettingsValueField's DOM and
+ * tokens; readOnlyTools edits one tool name per line in a single-line input
+ * (space/comma/newline separated). Field specs follow the SettingsFieldSpec
+ * contract (form-model.ts:64-74) and mirror the host Config schema (index.js)
+ * so an illegal draft marks the field invalid and blocks the save instead of
+ * staging a write the host would reject blindly.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-chrome-cdp',
   factory(require) {
     const React = require('react')
     const {
-      SettingsForm, SettingsValueField, SettingsFormModel, settingsTextField, settingsNumberField,
+      SettingsForm, SettingsValueField, SettingsFormModel, settingsTextField, settingsNumberField, Tag,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const h = React.createElement
 
@@ -60,6 +61,18 @@ window.__ModuleLoader__.load({
       'config.readOnlyToolsHint': '工具名以空格、逗号或换行分隔；留空恢复默认清单。sensitive 策略下清单内工具免确认',
       'config.toolCallTimeoutMs': '工具调用超时（毫秒）',
       'config.toolCallTimeoutMsHint': '不小于 1 的毫秒数；留空使用上游默认。结构字段，保存后重载插件生效',
+      'config.defaultOption': '默认（{value}）',
+      'config.server.playwright': 'playwright',
+      'config.server.chrome-devtools': 'chrome-devtools（Chrome DevTools MCP）',
+      'config.mode.launch': 'launch — Playwright 自管浏览器',
+      'config.mode.url': 'url — 连接 http(s) 调试地址',
+      'config.mode.ws': 'ws — 连接 ws(s) 调试地址',
+      'config.mode.extension': 'extension — 经 Playwright Extension 接管运行中的 Chrome',
+      'config.mode.auto': 'auto — Chrome ≥144 授权模式',
+      'config.approvalPolicy.sensitive': 'sensitive — 敏感操作需确认',
+      'config.approvalPolicy.all': 'all — 全部操作需确认',
+      'config.approvalPolicy.none': 'none — 全部放行',
+      'config.modeConflict': '「{mode}」不是 {server} 的合法连接模式（可选：{legal}）；请改选连接模式或引擎，否则插件重载会失败',
       'config.overridden': '已覆盖',
       'config.reset': '重置',
       'config.invalid': '无效值',
@@ -99,6 +112,18 @@ window.__ModuleLoader__.load({
       'config.readOnlyToolsHint': 'Tool names separated by spaces, commas, or new lines; empty restores the default list. Under the sensitive policy these tools skip approval',
       'config.toolCallTimeoutMs': 'Tool call timeout (ms)',
       'config.toolCallTimeoutMsHint': 'Milliseconds, at least 1; empty uses the upstream default. Structural: takes effect after plugin reload',
+      'config.defaultOption': 'Default ({value})',
+      'config.server.playwright': 'playwright',
+      'config.server.chrome-devtools': 'chrome-devtools (Chrome DevTools MCP)',
+      'config.mode.launch': 'launch — Playwright-managed browser',
+      'config.mode.url': 'url — connect to an http(s) debug address',
+      'config.mode.ws': 'ws — connect to a ws(s) debug address',
+      'config.mode.extension': 'extension — attach to the running Chrome via the Playwright Extension',
+      'config.mode.auto': 'auto — Chrome ≥144 approval mode',
+      'config.approvalPolicy.sensitive': 'sensitive — ask for sensitive calls',
+      'config.approvalPolicy.all': 'all — ask for every call',
+      'config.approvalPolicy.none': 'none — allow all',
+      'config.modeConflict': '"{mode}" is not a {server} mode (choose one of: {legal}); pick another mode or engine, or the plugin fails at reload',
       'config.overridden': 'Overridden',
       'config.reset': 'Reset',
       'config.invalid': 'Invalid value',
@@ -158,11 +183,8 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const ServerField = textField('server', 'chrome-cdp-config-server')
-    const ModeField = textField('mode', 'chrome-cdp-config-mode')
     const EndpointField = textField('endpoint', 'chrome-cdp-config-endpoint')
     const ChannelField = textField('channel', 'chrome-cdp-config-channel')
-    const ApprovalPolicyField = textField('approvalPolicy', 'chrome-cdp-config-approval-policy')
     const ReadOnlyToolsField = textField('readOnlyTools', 'chrome-cdp-config-read-only-tools')
     const ToolCallTimeoutMsField = textField('toolCallTimeoutMs', 'chrome-cdp-config-tool-call-timeout-ms', { numeric: true })
 
@@ -170,8 +192,9 @@ window.__ModuleLoader__.load({
      * Field specs mirroring the host Config schema (index.js): an illegal
      * draft parses to undefined, which marks the field invalid and blocks
      * the save; an empty draft on a defaulted field clears it so the field
-     * re-inherits the schema default. mode is required with no default, so
-     * an empty mode draft is invalid rather than a doomed clear.
+     * re-inherits the schema default. mode defaults to 'extension'
+     * (lib/servers.js DEFAULT_MODE), so an empty mode draft is a clear that
+     * re-inherits it - not a doomed clear into an unconfigured mount.
      */
     const SERVERS = ['playwright', 'chrome-devtools'] // index.js Schema.union(...).default('playwright')
     const MODES = ['auto', 'url', 'ws', 'launch', 'extension'] // union of both servers' modes; legality enforced host-side
@@ -189,6 +212,138 @@ window.__ModuleLoader__.load({
     const serverField = enumField('server', SERVERS, true)
     const modeField = enumField('mode', MODES, true)
     const approvalPolicyField = enumField('approvalPolicy', APPROVAL_POLICIES, true)
+
+    /** Schema defaults (index.js .default(...) / lib/servers.js DEFAULT_*). */
+    const DEFAULT_SERVER = 'playwright'
+    const DEFAULT_MODE = 'extension'
+    const DEFAULT_APPROVAL_POLICY = 'sensitive'
+    /** Modes per engine, mirroring lib/servers.js MODES_BY_SERVER (host truth). */
+    const MODES_BY_SERVER = Object.freeze({
+      playwright: Object.freeze(['launch', 'url', 'ws', 'extension']),
+      'chrome-devtools': Object.freeze(['auto', 'url', 'ws']),
+    })
+
+    /**
+     * Server/mode legality across two staged fields. Each spec parses its own
+     * text only, so a mode that is legal for playwright with a staged
+     * chrome-devtools server passes both specs, saves, and then fails the host
+     * at reload (lib/servers.js buildServerArgs). The card folds the conflict
+     * into the shell (Save blocked) and the mode field spells it out.
+     * @returns {{server: string, legal: readonly string[], mode: string, conflict: boolean}}
+     */
+    const modeLegality = (state) => {
+      const server = state.server.text || DEFAULT_SERVER
+      const legal = MODES_BY_SERVER[server]
+      const mode = state.mode.text || DEFAULT_MODE
+      return { server, legal: legal ?? MODES, mode, conflict: legal !== undefined && !legal.includes(mode) }
+    }
+
+    /**
+     * Stylesheet for the local select field (see the module header): the rules
+     * of settings-form/fields.module.css under plugin-scoped classes, so the
+     * control inherits the host theme through the same --dsw-* tokens. The
+     * stock fields draw their separator with `.field + .field`, which never
+     * matches next to a foreign element, so this field draws top AND bottom
+     * hairlines minus the edges: every neighbour pair keeps exactly one line.
+     * Rendered as a <style> element inside the card, so it leaves with it.
+     */
+    const SELECT_CSS = `
+.cdc-field { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 0.5px solid var(--dsw-alias-border-l2); border-bottom: 0.5px solid var(--dsw-alias-border-l2); }
+.cdc-field:first-child, .cdc-field + .cdc-field { border-top: 0; }
+.cdc-field:last-child { border-bottom: 0; }
+.cdc-head { display: flex; align-items: center; gap: 8px; }
+.cdc-label { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; line-height: 1.5; color: var(--dsw-alias-label-primary); }
+.cdc-badges { display: inline-flex; align-items: center; gap: 8px; }
+.cdc-reset { border: none; background: none; padding: 0; font: inherit; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.cdc-reset:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }
+.cdc-reset:disabled { cursor: default; }
+.cdc-select { height: 34px; padding: 0 12px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-3); font: inherit; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); }
+.cdc-select:focus-visible { outline: none; border-color: var(--dsw-alias-state-business-primary); }
+.cdc-select:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
+.cdc-select[aria-invalid='true'] { border-color: var(--dsw-alias-state-error-primary); }
+.cdc-message { margin: 0; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary); }
+.cdc-message-invalid { color: var(--dsw-alias-state-error-primary); }
+`
+
+    /**
+     * Local enum control over the staged model: label, the overridden Tag and
+     * reset (the real Tag, so the badge matches the stock fields), a native
+     * <select>, and the hint / invalid / conflict message. The first option
+     * (value '') is the schema default: choosing it stages a clear so the
+     * field re-inherits, exactly like blanking a text field.
+     * @param {object} props - the SettingsFieldProps text/overridden/invalid/disabled plus
+     *   `choices` ({value, label}[]), `defaultLabel`, optional `warning`, onEdit, onReset.
+     */
+    function SettingsSelectField(props) {
+      const messageId = `${props.id}-message`
+      const problem = props.invalid ? props.invalidLabel : props.warning
+      const hasMessage = problem !== undefined || Boolean(props.hint)
+      return h('div', { className: 'cdc-field' },
+        h('div', { className: 'cdc-head' },
+          h('label', { className: 'cdc-label', htmlFor: props.id }, props.label),
+          props.overridden
+            ? h('span', { className: 'cdc-badges' },
+              h(Tag, { tone: 'neutral' }, props.overriddenLabel),
+              h('button', { type: 'button', className: 'cdc-reset', disabled: props.disabled, onClick: props.onReset }, props.resetLabel))
+            : null),
+        h('select', {
+          id: props.id,
+          className: 'cdc-select',
+          value: props.text,
+          disabled: props.disabled,
+          ...(problem !== undefined ? { 'aria-invalid': 'true' } : {}),
+          ...(hasMessage ? { 'aria-describedby': messageId } : {}),
+          onChange: (event) => { props.onEdit(event.target.value) },
+        },
+          h('option', { value: '' }, props.defaultLabel),
+          props.choices.map((choice) => h('option', { key: choice.value, value: choice.value }, choice.label))),
+        hasMessage
+          ? h('p', { id: messageId, className: problem !== undefined ? 'cdc-message cdc-message-invalid' : 'cdc-message', role: 'status' },
+              problem !== undefined ? problem : props.hint)
+          : null)
+    }
+
+    /** Option list with localized, descriptive labels for one enum field. */
+    const options = (field, values, t) => values.map((value) => ({ value, label: t(`config.${field}.${value}`) }))
+
+    /**
+     * selectField(key, id, defaultValue, choicesFor): the staged-model wrapper
+     * for SettingsSelectField, parallel to textField. `choicesFor(state, t)`
+     * answers the options plus an optional cross-field `warning`.
+     */
+    function selectField(key, id, defaultValue, choicesFor) {
+      return function StagedSelect({ t, state, edit, resetField }) {
+        return h(SettingsSelectField, {
+          id,
+          label: t(`config.${key}`),
+          hint: t(`config.${key}Hint`),
+          defaultLabel: t('config.defaultOption', { value: t(`config.${key}.${defaultValue}`) }),
+          overriddenLabel: t('config.overridden'),
+          resetLabel: t('config.reset'),
+          invalidLabel: t('config.invalid'),
+          disabled: !state.writable,
+          ...state[key],
+          ...choicesFor(state, t),
+          onEdit: (text) => { edit(key, text) },
+          onReset: () => { resetField(key) },
+        })
+      }
+    }
+    const ServerField = selectField('server', 'chrome-cdp-config-server', DEFAULT_SERVER,
+      (state, t) => ({ choices: options('server', SERVERS, t) }))
+    // Only the staged engine's modes are offered; a staged mode that engine
+    // forbids still heads the list so the control shows exactly what would be
+    // saved, and the warning beneath (plus the blocked Save) names the fix.
+    const ModeField = selectField('mode', 'chrome-cdp-config-mode', DEFAULT_MODE, (state, t) => {
+      const { server, legal, mode, conflict } = modeLegality(state)
+      const values = conflict && state.mode.text !== '' ? [state.mode.text, ...legal] : legal
+      return {
+        choices: options('mode', values, t),
+        warning: conflict ? t('config.modeConflict', { mode, server, legal: legal.join(' / ') }) : undefined,
+      }
+    })
+    const ApprovalPolicyField = selectField('approvalPolicy', 'chrome-cdp-config-approval-policy', DEFAULT_APPROVAL_POLICY,
+      (state, t) => ({ choices: options('approvalPolicy', APPROVAL_POLICIES, t) }))
     const channelField = {
       field: 'channel',
       format: (value) => typeof value === 'string' ? value : '',
@@ -299,9 +454,15 @@ window.__ModuleLoader__.load({
       if (view === 'summary') return t('config.summary')
       const saveAndRefresh = async (...args) => { try { return await save(...args) } finally { refreshStatus() } }
       const fieldProps = { t, state, edit, resetField }
+      // Cross-field legality the per-field specs cannot see (modeLegality):
+      // while the staged server/mode pair conflicts, the shell is invalid so
+      // SettingsForm blocks Save instead of writing a pair the host would
+      // reject at reload; the mode field carries the explanation.
+      const formState = modeLegality(state).conflict ? { ...state, invalid: true } : state
       return h(React.Fragment, null,
         h(StatusSection, { t, status, refresh: refreshStatus, form: { server: state.server, mode: state.mode, endpoint: state.endpoint, channel: state.channel } }),
-        h(SettingsForm, { labels: formLabels(t), state, onSave: saveAndRefresh, onDiscard: discard },
+        h('style', null, SELECT_CSS),
+        h(SettingsForm, { labels: formLabels(t), state: formState, onSave: saveAndRefresh, onDiscard: discard },
           h(ServerField, { t, ...fieldProps }),
         h(ModeField, { t, ...fieldProps }),
           h(EndpointField, { t, ...fieldProps }),
