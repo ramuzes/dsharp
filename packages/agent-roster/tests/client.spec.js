@@ -322,7 +322,7 @@ const TEMPLATES = [
   { id: 'tpl-reviewer', name: 'Reviewer', description: 'Reviews code diffs', prompt: 'You review diffs critically.', defaultModel: null, createdAt: '2026-11-21T08:00:00.000Z', updatedAt: '2026-11-21T08:00:00.000Z' },
 ]
 
-/** The healthy roster face: CRUD only — the plugin's whole remote surface. */
+/** The healthy roster face: CRUD plus the high-tier use log — the plugin's whole remote surface. */
 function healthyRoster(overrides = {}) {
   const saved = []
   const deleted = []
@@ -338,6 +338,7 @@ function healthyRoster(overrides = {}) {
       return { ok: true, value: { ...TEMPLATES[0], ...input, id: input.id ?? 'tpl-new' } }
     },
     deleteTemplate: async (id) => { deleted.push(id); return { ok: true, value: { deleted: true } } },
+    listHighTierUse: async () => ({ ok: true, value: [] }),
     ...overrides,
   }
   return face
@@ -453,12 +454,12 @@ test('locale dictionaries have zh/en key parity and interpolate {param}', () => 
   assert.equal(t('command.sent', { name: 'Reviewer' }), 't:command.sent(name=Reviewer)')
 })
 
-test('apply mounts the agentRoster remote namespace with exactly four method descriptors', () => {
+test('the remote namespace mounts five method descriptors', () => {
   const { recorded } = applyPlugin({})
   assert.equal(recorded.mounts.length, 1)
   const mount = recorded.mounts[0]
   assert.equal(mount.package, 'dsh-agent-roster')
-  assert.deepEqual(mount.descriptors.map((d) => d.method).sort(), ['deleteTemplate', 'listTemplates', 'saveTemplate', 'stageSpawn'])
+  assert.deepEqual(mount.descriptors.map((d) => d.method).sort(), ['deleteTemplate', 'listHighTierUse', 'listTemplates', 'saveTemplate', 'stageSpawn'])
 })
 
 // ---------------------------------------------------------------------------
@@ -897,4 +898,98 @@ test('a second confirm while the first is in flight stages nothing more', async 
   await view.interact()
   assert.deepEqual(commandLines(view), ['/roster'])
   assert.ok(find(view.vdom, (node) => node.props?.['data-agent-roster-banner'] === 'success'), 'the first request completes')
+})
+
+// ---------------------------------------------------------------------------
+// Tiers and reuse: the editor fields, the row chip, the high-tier use log
+// ---------------------------------------------------------------------------
+
+/** Two newest-first high-tier use records with invented ids. */
+const USE_LOG = [
+  { id: 'use-2', at: '2026-11-26T09:30:00.000Z', sessionId: 'sess-9', templateId: 'tpl-reviewer', templateName: 'Reviewer', memberName: 'reviewer-diff', reason: 'task needs a deep diff read' },
+  { id: 'use-1', at: '2026-11-25T16:00:00.000Z', sessionId: 'sess-8', templateId: 'tpl-researcher', templateName: 'Researcher', memberName: 'researcher-sources', reason: 'role says so' },
+]
+
+test('the form saves a high-tier model and the reuse policy', async () => {
+  const view = await mountSection({ extras: { session: { modelCatalog: catalogFace } } })
+  const add = find(view.vdom, (node) => node.props?.['data-agent-roster-card-add'] !== undefined)
+  await view.interact(() => { add.props.onClick() })
+  await typeInto(view, 'data-agent-roster-role-name', 'Market Scout')
+  await typeInto(view, 'data-agent-roster-role-prompt', 'You scout markets.')
+  const high = () => find(view.vdom, (node) => node.props?.['data-agent-roster-high-model'] !== undefined)
+  const reuse = () => find(view.vdom, (node) => node.props?.['data-agent-roster-reuse'] !== undefined)
+  assert.equal(high().props['data-agent-roster-high-model'], 'none', 'high tier starts disabled')
+  assert.equal(high().props['data-agent-roster-menu-value'], '')
+  assert.ok(texts(high()).includes('t:card.highModel.none'))
+  assert.equal(reuse().props.value, 'role', 'reuse defaults to role')
+  assert.deepEqual(
+    findAll(reuse(), (node) => node.type === 'option').map((option) => [option.props.value, ...texts(option).filter((text) => text.startsWith('t:'))]),
+    [['role', 't:card.reuse.role'], ['task', 't:card.reuse.task']])
+  await pickMenuOption(view, 'data-agent-roster-card-model', JSON.stringify(['deepseek', 'chat']))
+  await pickMenuOption(view, 'data-agent-roster-high-model', JSON.stringify(['deepseek', 'reasoner']))
+  await view.interact(() => { reuse().props.onChange({ target: { value: 'task' } }) })
+  const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
+  await view.interact(() => { save.props.onClick() })
+  assert.deepEqual(view.roster.saved[0].defaultModel, { provider: 'deepseek', model: 'chat' })
+  assert.deepEqual(view.roster.saved[0].highTierModel, { provider: 'deepseek', model: 'reasoner' })
+  assert.equal(view.roster.saved[0].reuse, 'task')
+})
+
+test('edit prefills the stored high tier and reuse, and clearing the high tier saves null', async () => {
+  const highRef = { provider: 'acme', model: 'custom-2', reasoningEffort: 'deep' }
+  const view = await mountSection({
+    roster: healthyRoster({ listTemplates: async () => ({ ok: true, value: [{ ...TEMPLATES[0], defaultModel: { provider: 'acme', model: 'custom-1' }, highTierModel: highRef, reuse: 'task' }] }) }),
+  })
+  const edit = find(view.vdom, (node) => node.props?.['data-agent-roster-row-edit'] !== undefined)
+  await view.interact(() => { edit.props.onClick() })
+  const high = find(view.vdom, (node) => node.props?.['data-agent-roster-high-model'] !== undefined)
+  assert.equal(high.props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'custom-2']), 'stored high tier prefills losslessly')
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-reuse'] !== undefined).props.value, 'task')
+  // The menu's none row has key '' (ModelMenu noneLabel entry).
+  await pickMenuOption(view, 'data-agent-roster-high-model', '')
+  const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
+  await view.interact(() => { save.props.onClick() })
+  assert.equal(view.roster.saved[0].highTierModel, null, 'an explicit null clears the stored high tier')
+  assert.equal(view.roster.saved[0].reuse, 'task')
+})
+
+test('a template row shows the base model and names the high tier when set', async () => {
+  const view = await mountSection({
+    roster: healthyRoster({ listTemplates: async () => ({ ok: true, value: [
+      { ...TEMPLATES[0], defaultModel: { provider: 'acme', model: 'custom-1' }, highTierModel: { provider: 'acme', model: 'custom-2' } },
+      { ...TEMPLATES[1], defaultModel: null, highTierModel: null },
+    ] }) }),
+  })
+  const chips = findAll(view.vdom, (node) => node.props?.['data-agent-roster-row-model'] !== undefined)
+  assert.ok(texts(chips[0]).includes('t:card.model.chip.high(model=t:card.model.chip(provider=acme,model=custom-1))'), 'a set high tier is named after the base')
+  assert.ok(texts(chips[1]).includes('t:card.model.none'))
+  assert.equal(texts(chips[1]).some((line) => line.includes('chip.high')), false, 'no arrow without a high tier')
+})
+
+test('the high-tier use block lists records with their reason, or the empty note', async () => {
+  const view = await mountSection({ roster: healthyRoster({ listHighTierUse: async () => ({ ok: true, value: USE_LOG }) }) })
+  const block = find(view.vdom, (node) => node.props?.['data-agent-roster-use'] !== undefined)
+  assert.ok(block, 'the use block renders below the manager')
+  assert.ok(texts(block).includes('t:card.use.title'))
+  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-use-empty'] !== undefined), undefined, 'no empty note over records')
+  const rows = findAll(view.vdom, (node) => node.props?.['data-agent-roster-use-row'] !== undefined)
+  assert.deepEqual(rows.map((node) => node.props['data-agent-roster-use-row']), ['use-2', 'use-1'], 'records keep the newest-first order of the host')
+  assert.ok(texts(rows[0]).includes('t:card.use.row(template=Reviewer,member=reviewer-diff,time=2026-11-26T09:30:00.000Z)'))
+  assert.deepEqual(
+    findAll(view.vdom, (node) => node.props?.['data-agent-roster-use-reason'] !== undefined)
+      .map((node) => texts(node).find((line) => line.startsWith('t:card.use.reason('))),
+    ['t:card.use.reason(reason=task needs a deep diff read)', 't:card.use.reason(reason=role says so)'])
+})
+
+test('the high-tier use block shows the empty note without records and the failure line when the read fails', async () => {
+  const empty = await mountSection()
+  assert.ok(find(empty.vdom, (node) => node.props?.['data-agent-roster-use-empty'] !== undefined), 'the empty note renders')
+  assert.equal(find(empty.vdom, (node) => node.props?.['data-agent-roster-use-row'] !== undefined), undefined)
+  const failed = await mountSection({
+    roster: healthyRoster({ listHighTierUse: async () => ({ ok: false, error: { code: 'roster/storage-degraded', message: 'closed' } }) }),
+  })
+  const line = find(failed.vdom, (node) => node.props?.['data-agent-roster-error'] === 'roster/storage-degraded')
+  assert.ok(line, 'the failed read renders its error line')
+  assert.ok(texts(line).some((text) => text.includes('closed')))
+  assert.equal(find(failed.vdom, (node) => node.props?.['data-agent-roster-use-empty'] !== undefined), undefined, 'a failure is not "no records"')
 })

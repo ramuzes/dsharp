@@ -144,6 +144,17 @@ window.__ModuleLoader__.load({
       'card.model.chip': '{provider} / {model}',
       'card.model.chip.effort': '{provider} / {model} · {effort}',
       'card.updatedAt': '更新于 {time}',
+      'card.highModel': '高阶模型',
+      'card.highModel.none': '未启用高阶',
+      'card.reuse': '成员复用方式',
+      'card.reuse.role': '按角色复用',
+      'card.reuse.task': '按任务复用',
+      'card.model.chip.high': '{model} → 高阶',
+      'card.use.title': '高阶使用记录',
+      'card.use.empty': '还没有高阶调用记录',
+      'card.use.row': '{template} → {member} · {time}',
+      'card.use.reason': '原因：{reason}',
+      'card.use.failed': '读取使用记录失败',
       'settings.nav': '角色花名册',
     }
     const en = {
@@ -193,6 +204,17 @@ window.__ModuleLoader__.load({
       'card.model.chip': '{provider} / {model}',
       'card.model.chip.effort': '{provider} / {model} \u00b7 {effort}',
       'card.updatedAt': 'Updated {time}',
+      'card.highModel': 'High-tier model',
+      'card.highModel.none': 'High tier not enabled',
+      'card.reuse': 'Reuse members',
+      'card.reuse.role': 'By role',
+      'card.reuse.task': 'By task',
+      'card.model.chip.high': '{model} → high',
+      'card.use.title': 'High-tier use',
+      'card.use.empty': 'No high-tier dispatches yet',
+      'card.use.row': '{template} → {member} · {time}',
+      'card.use.reason': 'Reason: {reason}',
+      'card.use.failed': 'Could not read the use log',
       'settings.nav': 'Agent roster',
     }
 
@@ -242,10 +264,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The Host half's four remote methods (lib/roster-service.js) as
+     * The Host half's five remote methods (lib/roster-service.js) as
      * version-1 invocation descriptors. Wire parameter names mirror the Host
      * method signatures: object-input methods (saveTemplate, stageSpawn) take
-     * one `input`, delete one `id` string, listTemplates none; every result
+     * one `input`, delete one `id` string, the two lists none; every result
      * is src-json. The
      * id/service/namespace/invocation shape follows the chrome-cdp
      * client.js:389-396 pattern over typert InvocationDescriptor.
@@ -271,6 +293,7 @@ window.__ModuleLoader__.load({
       { method: 'saveTemplate', parameters: [jsonParameter('input')] },
       { method: 'deleteTemplate', parameters: [jsonParameter('id')] },
       { method: 'stageSpawn', parameters: [jsonParameter('input')] },
+      { method: 'listHighTierUse', parameters: [] },
     ]
 
     /**
@@ -728,13 +751,29 @@ window.__ModuleLoader__.load({
       return [...rows, { key, provider: ref.provider, model: ref.model, name: `${ref.provider} / ${ref.model}`, groupName: ref.provider, efforts }]
     }
 
-    /** The default-model chip text of one stored ModelRef (or the none label). */
+    /**
+     * The default-model chip text of one stored ModelRef (or the none label).
+     * The card's row chip wraps it once more through rowChipText when the
+     * record names a high tier.
+     */
     function modelChipText(t, ref) {
       if (refKey(ref) === null) return t('card.model.none')
       const params = { provider: ref.provider, model: ref.model }
       return typeof ref.reasoningEffort === 'string' && ref.reasoningEffort !== ''
         ? t('card.model.chip.effort', { ...params, effort: ref.reasoningEffort })
         : t('card.model.chip', params)
+    }
+
+    /**
+     * A template row's model chip: the base model text, plus " → high" when
+     * a usable high-tier model is stored (lib/tiers.js usableModel — an
+     * unusable stored ref reads as not enabled, the same rule the spawn
+     * applies). The base keeps its own text so an empty base still reads
+     * "no default model" rather than vanishing behind the arrow.
+     */
+    function rowChipText(t, tpl) {
+      const base = modelChipText(t, tpl?.defaultModel ?? null)
+      return refKey(tpl?.highTierModel ?? null) === null ? base : t('card.model.chip.high', { model: base })
     }
 
     /**
@@ -1003,7 +1042,64 @@ window.__ModuleLoader__.load({
     function RosterSettingsSection(props) {
       const { t } = props
       return h('div', { className: 'agent-roster-settings', 'data-agent-roster-settings': '' },
-        h(RosterCardPage, { t }))
+        h(RosterCardPage, { t }),
+        h(RosterUseBlock, { t }))
+    }
+
+    /** The template's reuse policies (lib/store.js RoleTemplate `reuse`). */
+    const REUSE_POLICIES = Object.freeze(['role', 'task'])
+
+    /**
+     * The high-tier use log under the manager: the newest-first dispatch
+     * records the Host half's listHighTierUse serves, each with the reason
+     * the high tier was granted. A Host half without the method (older
+     * version) renders nothing here; a failed read renders its contained
+     * error line and never the empty note.
+     * @param {any} props - the locale seat's `t`.
+     */
+    function RosterUseBlock(props) {
+      const { t } = props
+      const [log, setLog] = React.useState({ phase: 'loading' })
+      React.useEffect(() => {
+        const ns = rosterNs()
+        if (ns?.listHighTierUse === undefined) {
+          setLog({ phase: 'unsupported' })
+          return undefined
+        }
+        let alive = true
+        settle(ns.listHighTierUse()).then(
+          (value) => { if (alive) setLog({ phase: 'ready', list: Array.isArray(value) ? value : [] }) },
+          (error) => { if (alive) setLog({ phase: 'failed', error }) },
+        )
+        return () => { alive = false }
+      }, [])
+      if (log.phase === 'unsupported') return null
+      return h('section', { className: 'agent-roster-section', 'data-agent-roster-use': '' },
+        h('span', { className: 'agent-roster-label' }, t('card.use.title')),
+        log.phase === 'failed'
+          ? h('div', {
+            className: 'agent-roster-note agent-roster-error',
+            'data-agent-roster-note': 'error',
+            'data-agent-roster-error': typeof log.error?.code === 'string' ? log.error.code : '',
+            role: 'alert',
+          },
+          h('span', { className: 'agent-roster-error-label' }, t('card.use.failed')),
+          errorDetail(log.error))
+          : null,
+        log.phase === 'ready' && log.list.length === 0
+          ? h('div', { className: 'agent-roster-note', 'data-agent-roster-use-empty': '' }, t('card.use.empty'))
+          : null,
+        log.phase === 'ready'
+          ? h('div', { className: 'agent-roster-use-rows' }, log.list.map((record) => h('div', {
+            key: String(record?.id ?? ''),
+            className: 'agent-roster-use-row',
+            'data-agent-roster-use-row': String(record?.id ?? ''),
+          },
+          h('span', { className: 'agent-roster-use-line' },
+            t('card.use.row', { template: String(record?.templateName ?? ''), member: String(record?.memberName ?? ''), time: String(record?.at ?? '') })),
+          h('span', { className: 'agent-roster-use-reason', 'data-agent-roster-use-reason': '' },
+            t('card.use.reason', { reason: String(record?.reason ?? '') })))))
+          : null)
     }
 
     /**
@@ -1077,7 +1173,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'agent-roster-card-row-head' },
           h('span', { className: 'agent-roster-card-row-name', 'data-agent-roster-row-name': '' }, String(tpl?.name ?? '')),
           h('div', { className: 'agent-roster-card-meta' },
-            h('span', { className: 'agent-roster-card-chip', 'data-agent-roster-row-model': '' }, modelChipText(t, tpl?.defaultModel ?? null)),
+            h('span', { className: 'agent-roster-card-chip', 'data-agent-roster-row-model': '' }, rowChipText(t, tpl)),
             h('span', { className: 'agent-roster-card-row-updated', 'data-agent-roster-row-updated': '' },
               t('card.updatedAt', { time: String(tpl?.updatedAt ?? '') })))),
         tpl?.description ? h('span', { className: 'agent-roster-card-row-desc', 'data-agent-roster-row-desc': '' }, String(tpl.description)) : null,
@@ -1145,11 +1241,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The card's add/edit form: the shared
-     * RoleFields and the shared ModelRefEditor (default = no default model).
-     * Saves go through saveTemplate — `id` on edit, none on add — with the
-     * full explicit field set (patch semantics not relied upon, so clearing
-     * a field actually clears it); a failure stays in-form with its
+     * The card's add/edit form: the shared RoleFields, the shared
+     * ModelRefEditor for the base model (default = no default model), a
+     * second one for the high-tier model (default = not enabled), and the
+     * reuse policy select. Saves go through saveTemplate — `id` on edit,
+     * none on add — with the full explicit field set (patch semantics not
+     * relied upon, so clearing a field actually clears it); a failure stays in-form with its
      * bilingual reason, a success closes the form and refreshes the list.
      * @param {any} props - `mode` ('add' | 'edit'), `template` (edit only),
      *   `t`, `close()`, `saved()`.
@@ -1157,14 +1254,23 @@ window.__ModuleLoader__.load({
     function RosterCardForm(props) {
       const { mode, template, t, close, saved } = props
       const storedModel = mode === 'edit' ? (template?.defaultModel ?? null) : null
+      const storedHigh = mode === 'edit' ? (template?.highTierModel ?? null) : null
       const { rows } = useModelRows()
       const startKey = refKey(storedModel)
       const startEffort = storedModel !== null && typeof storedModel.reasoningEffort === 'string' ? storedModel.reasoningEffort : ''
+      const startHighKey = refKey(storedHigh)
+      const startHighEffort = storedHigh !== null && typeof storedHigh.reasoningEffort === 'string' ? storedHigh.reasoningEffort : ''
       const [name, setName] = React.useState(typeof template?.name === 'string' ? template.name : '')
       const [description, setDescription] = React.useState(typeof template?.description === 'string' ? template.description : '')
       const [prompt, setPrompt] = React.useState(typeof template?.prompt === 'string' ? template.prompt : '')
       const [modelChoice, setModelChoice] = React.useState(startKey ?? '')
       const [effortChoice, setEffortChoice] = React.useState(startEffort)
+      const [highChoice, setHighChoice] = React.useState(startHighKey ?? '')
+      const [highEffortChoice, setHighEffortChoice] = React.useState(startHighEffort)
+      // A legacy record without a stored policy saves as the Host's default.
+      const [reuseChoice, setReuseChoice] = React.useState(
+        mode === 'edit' && REUSE_POLICIES.includes(template?.reuse) ? template.reuse : 'role',
+      )
       const [saving, setSaving] = React.useState(false)
       const [outcome, setOutcome] = React.useState(null)
 
@@ -1177,12 +1283,18 @@ window.__ModuleLoader__.load({
       const editRows = React.useMemo(() => rowsWithRef(rows, storedModel), [rows, storedModel])
       const byKey = React.useMemo(() => rowsByKey(editRows), [editRows])
 
+      // The high-tier editor gets its own lossless rows (the stored high ref
+      // rides as a synthetic row the same way the base one does).
+      const highRows = React.useMemo(() => rowsWithRef(rows, storedHigh), [rows, storedHigh])
+      const highByKey = React.useMemo(() => rowsByKey(highRows), [highRows])
+
       const nameText = name.trim()
       const descriptionText = description.trim()
       const promptText = prompt.trim()
       const complete = nameText !== '' && promptText !== ''
       const chosen = modelChoice === '' ? undefined : byKey.get(modelChoice)
       const modelRef = modelRefOf(chosen, effortChoice)
+      const highRef = modelRefOf(highChoice === '' ? undefined : highByKey.get(highChoice), highEffortChoice)
 
       /** Save through saveTemplate; failures stay in-form for a fix. */
       const confirmSave = async () => {
@@ -1202,6 +1314,8 @@ window.__ModuleLoader__.load({
             description: descriptionText,
             prompt: promptText,
             defaultModel: modelRef,
+            highTierModel: highRef,
+            reuse: reuseChoice,
           }))
           saved()
         } catch (error) {
@@ -1239,6 +1353,31 @@ window.__ModuleLoader__.load({
           effort: effortChoice,
           onEffort: setEffortChoice,
         }),
+        h(ModelRefEditor, {
+          id: 'agent-roster-card-high-model',
+          marker: 'data-agent-roster-high-model',
+          noneMarker: 'none',
+          label: t('card.highModel'),
+          defaultLabel: t('card.highModel.none'),
+          effortLabel: t('model.effort.label'),
+          effortDefaultLabel: t('model.effort.default'),
+          rows: highRows,
+          byKey: highByKey,
+          choice: highChoice,
+          onChoice: (value) => { setHighChoice(value); setHighEffortChoice('') },
+          effort: highEffortChoice,
+          onEffort: setHighEffortChoice,
+        }),
+        h('section', { className: 'agent-roster-section' },
+          h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-card-reuse' }, t('card.reuse')),
+          h('select', {
+            id: 'agent-roster-card-reuse',
+            className: 'agent-roster-input',
+            'data-agent-roster-reuse': '',
+            value: reuseChoice,
+            disabled: saving,
+            onChange: (event) => { setReuseChoice(event.target.value) },
+          }, REUSE_POLICIES.map((policy) => h('option', { key: policy, value: policy }, t(`card.reuse.${policy}`))))),
         outcome === null ? null : h('div', {
           className: 'agent-roster-banner agent-roster-banner-error',
           'data-agent-roster-card-form-error': '',
@@ -1327,6 +1466,13 @@ window.__ModuleLoader__.load({
 .agent-roster-card-form { display: flex; flex-direction: column; }
 .agent-roster-role-fields { display: flex; flex-direction: column; }
 .agent-roster-role-fields > * + * { border-top: 0.5px solid var(--dsw-alias-border-l2); }
+.agent-roster-card-form > .agent-roster-section + .agent-roster-section { padding-top: 12px; border-top: 0.5px solid var(--dsw-alias-border-l2); }
+.agent-roster-use-rows { display: flex; flex-direction: column; }
+.agent-roster-use-row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-top: 0.5px solid var(--dsw-alias-border-l2); }
+.agent-roster-use-row:first-child { border-top: none; }
+.agent-roster-use-line { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
+.agent-roster-use-reason { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary); }
+select.agent-roster-input { padding-right: 28px; }
 /* ModelMenu — copied from ui-model-selection ModelSelect.module.css and
  * ui-primitives MenuGroup.module.css, renamed under this prefix. CSS anchor
  * positioning: the trigger names an anchor through an inline custom
