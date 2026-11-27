@@ -1,5 +1,41 @@
 # dsh-agent-roster Live-Host Verification Runbook
 
+## 2026-11-27 · 0.3.0 — model tiers, resident reuse, yield after dispatch (ADR-0013), verified on the live profile
+
+Environment: profile `web`, bundle `dsh-agent-roster-0.3.0.tgz` (commit `97a6017`), host 0.2.3-alpha.2.
+Evidence is the plugin's stage record plus the session logs on disk (parsed as JSON events, never
+grep'd as text). Model names and session ids are deliberately not recorded here: this file is public.
+
+### Mount
+
+`~/.dsh/agent-roster-status.json` right after the reinstall: `tools-registered { authoring: true,
+command: true }`. The three templates stored before this release listed with the new fields at their
+defaults (`highTierModel: null`, `reuse: "role"`) — old records load unchanged.
+
+### Probe, driven from the lead's own session
+
+A temporary template with a small base model, a large high-tier model at high reasoning effort and
+reuse policy `role` was saved through `roster_template_save` with the two new fields.
+
+| Step | Call | Observed |
+|---|---|---|
+| 1 | `roster_spawn` base, task A | `{ name: probe, tier: "base", reused: false }`; one new session directory; the member's first request ran on the base model |
+| 2 | `roster_spawn` base, task B | `{ name: probe, reused: true }`; **no** new session directory; the member's log shows a second turn opened by an agent message and a second request on the base model |
+| 3 | `roster_spawn` high, no `reason` | refused `roster/bad-request` ("reason is required with tier high"); nothing created |
+| 4 | `roster_spawn` high with a reason | `{ name: probe-2, tier: "high", reused: false }`; a sibling on the high-tier model at the high effort; one record written to the log domain (`storages/agent_roster_log.json`, a separate file — the templates storage untouched) |
+| 5 | `roster_spawn` base, a task that takes ~25 s, then the lead **ended its turn** | lead log: `turn/end`, then 25 s later the settle notice spliced into `next-turn`, `turn/start`, then the `subagent-settled` message |
+
+`wait_agent` was not called once in the window (0 calls in the lead's log). Step 5 is the path the
+tool description asks for: an idle lead is resumed by the member's completion, with no polling. Steps
+1–4 arrived while the lead was still working and were delivered at its next step, as the runtime
+documented (`manager.ts:1151`).
+
+Not verified live: the Settings page itself (high-tier field, the reuse control and hint, the use
+list) — covered by the real-React client suite; a reused member in a long real task (context growth).
+
+Clean-up: the temporary template was left in the roster under a name that says to delete it; the
+authoring tools have no delete, so it is removed in Settings.
+
 ## 2026-11-25 · 0.2.2 — command-driven creation and standby members (ADR-0012), verified on the live profile
 
 Environment: profile `web`, bundle `dsh-agent-roster-0.2.2.tgz` (code of commit `6926198`; the unreleased versions were renumbered to patch releases: 0.3.0 → 0.2.1, 0.4.0 → 0.2.2),
