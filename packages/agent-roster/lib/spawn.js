@@ -19,9 +19,11 @@
  * template's standing prompt is passed verbatim.
  */
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import { ModelRef } from './store.js'
 import { resolveMemberModel } from './tiers.js'
 import { readString } from './wire.js'
+
+// Model validation lives in lib/tiers.js; re-exported for its existing importers.
+export { parseModelChoice } from './tiers.js'
 
 /** In-process spawn provider name (subagent-spawn-in-process default). */
 const SPAWN_PROVIDER = 'spawn'
@@ -72,29 +74,6 @@ export function allocateName(base, taken = []) {
     ordinal += 1
   } while (held.has(candidate))
   return candidate
-}
-
-/**
- * Validate an explicit per-spawn model choice and return it as a ModelRef.
- * Unlike stored data an explicit choice is REFUSED when invalid: the caller
- * asked for one particular route, so silently running another would create
- * the wrong member. Shared by the spawn, the tools and the dialog's staging.
- * @param {unknown} value - `{ provider, model, reasoningEffort? }`.
- * @returns {{ provider: string, model: string, reasoningEffort?: string }}
- * @throws {RemoteError} `roster/bad-request` with the issues.
- */
-export function parseModelChoice(value) {
-  const parsed = ModelRef.safeParse(value)
-  if (!parsed.success || parsed.data.provider === '' || parsed.data.model === '' || parsed.data.reasoningEffort === '') {
-    // An empty effort is refused for the same reason the host's own
-    // delegation tool refuses it (tool-subagent/src/index.ts:92).
-    const issues = parsed.success
-      ? [{ path: 'provider, model, reasoningEffort', message: 'must be non-empty' }]
-      : parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
-    throw new RemoteError('roster/bad-request',
-      `model rejected / 模型不合法: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`, { issues })
-  }
-  return parsed.data
 }
 
 /**

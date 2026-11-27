@@ -3,13 +3,36 @@
  * plugin resolves it from the template's stored models, so the agent can no
  * longer pick an arbitrary route or inherit its own. The user's per-spawn
  * choice in the "+" dialog (an explicit model object, or `null` for inherit)
- * is unchanged; it is classified against the stored models so reuse (ADR-0013)
+ * is unchanged; that choice is validated by `parseModelChoice` here and
+ * classified against the stored models so reuse (ADR-0013)
  * can key a member by route regardless of who chose it.
  */
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { ModelRef } from './store.js'
-import { parseModelChoice } from './spawn.js'
 import { readString } from './wire.js'
+
+/**
+ * Validate an explicit per-spawn model choice and return it as a ModelRef.
+ * Unlike stored data an explicit choice is REFUSED when invalid: the caller
+ * asked for one particular route, so silently running another would create
+ * the wrong member. Shared by the spawn, the tools and the dialog's staging.
+ * @param {unknown} value - `{ provider, model, reasoningEffort? }`.
+ * @returns {{ provider: string, model: string, reasoningEffort?: string }}
+ * @throws {RemoteError} `roster/bad-request` with the issues.
+ */
+export function parseModelChoice(value) {
+  const parsed = ModelRef.safeParse(value)
+  if (!parsed.success || parsed.data.provider === '' || parsed.data.model === '' || parsed.data.reasoningEffort === '') {
+    // An empty effort is refused for the same reason the host's own
+    // delegation tool refuses it (tool-subagent/src/index.ts:92).
+    const issues = parsed.success
+      ? [{ path: 'provider, model, reasoningEffort', message: 'must be non-empty' }]
+      : parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    throw new RemoteError('roster/bad-request',
+      `model rejected / 模型不合法: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`, { issues })
+  }
+  return parsed.data
+}
 
 /** The tiers a lead may request, weakest first. */
 export const TIERS = Object.freeze(['base', 'high'])
