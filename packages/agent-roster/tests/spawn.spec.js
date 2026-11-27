@@ -24,6 +24,7 @@ import assert from 'node:assert/strict'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import { slugify, allocateName, assembleMemberOpening, spawnDeliveryOf, resolveTemplateRef, spawnFromTemplate } from '../lib/spawn.js'
 import { openRosterStore, RoleTemplate } from '../lib/store.js'
+import { TIERS, usableModel, sameModel, resolveMemberModel, requireReason } from '../lib/tiers.js'
 
 /** Fixed timestamp for hand-built records. */
 const T0 = '2026-11-22T12:00:00.000Z'
@@ -389,4 +390,114 @@ test('an invalid explicit model rejects with roster/bad-request and spawns nothi
     )
   }
   assert.equal(subagents.activations.length, 0)
+})
+
+// ---------------------------------------------------------------------------
+// Tier resolution: the lead names a tier ('base' | 'high') and the plugin
+// resolves it from the template. The dialog's explicit `model` (object or
+// null) still wins and is classified against the stored models.
+// ---------------------------------------------------------------------------
+
+/** A template carrying both routes; the two differ in effort only. */
+const TIERED = { ...ROUTED, highTierModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'max' } }
+
+test('tier high runs the member on the template\'s high-tier model', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const result = await spawnFromTemplate(strictScope(), { subagents }, {
+    agent: root,
+    template: RoleTemplate.parse(TIERED),
+    tier: 'high',
+  })
+  assert.deepEqual(subagents.activations[0].agentOptions, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'max' })
+  assert.deepEqual(result.model, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'max' })
+  assert.equal(result.tier, 'high')
+  assert.equal(result.reused, false)
+})
+
+test('the omitted tier is base, and the result reports it', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const result = await spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(TIERED) })
+  assert.deepEqual(subagents.activations[0].agentOptions, { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+  assert.deepEqual({ model: result.model, tier: result.tier, reused: result.reused }, {
+    model: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' }, tier: 'base', reused: false,
+  })
+})
+
+test('tier high without a high-tier model rejects typed and spawns nothing', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  await assert.rejects(
+    () => spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(ROUTED), tier: 'high' }),
+    (error) => remoteErrorOf(error)?.code === 'roster/no-high-tier-model',
+  )
+  assert.equal(subagents.activations.length, 0)
+})
+
+test('an unknown tier rejects typed and spawns nothing', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  await assert.rejects(
+    () => spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(TIERED), tier: 'ultra' }),
+    (error) => remoteErrorOf(error)?.code === 'roster/bad-request',
+  )
+  assert.equal(subagents.activations.length, 0)
+})
+
+test('a malformed stored high-tier model refuses high and degrades base to inherit', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  // Stored data can predate a schema change: an empty provider is schema-legal
+  // but not a usable route. `high` must never start a member on it, and `base`
+  // degrades to inherit rather than failing the spawn.
+  const template = { ...RoleTemplate.parse(RESEARCHER), defaultModel: { provider: '', model: 'x' }, highTierModel: { provider: '', model: 'x' } }
+  await assert.rejects(
+    () => spawnFromTemplate(strictScope(), { subagents }, { agent: root, template, tier: 'high' }),
+    (error) => remoteErrorOf(error)?.code === 'roster/no-high-tier-model',
+  )
+  const result = await spawnFromTemplate(strictScope(), { subagents }, { agent: root, template, tier: 'base' })
+  assert.equal('agentOptions' in subagents.activations[0], false)
+  assert.deepEqual({ model: result.model, tier: result.tier }, { model: null, tier: 'base' })
+})
+
+test('resolveMemberModel: an explicit model wins and is classified against the stored models', () => {
+  const template = RoleTemplate.parse(TIERED)
+  assert.deepEqual(TIERS, ['base', 'high'])
+  const high = { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'max' }
+  const custom = { provider: 'acme', model: 'cheap' }
+  assert.deepEqual(resolveMemberModel(template, { model: high, tier: 'base' }), { model: high, tier: 'high' }, 'explicit beats the tier')
+  assert.deepEqual(resolveMemberModel(template, { model: ROUTED.defaultModel }), { model: ROUTED.defaultModel, tier: 'base' })
+  assert.deepEqual(resolveMemberModel(template, { model: custom }), { model: custom, tier: 'custom' })
+  assert.deepEqual(resolveMemberModel(template, {}), { model: ROUTED.defaultModel, tier: 'base' })
+  assert.deepEqual(resolveMemberModel(template, { tier: 'high' }), { model: high, tier: 'high' })
+  // An invalid explicit choice is refused, not silently replaced.
+  assert.throws(() => resolveMemberModel(template, { model: { provider: '', model: 'x' } }), (error) => remoteErrorOf(error)?.code === 'roster/bad-request')
+  assert.throws(() => resolveMemberModel(template, { tier: 'ultra' }), (error) => remoteErrorOf(error)?.code === 'roster/bad-request')
+  // The failure names the template, for the lead's report.
+  assert.throws(() => resolveMemberModel(RoleTemplate.parse(ROUTED), { tier: 'high' }), (error) => {
+    const remote = remoteErrorOf(error)
+    return remote?.code === 'roster/no-high-tier-model' && remote.message.includes('"Researcher"') && remote?.details?.template === 't1'
+  })
+  // Extracted defensive rule: absent or empty provider/model → null.
+  assert.equal(usableModel(null), null)
+  assert.equal(usableModel(undefined), null)
+  assert.equal(usableModel({ provider: '', model: 'x' }), null)
+  assert.deepEqual(usableModel({ provider: 'acme', model: 'cheap' }), { provider: 'acme', model: 'cheap' })
+  // Exact on provider, model and effort; an absent effort equals an empty one.
+  assert.equal(sameModel(custom, { provider: 'acme', model: 'cheap', reasoningEffort: '' }), true)
+  assert.equal(sameModel(ROUTED.defaultModel, high), false)
+  assert.equal(sameModel(null, null), true)
+  assert.equal(sameModel(null, custom), false)
+})
+
+test('inherit is one route: a dialog member and a base member of a model-less template resolve to the same tier and route', () => {
+  assert.deepEqual(resolveMemberModel(RESEARCHER, { model: null }), { model: null, tier: 'base' })
+  assert.deepEqual(resolveMemberModel(RESEARCHER, { tier: 'base' }), { model: null, tier: 'base' })
+})
+
+test('requireReason trims and refuses blank', () => {
+  assert.equal(requireReason('  concurrency  '), 'concurrency')
+  assert.throws(() => requireReason('  '), (error) => remoteErrorOf(error)?.code === 'roster/bad-request')
+  assert.throws(() => requireReason(undefined), (error) => remoteErrorOf(error)?.code === 'roster/bad-request')
 })

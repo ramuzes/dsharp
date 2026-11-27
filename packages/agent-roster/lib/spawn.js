@@ -20,6 +20,7 @@
  */
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { ModelRef } from './store.js'
+import { resolveMemberModel } from './tiers.js'
 import { readString } from './wire.js'
 
 /** In-process spawn provider name (subagent-spawn-in-process default). */
@@ -196,23 +197,25 @@ export async function resolveTemplateRef(store, reference) {
  * tree, allocate a free sibling name, and hand the rendered template to
  * `subagents.startActivation` with parent delivery.
  *
- * The child's model: an explicit per-spawn choice wins — an object names the
- * route, `null` clears the template default so the child inherits the parent's
- * current route — then the template's `defaultModel`, otherwise omitted
- * (inherit). The activation's
+ * The child's model is resolved by lib/tiers.js: the dialog's explicit choice
+ * (object, or `null` to inherit) wins, else the requested `tier` selects the
+ * template's stored model (base may inherit). The activation's
  * `result` promise is owned by the runtime for parent delivery; the manager
  * acknowledges it itself (manager.ts:897 `void activation.result.promise.catch`),
  * so not awaiting it here cannot dangle an unhandled rejection.
  *
  * @param {object} scope - plugin ctx; only its get() name lookup is touched.
  * @param {{ subagents?: object }} deps - optional host services (test seam/DI).
- * @param {{ agent?: object, template: object, task?: unknown, model?: import('./store.js').ModelRef | null }} input - the
- *   calling agent, the resolved template record, the optional task, and the
- *   optional per-spawn model choice (object or null; omitted = template default).
- * @returns {Promise<{ name: string, childSessionId?: string, model: object | null }>}
+ * @param {{ agent?: object, template: object, task?: unknown, tier?: 'base' | 'high', model?: import('./store.js').ModelRef | null }} input - the
+ *   calling agent, the resolved template record, the optional task, the
+ *   optional tier (default base), and the dialog's optional per-spawn model
+ *   choice (object or null; wins over the tier).
+ * @returns {Promise<{ name: string, childSessionId?: string, model: object | null, tier: 'base' | 'high' | 'custom', reused: boolean }>}
  *   the activation's model-facing name, the child session id when exposed,
- *   and the applied model (null = inherited).
- * @throws {RemoteError} `roster/no-subagents`, `roster/bad-request`.
+ *   the applied model (null = inherited), the tier it resolved to, and
+ *   `reused` (always false until resident reuse lands).
+ * @throws {RemoteError} `roster/no-subagents`, `roster/bad-request`,
+ *   `roster/no-high-tier-model`.
  * @throws {Error} when `input.agent` is absent (tool misuse, not a data error).
  */
 export async function spawnFromTemplate(scope, deps, input) {
@@ -228,25 +231,10 @@ export async function spawnFromTemplate(scope, deps, input) {
     throw new RemoteError('roster/bad-request', 'template is required / template 不能为空', { field: 'template' })
   }
 
-  // The template's model, validated defensively (stored data can predate a
-  // schema change). An invalid stored ref degrades to "inherit" — a spawn
-  // must not fail because a model was retired.
-  /** @type {{ provider: string, model: string, reasoningEffort?: string } | null} */
-  let model = null
-  if (template.defaultModel !== null && template.defaultModel !== undefined) {
-    const parsed = ModelRef.safeParse(template.defaultModel)
-    // Empty provider/model strings are schema-legal but not a usable route;
-    // treating them as a selection would send the child a broken route.
-    if (parsed.success && parsed.data.provider !== '' && parsed.data.model !== '') model = parsed.data
-  }
-  // Per-spawn override: an explicit choice — an object, or `null` which
-  // clears the template default — beats the template; an omitted choice keeps
-  // it. Unlike stored data an explicit choice is REFUSED when invalid: the
-  // caller asked for one particular route, so silently running another would
-  // create the wrong member.
-  const explicit = input?.model
-  if (explicit === null) model = null
-  else if (explicit !== undefined) model = parseModelChoice(explicit)
+  // The route comes from the tier (or the dialog's explicit model); an
+  // invalid stored model degrades to inherit there, a refused `high` throws
+  // before anything starts.
+  const { model, tier } = resolveMemberModel(template, { tier: input?.tier, model: input?.model })
 
   const root = subagents.rootOf(agent)
   // Free-name allocation against the root's committed direct-child names
@@ -289,5 +277,8 @@ export async function spawnFromTemplate(scope, deps, input) {
     name: activation.name,
     ...(activation.childId !== undefined ? { childSessionId: activation.childId } : {}),
     model,
+    tier,
+    // Resident reuse arrives with ADR-0013's next step; a creation is never a reuse.
+    reused: false,
   }
 }
