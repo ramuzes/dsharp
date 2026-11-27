@@ -28,9 +28,9 @@ reuse policy `role` was saved through `roster_template_save` with the two new fi
 
 `wait_agent` was not called once in the window (0 calls in the lead's log). Step 5 is the path the
 tool description asks for: an idle lead is resumed by the member's completion, with no polling. Steps
-Step 6 is the busy-member rule: work is never queued behind a resident member.
 1–4 arrived while the lead was still working and were delivered at its next step, as the runtime
-documented (`manager.ts:1151`).
+documented (`manager.ts:1151`). Step 6 is the busy-member rule: work is never queued behind a
+resident member.
 
 Not verified live: the Settings page itself (high-tier field, the reuse control and hint, the use
 list) — covered by the real-React client suite; a reused member in a long real task (context growth).
