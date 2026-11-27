@@ -100,11 +100,12 @@ function makeFakeTable(valueSchema) {
  * and freed on close, like DomainFacility.open/runClose.
  */
 function makeFakeStorageDomain() {
-  const opens = { specs: [], closedCounts: [] }
+  const opens = { specs: [], closedCounts: [], names: [] }
   return {
     opens,
     async open(spec) {
       const index = opens.specs.push(spec) - 1
+      opens.names.push(spec.name)
       opens.closedCounts.push(0)
       const tables = new Map(Object.entries(spec.tables).map(([name, ts]) => [name, makeFakeTable(ts.valueSchema)]))
       return {
@@ -212,11 +213,14 @@ test('Config exposes exactly one field: the authoring-tools toggle', () => {
 
 test('store persists through the storageDomain fake which validates records with the real zod schemas', async () => {
   const { store, storage } = await makeRoster()
-  // The store opened exactly the declared domain spec through the facility.
-  assert.equal(storage.opens.specs.length, 1)
+  // The store opened exactly the declared domain specs through the facility:
+  // the templates domain and (Task 1, tiers) the separate high-tier log domain.
+  assert.equal(storage.opens.specs.length, 2)
   assert.equal(storage.opens.specs[0].name, 'agent_roster')
   assert.equal(storage.opens.specs[0].version, 1)
   assert.deepEqual(Object.keys(storage.opens.specs[0].tables).sort(), ['templates'])
+  assert.equal(storage.opens.specs[1].name, 'agent_roster_log', 'the log keeps its own domain')
+  assert.equal(storage.opens.specs[1].version, 1)
 
   const rec = RoleTemplate.parse({ id: 'a1', name: 'Reviewer', prompt: 'Review diffs.', createdAt: T0, updatedAt: T0 })
   await store.put(rec)
@@ -349,6 +353,39 @@ test('degrades to memory store with storage-degraded status', async () => {
 
 })
 
+test('openRosterStore loads records written before the tiers change with role reuse and no high-tier model', async () => {
+  const { store } = await makeRoster()
+  // A record stored by the pre-tiers build carries neither new field; zod
+  // defaults must fill them on load (nullable highTierModel, 'role' reuse).
+  await store.put({ id: 'old', name: 'Reviewer', prompt: 'p', createdAt: T0, updatedAt: T0 })
+  const rec = await store.byId('old')
+  assert.equal(rec.highTierModel, null)
+  assert.equal(rec.reuse, 'role')
+})
+
+test('the store keeps high-tier use in its own domain, newest first', async () => {
+  const { store, storage } = await makeRoster()
+  // The fake opens each domain by its real open(spec) name: the templates
+  // domain is untouched, the log lives in agent_roster_log.
+  assert.deepEqual(
+    storage.opens.names.filter((n) => n === 'agent_roster' || n === 'agent_roster_log').sort(),
+    ['agent_roster', 'agent_roster_log'],
+  )
+  const mk = (i) => ({
+    id: `u${i}`,
+    at: `2026-11-22T12:0${i}:00.000Z`,
+    sessionId: 's',
+    templateId: 't',
+    templateName: 'Reviewer',
+    memberName: 'reviewer',
+    reason: 'template pins a high-tier model',
+  })
+  for (let i = 1; i <= 3; i++) await store.log.add(mk(i))
+  const all = await store.log.list()
+  assert.deepEqual(all.map((r) => r.id), ['u3', 'u2', 'u1'], 'newest (largest at) first')
+  assert.equal((await store.log.list(2)).length, 2)
+})
+
 test('AgentRosterService carries Remote markers for template CRUD and stageSpawn', () => {
   // remoteMethods reads markers off getPrototypeOf(service): pass an instance.
   const markers = remoteMethods(Object.create(AgentRosterService.prototype))
@@ -411,8 +448,8 @@ test('a rejected domain open never dangles: recorded, mount completes, ops fail 
     await new Promise((resolve) => setImmediate(resolve))
     assert.deepEqual(
       status.records.filter((r) => r.stage === 'storage-open-failed').map((r) => r.detail),
-      [String(failure)],
-      'degradation recorded once on the early-failure path',
+      [String(failure), String(failure)],
+      'each opened domain (templates, log) records its degradation once',
     )
     // Operations still fail loudly with the typed backend error — the
     // creation-time handler observes, it does not swallow.

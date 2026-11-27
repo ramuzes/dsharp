@@ -40,15 +40,36 @@ export const ModelRef = z.object({
   reasoningEffort: z.string().optional(),
 })
 
-/** One stored role-template record (zod — see the file header for why). */
+/**
+ * One stored role-template record (zod — see the file header for why).
+ * `highTierModel` pins a stronger model this template may dispatch through
+ * (null = no high-tier path); `reuse` selects what a resident member is
+ * reused across: 'role' (any task for the template) or 'task' (one task).
+ */
 export const RoleTemplate = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(64),
   description: z.string().max(200).default(''),
   prompt: z.string().min(1),
   defaultModel: ModelRef.nullable().default(null),
+  highTierModel: ModelRef.nullable().default(null),
+  reuse: z.enum(['role', 'task']).default('role'),
   createdAt: z.string(),
   updatedAt: z.string(),
+})
+
+/**
+ * One high-tier dispatch log entry: appended each time a template's pinned
+ * high-tier model was actually used to spawn or reuse a member.
+ */
+export const HighTierUse = z.object({
+  id: z.string().min(1),
+  at: z.string(),
+  sessionId: z.string(),
+  templateId: z.string(),
+  templateName: z.string(),
+  memberName: z.string(),
+  reason: z.string().min(1),
 })
 
 /** The roster storage domain (feishu-gateway bindingDomain pattern). */
@@ -57,6 +78,23 @@ export const rosterDomain = defineDomain({
   version: 1,
   tables: {
     templates: domainTable(RoleTemplate),
+  },
+})
+
+/**
+ * The high-tier dispatch log's own domain: separate name, version and table
+ * set so the templates domain keeps its identity and stored records
+ * untouched (an 'already-open'/version coupling between the two would make
+ * the log a migration hazard for templates).
+ */
+export const rosterLogDomain = defineDomain({
+  name: 'agent_roster_log',
+  version: 1,
+  tables: {
+    // dsh-storage-domain's defineDomain enforces table names matching
+    // /^[a-z][a-z0-9_]*$/ — camelCase 'highTierUse' is rejected at declare
+    // time, so the table carries the snake_case name.
+    high_tier_use: domainTable(HighTierUse),
   },
 })
 
@@ -83,8 +121,12 @@ export function freshId() {
  *   byName(name: string): Promise<import('zod').z.infer<typeof RoleTemplate> | undefined>,
  *   put(rec: import('zod').z.infer<typeof RoleTemplate>): Promise<void>,
  *   delete(id: string): Promise<boolean>,
+ *   log: {
+ *     add(record): Promise<void>,
+ *     list(limit?: number): Promise<import('zod').z.infer<typeof HighTierUse>[]>,
+ *   },
  *   dispose(): void,
- * }} the store handle. Every operation awaits the domain open, so a backend
+ * }} the store handle. Every operation awaits its domain open, so a backend
  *   failure rejects the operations that need it — loud, never a silent second
  *   fallback below the memory mode (AGENTS.md: no silent degradation) — and
  *   an open() rejection is acknowledged at creation (never left dangling for
@@ -92,7 +134,7 @@ export function freshId() {
  *   `storage-open-failed` status entry.
  */
 export function openRosterStore(scope, status) {
-  const memory = { templates: new Map() }
+  const memory = { templates: new Map(), log: [] }
   const storageDomain = scope?.get?.('storageDomain')
   if (storageDomain === undefined) {
     status?.write('storage-degraded',
@@ -105,21 +147,42 @@ export function openRosterStore(scope, status) {
   const ready = storageDomain === undefined
     ? Promise.resolve(undefined)
     : storageDomain.open(rosterDomain)
-  // …but the rejection is ACKNOWLEDGED at creation, before anything awaits
-  // it: between mount and the first operation nothing else holds a handler,
+  // The log domain opens through the same facility and the same failure
+  // semantics: its operations await logReady, so a rejected open fails them
+  // loudly, never a silent second fallback below memory mode.
+  const logReady = storageDomain === undefined
+    ? Promise.resolve(undefined)
+    : storageDomain.open(rosterLogDomain)
+  // …but the rejections are ACKNOWLEDGED at creation, before anything awaits
+  // them: between mount and the first operation nothing else holds a handler,
   // and a dangling rejected promise trips Node's unhandledRejection (default
   // throw policy), killing the host process post-mount — the exact fatal
-  // path AGENTS.md forbids. This handler only observes and records; awaiting
-  // the original promise above keeps every operation failing loudly.
-  ready.catch((error) => {
+  // path AGENTS.md forbids. These handlers only observe and record; awaiting
+  // the original promises above keeps every operation failing loudly.
+  const noteOpenFailure = (error) => {
     status?.write('storage-open-failed', String(error))
-  })
+  }
+  ready.catch(noteOpenFailure)
+  logReady.catch(noteOpenFailure)
 
   /** Resolve both table handles, or undefined in memory mode. */
   const tables = async () => {
     const domain = await ready
     return domain === undefined ? undefined : { templates: domain.table('templates') }
   }
+
+  /** Resolve the log domain's highTierUse table, or undefined in memory mode. */
+  const logTable = async () => {
+    const domain = await logReady
+    return domain === undefined ? undefined : domain.table('high_tier_use')
+  }
+
+  /**
+   * Sort log entries newest first (by `at` descending; ISO strings compare
+   * lexicographically) and cut to the requested limit.
+   */
+  const newestFirst = (rows, limit) =>
+    rows.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, limit)
 
   const all = async () => {
     const t = await tables()
@@ -143,16 +206,34 @@ export function openRosterStore(scope, status) {
     const t = await tables()
     return t === undefined ? memory.templates.delete(id) : t.templates.delete(id)
   }
+  const add = async (record) => {
+    const t = await logTable()
+    if (t === undefined) { memory.log.push(record); return }
+    await t.put(record.id, record)
+  }
+  const list = async (limit = 50) => {
+    const t = await logTable()
+    if (t === undefined) return newestFirst([...memory.log], limit)
+    const rows = [...t.keys()].flatMap((key) => {
+      const rec = t.get(key)
+      return rec === undefined ? [] : [rec]
+    })
+    return newestFirst(rows, limit)
+  }
   /**
-   * Release the opened domain (caller-owns-handle contract, file header).
+   * Release the opened domains (caller-owns-handle contract, file header).
    * Best effort by contract — a disposal path must never throw; memory mode
    * has nothing to release and close() is idempotent in the real domain.
    */
-  const dispose = () => {
-    ready
+  const release = (p) => {
+    p
       .then((domain) => { try { domain?.close?.() } catch { /* best effort */ } })
       .catch(() => { /* open() already failed: nothing was opened */ })
   }
+  const dispose = () => {
+    release(ready)
+    release(logReady)
+  }
 
-  return { all, byId, byName, put, delete: remove, dispose }
+  return { all, byId, byName, put, delete: remove, log: { add, list }, dispose }
 }
