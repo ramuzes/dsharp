@@ -3,8 +3,8 @@
  * renders one template into a subagent through the subagent runtime, and
  * `resolveTemplateRef` maps the model's id-or-name reference to a record.
  *
- * Fakes mirror the real strictness verified in the dsh checkout
- * (/home/ramuz/deepseek-harness, AGENTS.md 2b: source is the source of truth):
+ * Fakes mirror the real strictness verified in the dsh source checkout
+ * (AGENTS.md 2b: the source is the source of truth):
  *
  * - `startActivation` fake mirrors SubagentRuntime.startActivation
  *   (packages/subagent/subagent/src/index.ts:274-299): requires a registered

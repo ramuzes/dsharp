@@ -156,7 +156,7 @@ export function registerRosterTools(scope, service, deps, options = {}) {
               memberName: result.name,
               reason,
             })
-          } catch { warning = 'high-tier use was not recorded' }
+          } catch (error) { warning = `high-tier use was not recorded (${String(error)})` }
         }
         return bounded({
           name: result.name,

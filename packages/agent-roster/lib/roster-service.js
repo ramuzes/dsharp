@@ -20,7 +20,16 @@ import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protoc
 import { readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
 import { parseModelChoice, resolveTemplateRef } from './spawn.js'
-import { usableModel } from './tiers.js'
+import { nonEmptyModel, usableModel } from './tiers.js'
+
+/**
+ * Refusal message of the WRITE schema's model refines. The rule itself is
+ * stated once (`nonEmptyModel`, lib/tiers.js) and shared with `usableModel`,
+ * which applies it when READing stored data (an unusable ref degrades to
+ * inherit); here it is a refusal. Each field carries its own refine, so a
+ * refused issue still names the offending field.
+ */
+const MODEL_PARTS_MESSAGE = 'provider and model must be non-empty'
 
 /**
  * The WRITE schema: the stored record shape plus the rule that a default model
@@ -31,10 +40,8 @@ import { usableModel } from './tiers.js'
  * load, and one bad record must never take the whole roster listing down.
  */
 const RoleTemplateInput = RoleTemplate.extend({
-  defaultModel: ModelRef.refine((ref) => ref.provider !== '' && ref.model !== '',
-    { message: 'provider and model must be non-empty' }).nullable().default(null),
-  highTierModel: ModelRef.refine((ref) => ref.provider !== '' && ref.model !== '',
-    { message: 'provider and model must be non-empty' }).nullable().default(null),
+  defaultModel: ModelRef.refine(nonEmptyModel, MODEL_PARTS_MESSAGE).nullable().default(null),
+  highTierModel: ModelRef.refine(nonEmptyModel, MODEL_PARTS_MESSAGE).nullable().default(null),
 })
 
 /** Prototype marker key the protocol reads (REMOTE_METHOD_DESCRIPTOR). */

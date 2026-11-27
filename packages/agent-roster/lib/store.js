@@ -224,10 +224,33 @@ export function openRosterStore(scope, status) {
    * Release the opened domains (caller-owns-handle contract, file header).
    * Best effort by contract — a disposal path must never throw; memory mode
    * has nothing to release and close() is idempotent in the real domain.
+   *
+   * Domain.close() is ASYNC in the real storage-domain (DomainFacility
+   * close/runClose, storage-domain src/domain.ts:251-260) and rejects when
+   * the unit fails to close: dispose() returns before that settles, so the
+   * settlement must be observed HERE or the rejected promise dangles for
+   * Node's unhandledRejection (fatal for the host). Every outcome records
+   * `storage-close-failed` with the error text; the sync try only covers a
+   * close() that throws before returning a promise.
    */
+  const noteCloseFailure = (error) => {
+    status?.write('storage-close-failed', String(error))
+  }
+  const closeObserved = (domain) => {
+    let closing
+    try {
+      closing = domain?.close?.()
+    } catch (error) {
+      noteCloseFailure(error)
+      return
+    }
+    if (closing !== null && closing !== undefined && typeof closing.then === 'function') {
+      closing.catch(noteCloseFailure)
+    }
+  }
   const release = (p) => {
     p
-      .then((domain) => { try { domain?.close?.() } catch { /* best effort */ } })
+      .then(closeObserved)
       .catch(() => { /* open() already failed: nothing was opened */ })
   }
   const dispose = () => {

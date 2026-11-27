@@ -37,6 +37,13 @@ export function parseModelChoice(value) {
 /** The tiers a lead may request, weakest first. */
 export const TIERS = Object.freeze(['base', 'high'])
 
+/**
+ * The non-empty-model rule, stated once and shared with the WRITE schema's
+ * refines (lib/roster-service.js): a ref names a route only with both a
+ * provider and a model.
+ */
+export const nonEmptyModel = (ref) => ref.provider !== '' && ref.model !== ''
+
 /** An absent reasoning effort and an empty one name the same route. */
 const effortOf = (model) => (typeof model?.reasoningEffort === 'string' ? model.reasoningEffort : '')
 

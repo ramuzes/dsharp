@@ -16,6 +16,8 @@ import assert from 'node:assert/strict'
 import { createStaging } from '../lib/staging.js'
 import { createRosterCommand, registerRosterCommand } from '../lib/roster-command.js'
 import { openRosterStore, RoleTemplate } from '../lib/store.js'
+import { spawnFromTemplate } from '../lib/spawn.js'
+import { createMemberRegistry } from '../lib/members.js'
 
 const T0 = '2026-11-22T12:00:00.000Z'
 const RESEARCHER = { id: 't1', name: 'Researcher', description: 'Finds sources', prompt: 'You research thoroughly.', defaultModel: null, createdAt: T0, updatedAt: T0 }
@@ -32,8 +34,8 @@ function makeSpawn(result = { name: 'researcher', childSessionId: 'cs-1', model:
   return { calls, spawn: async (input) => { calls.push(input); return result } }
 }
 
-const invocationOf = (sessionId, rawInput = '', signal = new AbortController().signal) =>
-  ({ commandId: 'cmd-1', agent: { id: sessionId, session: { id: sessionId } }, rawInput, attachments: [], signal })
+const invocationOf = (sessionId, rawInput = '', signal = new AbortController().signal, agent = { id: sessionId, session: { id: sessionId } }) =>
+  ({ commandId: 'cmd-1', agent, rawInput, attachments: [], signal })
 
 // ---------------------------------------------------------------------------
 // staging: the dialog's one-shot request, bound to the session that made it
@@ -311,6 +313,64 @@ test('the disposer unregisters first and only then waits for an in-flight handle
   assert.equal(disposed, true)
 })
 
+test('a member created through /roster (staged request) is registered, so a later spawnFromTemplate of the same route reuses it', async () => {
+  // The registry thread: registerRosterCommand → spawnFromTemplate with
+  // deps.registry. The subagents fake mirrors fakeSubagents in spawn.spec:
+  // the real admission checks, and a created member enters the catalog at
+  // once as an inactive child.
+  // The invoking agent doubles as the tree root: /roster hands its
+  // invocation.agent to the spawn, which resolves the root through it.
+  const root = { id: 'sess-1', name: 'lead', session: { id: 'sess-1' } }
+  const activations = []
+  const messages = []
+  const children = []
+  const subagents = {
+    rootOf: (caller) => { if (caller?.session?.id !== root.id) throw new Error('rootOf: unknown caller'); return root },
+    listDescendants: async (rootSessionId) => {
+      if (rootSessionId !== root.id) throw new Error('listDescendants: not the root session')
+      return children.map((entry) => ({ ...entry }))
+    },
+    startActivation: async (spec) => {
+      if (spec.provider !== 'spawn') throw new Error('unknown provider')
+      if (spec.parent !== root) throw new Error('UNAUTHORIZED: not the live parent agent')
+      if (!(spec.signal instanceof AbortSignal)) throw new Error('signal is required')
+      if (spec.delivery !== 'parent' && spec.delivery !== 'caller') throw new Error('bad delivery')
+      activations.push(spec)
+      const childId = `cs-${activations.length}`
+      children.push({ kind: 'child', id: childId, parentId: root.id, depth: 1, path: spec.name, activity: 'inactive' })
+      return { childId, name: spec.name }
+    },
+    sendMessage: async (sender, childId, content, options) => {
+      if (sender !== root) throw new Error('sendMessage: not the root agent')
+      if (!(options?.signal instanceof AbortSignal)) throw new Error('signal is required')
+      messages.push({ childId, content })
+    },
+  }
+  const store = await makeStore({ ...RESEARCHER, defaultModel: { provider: 'acme', model: 'cheap' } })
+  const staging = createStaging({ ttlMs: 120_000, now: () => 0 })
+  staging.put('sess-1', { templateRef: 't1', model: { provider: 'acme', model: 'cheap' }, task: 'first' })
+  const registry = createMemberRegistry()
+  const registered = []
+  const scope = { subagents, commands: { register: (definition) => { registered.push(definition); return () => {} } } }
+  const off = registerRosterCommand(scope, { store, staging, registry })
+  try {
+    const out = await registered[0].handler(invocationOf('sess-1', '', new AbortController().signal, root))
+    assert.equal(out.kind, 'success')
+    assert.match(out.text, /created and given its first task/)
+    assert.equal(activations.length, 1, 'the first request creates the member')
+    // Same template, same model route, same tree: the member is idle, so the
+    // next request is delivered to it — no second activation.
+    const template = await store.byId('t1')
+    const second = await spawnFromTemplate(scope, { subagents, registry }, { agent: root, template, task: 'second', signal: new AbortController().signal })
+    assert.equal(second.reused, true)
+    assert.equal(second.childSessionId, 'cs-1')
+    assert.equal(activations.length, 1, 'no second activation')
+    assert.equal(messages.length, 1, 'the task was delivered to the resident member')
+  } finally {
+    await off()
+  }
+})
+
 // ---------------------------------------------------------------------------
 // resident reuse (ADR-0013): the command must not claim it created a member
 // ---------------------------------------------------------------------------
@@ -326,7 +386,7 @@ test('the command reports a reused standby member without "created"', async () =
   assert.equal(out.text, 'Member "researcher" (Researcher) is already in the team and standing by. Model: inherits the session model.')
 })
 
-test('the command reports a reused member that was given its first task', async () => {
+test('the command reports a reused member that was given the task, without claiming it is its first', async () => {
   const store = await makeStore(RESEARCHER)
   const staging = createStaging({ ttlMs: 120_000, now: () => 0 })
   staging.put('sess-1', { templateRef: 't1', model: { provider: 'acme', model: 'cheap' }, task: 'review payments' })
@@ -336,5 +396,5 @@ test('the command reports a reused member that was given its first task', async 
   })
   const out = await command.handler(invocationOf('sess-1'))
   assert.equal(out.kind, 'success')
-  assert.equal(out.text, 'Member "researcher" (Researcher) is already in the team and was given its first task. Model: acme / cheap.')
+  assert.equal(out.text, 'Member "researcher" (Researcher) is already in the team and was given the task. Model: acme / cheap.')
 })

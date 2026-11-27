@@ -600,6 +600,50 @@ test('a rejected domain open never dangles: recorded, mount completes, ops fail 
   }
 })
 
+test('a rejected domain close is observed at unload: recorded as storage-close-failed, never an unhandled rejection', async () => {
+  // DomainFacility.close() is async (storage-domain src/domain.ts:251-260)
+  // and rejects when the unit fails to close, so a synchronous try around
+  // the call cannot see that — the rejected promise would dangle. Capture
+  // Node's hook (default policy: throw) as the rejected-open test above does.
+  const unhandled = []
+  const onUnhandled = (error) => { unhandled.push(error) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const failure = new Error('unit close failed')
+    const closed = []
+    const domain = { table: () => { throw new Error('not touched') }, close: () => { closed.push(true); return Promise.reject(failure) } }
+    const status = recordingStatus()
+    const store = openRosterStore({ get: () => ({ open: async () => domain }) }, status)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(closed.length, 0, 'nothing is closed while mounted')
+    store.dispose()
+    // The rejection lands on a later tick: flush before asserting.
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(closed.length, 2, 'both domains (templates, log) are told to close')
+    assert.deepEqual(
+      status.records.filter((r) => r.stage === 'storage-close-failed').map((r) => r.detail),
+      [String(failure), String(failure)],
+      'each failed close is recorded once',
+    )
+    assert.deepEqual(unhandled, [], 'no unhandled rejection on the close path')
+
+    // A synchronous throw from close() is still contained by the same path.
+    const syncStatus = recordingStatus()
+    const syncFailure = new Error('sync close failed')
+    const syncStore = openRosterStore({ get: () => ({ open: async () => ({ close() { throw syncFailure } }) }) }, syncStatus)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.doesNotThrow(() => syncStore.dispose())
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(
+      syncStatus.records.filter((r) => r.stage === 'storage-close-failed').map((r) => r.detail),
+      [String(syncFailure), String(syncFailure)],
+    )
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
 test('apply containment: a service failure writes wire-failed, rethrows, and still disposes the store', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agent-roster-t2-'))
   const file = join(dir, 'status.json')

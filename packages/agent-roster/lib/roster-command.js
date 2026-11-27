@@ -46,7 +46,7 @@ function successText(result, template, task) {
     : `${model.provider} / ${model.model}` + (model.reasoningEffort ? ` · ${model.reasoningEffort}` : '')
   const what = readString(task).trim() === ''
     ? (result.reused ? 'is already in the team and standing by' : 'created and standing by')
-    : (result.reused ? 'is already in the team and was given its first task' : 'created and given its first task')
+    : (result.reused ? 'is already in the team and was given the task' : 'created and given its first task')
   return `Member "${result.name}" (${template.name}) ${what}. Model: ${route}.`
 }
 

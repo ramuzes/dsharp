@@ -583,6 +583,19 @@ test('a tier outside the enum is rejected by the real tools library before the t
   assert.equal(ctx.subagents.calls.startActivation.length, 0)
 })
 
+test('a non-string reason is rejected by the real tools library before the tool runs', async () => {
+  // Same gate as the tier case: the parameter schema types `reason` as a
+  // string, so a wrong-typed one never reaches requireReason or the spawn.
+  const ctx = await tiered()
+  ctx.subagents.rootOf = () => CALLER
+  await assert.rejects(
+    () => ctx.tool.execute({ template: ctx.saved.id, tier: 'high', reason: 123 }, { agent: CALLER, callId: 'c1' }),
+    (error) => error?.code === 'INVALID_ARGS' && /"reason"/.test(String(error?.message)),
+    'expected INVALID_ARGS for a non-string reason',
+  )
+  assert.equal(ctx.subagents.calls.startActivation.length, 0)
+})
+
 // ---------------------------------------------------------------------------
 // roster_spawn: the high-tier dispatch log (Task 1 store.log + ADR-0013)
 // ---------------------------------------------------------------------------
@@ -657,7 +670,8 @@ test('a failed record write reports a warning and keeps the result', async () =>
   assert.equal(parsed.name, 'researcher')
   assert.equal(parsed.tier, 'high')
   assert.equal(parsed.reason, 'base rework failed once')
-  assert.equal(parsed.warning, 'high-tier use was not recorded')
+  assert.match(parsed.warning, /^high-tier use was not recorded \(/)
+  assert.ok(parsed.warning.includes('log storage unavailable'), 'the warning carries the error detail')
 })
 
 test('roster_template_save refuses a default model with an empty provider or model', async () => {
