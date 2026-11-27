@@ -62,8 +62,28 @@ function MenuGroup(props) {
 }
 
 /** The primitives module the factory's require hands out: the real export names we consume. */
+/**
+ * SegmentedControl stand-in mirroring the REAL contract
+ * (ui-primitives src/SegmentedControl.tsx): a labelled tablist of role=tab
+ * buttons, fully controlled, `onChange(next)` only for a value that differs
+ * from the current one, every segment disabled under `disabled`.
+ */
+function SegmentedControl(props) {
+  const { id, value, options, onChange, label, disabled = false } = props ?? {}
+  return ReactReal.createElement('div', { role: 'tablist', 'aria-label': label },
+    (options ?? []).map((option) => ReactReal.createElement('button', {
+      key: option.value,
+      id: `${id}-${option.value}`,
+      type: 'button',
+      role: 'tab',
+      'aria-selected': option.value === value,
+      disabled: disabled || option.disabled === true,
+      onClick: () => { if (option.value !== value) onChange(option.value) },
+    }, option.label)))
+}
+
 function primitives() {
-  return { Modal, IconPlusOutlineRegular, MenuSurface, MenuGroup, IconChevronDownOutlineRegular, IconCheckOutlineRegular }
+  return { Modal, IconPlusOutlineRegular, MenuSurface, MenuGroup, IconChevronDownOutlineRegular, IconCheckOutlineRegular, SegmentedControl }
 }
 
 /**
@@ -918,16 +938,19 @@ test('the form saves a high-tier model and the reuse policy', async () => {
   await typeInto(view, 'data-agent-roster-role-prompt', 'You scout markets.')
   const high = () => find(view.vdom, (node) => node.props?.['data-agent-roster-high-model'] !== undefined)
   const reuse = () => find(view.vdom, (node) => node.props?.['data-agent-roster-reuse'] !== undefined)
+  const reuseTabs = () => findAll(reuse(), (node) => node.props?.role === 'tab')
   assert.equal(high().props['data-agent-roster-high-model'], 'none', 'high tier starts disabled')
   assert.equal(high().props['data-agent-roster-menu-value'], '')
   assert.ok(texts(high()).includes('t:card.highModel.none'))
-  assert.equal(reuse().props.value, 'role', 'reuse defaults to role')
+  assert.deepEqual(reuseTabs().map((tab) => tab.props['aria-selected']), [true, false], 'reuse defaults to role')
   assert.deepEqual(
-    findAll(reuse(), (node) => node.type === 'option').map((option) => [option.props.value, ...texts(option).filter((text) => text.startsWith('t:'))]),
-    [['role', 't:card.reuse.role'], ['task', 't:card.reuse.task']])
+    reuseTabs().map((tab) => texts(tab).find((text) => text.startsWith('t:'))), ['t:card.reuse.role', 't:card.reuse.task'])
+  assert.equal(find(reuse(), (node) => node.props?.role === 'tablist').props['aria-label'], 't:card.reuse')
   await pickMenuOption(view, 'data-agent-roster-card-model', JSON.stringify(['deepseek', 'chat']))
   await pickMenuOption(view, 'data-agent-roster-high-model', JSON.stringify(['deepseek', 'reasoner']))
-  await view.interact(() => { reuse().props.onChange({ target: { value: 'task' } }) })
+  // Drive the real control: click the segment labelled with the task label.
+  await view.interact(() => { reuseTabs().find((tab) => texts(tab).includes('t:card.reuse.task')).props.onClick() })
+  assert.deepEqual(reuseTabs().map((tab) => tab.props['aria-selected']), [false, true])
   const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
   await view.interact(() => { save.props.onClick() })
   assert.deepEqual(view.roster.saved[0].defaultModel, { provider: 'deepseek', model: 'chat' })
@@ -944,7 +967,8 @@ test('edit prefills the stored high tier and reuse, and clearing the high tier s
   await view.interact(() => { edit.props.onClick() })
   const high = find(view.vdom, (node) => node.props?.['data-agent-roster-high-model'] !== undefined)
   assert.equal(high.props['data-agent-roster-menu-value'], JSON.stringify(['acme', 'custom-2']), 'stored high tier prefills losslessly')
-  assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-reuse'] !== undefined).props.value, 'task')
+  const reuse = () => find(view.vdom, (node) => node.props?.['data-agent-roster-reuse'] !== undefined)
+  assert.deepEqual(findAll(reuse(), (node) => node.props?.role === 'tab').map((tab) => tab.props['aria-selected']), [false, true])
   // The menu's none row has key '' (ModelMenu noneLabel entry).
   await pickMenuOption(view, 'data-agent-roster-high-model', '')
   const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
@@ -969,7 +993,12 @@ test('a template row shows the base model and names the high tier when set', asy
 test('the high-tier use block lists records with their reason, or the empty note', async () => {
   const view = await mountSection({ roster: healthyRoster({ listHighTierUse: async () => ({ ok: true, value: USE_LOG }) }) })
   const block = find(view.vdom, (node) => node.props?.['data-agent-roster-use'] !== undefined)
-  assert.ok(block, 'the use block renders below the manager')
+  assert.ok(block, 'the use block renders')
+  const settings = find(view.vdom, (node) => node.props?.['data-agent-roster-settings'] !== undefined)
+  const positions = ['data-agent-roster-card', 'data-agent-roster-use'].map((marker) =>
+    settings.children.findIndex((child) => child.props?.[marker] !== undefined))
+  assert.deepEqual(positions.map((position) => position !== -1), [true, true])
+  assert.ok(positions[1] > positions[0], 'the use block renders after the manager')
   assert.ok(texts(block).includes('t:card.use.title'))
   assert.equal(find(view.vdom, (node) => node.props?.['data-agent-roster-use-empty'] !== undefined), undefined, 'no empty note over records')
   const rows = findAll(view.vdom, (node) => node.props?.['data-agent-roster-use-row'] !== undefined)
@@ -992,4 +1021,19 @@ test('the high-tier use block shows the empty note without records and the failu
   assert.ok(line, 'the failed read renders its error line')
   assert.ok(texts(line).some((text) => text.includes('closed')))
   assert.equal(find(failed.vdom, (node) => node.props?.['data-agent-roster-use-empty'] !== undefined), undefined, 'a failure is not "no records"')
+})
+
+test('the high-tier none label and the reuse labels read as real bilingual copy in both dictionaries', () => {
+  const { recorded } = applyPlugin({})
+  const { zh, en } = recorded.namespaces[0].dicts
+  for (const [dict, none, role, task, title] of [
+    [zh, '未启用高阶', '按角色复用', '按任务复用', '高阶使用记录'],
+    [en, 'High tier not enabled', 'By role', 'By task', 'High-tier use'],
+  ]) {
+    assert.equal(dict['card.highModel.none'], none)
+    assert.equal(dict['card.reuse.role'], role)
+    assert.equal(dict['card.reuse.task'], task)
+    assert.equal(dict['card.use.title'], title)
+    assert.equal(dict['card.model.chip.high'], '{model} → ' + (dict === zh ? '高阶' : 'high'))
+  }
 })

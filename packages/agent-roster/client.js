@@ -86,7 +86,7 @@ window.__ModuleLoader__.load({
     const { z } = require('zod')
     const {
       Modal, IconPlusOutlineRegular, MenuSurface, MenuGroup,
-      IconChevronDownOutlineRegular, IconCheckOutlineRegular,
+      IconChevronDownOutlineRegular, IconCheckOutlineRegular, SegmentedControl,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const h = React.createElement
 
@@ -1244,7 +1244,7 @@ window.__ModuleLoader__.load({
      * The card's add/edit form: the shared RoleFields, the shared
      * ModelRefEditor for the base model (default = no default model), a
      * second one for the high-tier model (default = not enabled), and the
-     * reuse policy select. Saves go through saveTemplate — `id` on edit,
+     * reuse policy SegmentedControl. Saves go through saveTemplate — `id` on edit,
      * none on add — with the full explicit field set (patch semantics not
      * relied upon, so clearing a field actually clears it); a failure stays in-form with its
      * bilingual reason, a success closes the form and refreshes the list.
@@ -1368,16 +1368,22 @@ window.__ModuleLoader__.load({
           effort: highEffortChoice,
           onEffort: setHighEffortChoice,
         }),
-        h('section', { className: 'agent-roster-section' },
-          h('label', { className: 'agent-roster-label', htmlFor: 'agent-roster-card-reuse' }, t('card.reuse')),
-          h('select', {
+        // The reuse policy is a two-way choice, so it renders through the
+        // host's SegmentedControl (ui-primitives src/SegmentedControl.tsx:
+        // fully controlled, labelled tablist, onChange only for a different
+        // value). Its accessible name is the control's own `label`; the
+        // visible caption here is not a <label htmlFor> — the control is a
+        // group, not one field.
+        h('section', { className: 'agent-roster-section', 'data-agent-roster-reuse': '' },
+          h('span', { className: 'agent-roster-label' }, t('card.reuse')),
+          h(SegmentedControl, {
             id: 'agent-roster-card-reuse',
-            className: 'agent-roster-input',
-            'data-agent-roster-reuse': '',
             value: reuseChoice,
+            options: REUSE_POLICIES.map((policy) => ({ value: policy, label: t(`card.reuse.${policy}`) })),
+            onChange: setReuseChoice,
+            label: t('card.reuse'),
             disabled: saving,
-            onChange: (event) => { setReuseChoice(event.target.value) },
-          }, REUSE_POLICIES.map((policy) => h('option', { key: policy, value: policy }, t(`card.reuse.${policy}`))))),
+          })),
         outcome === null ? null : h('div', {
           className: 'agent-roster-banner agent-roster-banner-error',
           'data-agent-roster-card-form-error': '',
@@ -1472,7 +1478,6 @@ window.__ModuleLoader__.load({
 .agent-roster-use-row:first-child { border-top: none; }
 .agent-roster-use-line { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
 .agent-roster-use-reason { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary); }
-select.agent-roster-input { padding-right: 28px; }
 /* ModelMenu — copied from ui-model-selection ModelSelect.module.css and
  * ui-primitives MenuGroup.module.css, renamed under this prefix. CSS anchor
  * positioning: the trigger names an anchor through an inline custom
