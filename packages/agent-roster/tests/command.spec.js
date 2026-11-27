@@ -17,6 +17,7 @@ import { createStaging } from '../lib/staging.js'
 import { createRosterCommand, registerRosterCommand } from '../lib/roster-command.js'
 import { openRosterStore, RoleTemplate } from '../lib/store.js'
 import { spawnFromTemplate } from '../lib/spawn.js'
+import { SPAWN, fakeSubagents } from './helpers/fake-subagents.js'
 import { createMemberRegistry } from '../lib/members.js'
 
 const T0 = '2026-11-22T12:00:00.000Z'
@@ -315,37 +316,13 @@ test('the disposer unregisters first and only then waits for an in-flight handle
 
 test('a member created through /roster (staged request) is registered, so a later spawnFromTemplate of the same route reuses it', async () => {
   // The registry thread: registerRosterCommand → spawnFromTemplate with
-  // deps.registry. The subagents fake mirrors fakeSubagents in spawn.spec:
-  // the real admission checks, and a created member enters the catalog at
+  // deps.registry. The subagents fake is the shared strict one (full
+  // activation admission checks, full SubagentActivation return shape,
+  // content-checked sendMessage); a created member enters the catalog at
   // once as an inactive child.
-  // The invoking agent doubles as the tree root: /roster hands its
-  // invocation.agent to the spawn, which resolves the root through it.
   const root = { id: 'sess-1', name: 'lead', session: { id: 'sess-1' } }
-  const activations = []
-  const messages = []
-  const children = []
-  const subagents = {
-    rootOf: (caller) => { if (caller?.session?.id !== root.id) throw new Error('rootOf: unknown caller'); return root },
-    listDescendants: async (rootSessionId) => {
-      if (rootSessionId !== root.id) throw new Error('listDescendants: not the root session')
-      return children.map((entry) => ({ ...entry }))
-    },
-    startActivation: async (spec) => {
-      if (spec.provider !== 'spawn') throw new Error('unknown provider')
-      if (spec.parent !== root) throw new Error('UNAUTHORIZED: not the live parent agent')
-      if (!(spec.signal instanceof AbortSignal)) throw new Error('signal is required')
-      if (spec.delivery !== 'parent' && spec.delivery !== 'caller') throw new Error('bad delivery')
-      activations.push(spec)
-      const childId = `cs-${activations.length}`
-      children.push({ kind: 'child', id: childId, parentId: root.id, depth: 1, path: spec.name, activity: 'inactive' })
-      return { childId, name: spec.name }
-    },
-    sendMessage: async (sender, childId, content, options) => {
-      if (sender !== root) throw new Error('sendMessage: not the root agent')
-      if (!(options?.signal instanceof AbortSignal)) throw new Error('signal is required')
-      messages.push({ childId, content })
-    },
-  }
+  const subagents = fakeSubagents({ root })
+  const { activations, messages } = subagents
   const store = await makeStore({ ...RESEARCHER, defaultModel: { provider: 'acme', model: 'cheap' } })
   const staging = createStaging({ ttlMs: 120_000, now: () => 0 })
   staging.put('sess-1', { templateRef: 't1', model: { provider: 'acme', model: 'cheap' }, task: 'first' })
@@ -358,6 +335,11 @@ test('a member created through /roster (staged request) is registered, so a late
     assert.equal(out.kind, 'success')
     assert.match(out.text, /created and given its first task/)
     assert.equal(activations.length, 1, 'the first request creates the member')
+    // The command's activation went through the real admission checks.
+    assert.equal(activations[0].provider, SPAWN)
+    assert.equal(activations[0].delivery, 'parent', 'a staged task reports to the lead')
+    assert.match(activations[0].prompt[0].text, /Your first task/)
+
     // Same template, same model route, same tree: the member is idle, so the
     // next request is delivered to it — no second activation.
     const template = await store.byId('t1')
@@ -366,6 +348,8 @@ test('a member created through /roster (staged request) is registered, so a late
     assert.equal(second.childSessionId, 'cs-1')
     assert.equal(activations.length, 1, 'no second activation')
     assert.equal(messages.length, 1, 'the task was delivered to the resident member')
+    assert.equal(messages[0].targetId, 'cs-1')
+    assert.match(messages[0].content[0].text, /this task is what to do now:\n\nsecond$/)
   } finally {
     await off()
   }

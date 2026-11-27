@@ -87,7 +87,10 @@ so it always names the stage the mount currently sits at:
 storageDomain; storage-open-failed when the domain's open() rejects — the
 mount proceeds but store operations then fail loudly, and the record carries
 the error text) → service-registered → done → tools-pending → tools-registered |
-tools-failed`, or a `wire-failed` record carrying the error text.
+tools-failed`, or a `wire-failed` record carrying the error text. At
+unload, a domain `close()` that rejects (or throws) writes
+`storage-close-failed` carrying the error text — the release is best effort,
+so the plugin never takes the host down over it.
 `tools-pending` is the state between the completed mount and the injected
 tools callback: the plugin registers `roster_spawn` only once both `tools` and
 `subagents` are available (on a host without a subagent runtime it stays

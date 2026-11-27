@@ -628,6 +628,24 @@ test('a rejected domain close is observed at unload: recorded as storage-close-f
     )
     assert.deepEqual(unhandled, [], 'no unhandled rejection on the close path')
 
+    // A thenable-only close() (then, no catch): the settlement must still be
+    // observed and recorded — never a TypeError swallowed by release().
+    const thenableStatus = recordingStatus()
+    const thenableFailure = new Error('thenable close failed')
+    const thenableStore = openRosterStore({ get: () => ({ open: async () => ({
+      close: () => ({ then(resolve, reject) { queueMicrotask(() => reject(thenableFailure)) } }),
+    }) }) }, thenableStatus)
+    await new Promise((resolve) => setImmediate(resolve))
+    thenableStore.dispose()
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(
+      thenableStatus.records.filter((r) => r.stage === 'storage-close-failed').map((r) => r.detail),
+      [String(thenableFailure), String(thenableFailure)],
+      'a thenable-only close rejection is recorded for each domain',
+    )
+    assert.deepEqual(unhandled, [], 'no unhandled rejection for a thenable-only close')
+
     // A synchronous throw from close() is still contained by the same path.
     const syncStatus = recordingStatus()
     const syncFailure = new Error('sync close failed')

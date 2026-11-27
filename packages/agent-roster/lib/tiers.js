@@ -58,7 +58,7 @@ const effortOf = (model) => (typeof model?.reasoningEffort === 'string' ? model.
 export function usableModel(value) {
   if (value === null || value === undefined) return null
   const parsed = ModelRef.safeParse(value)
-  if (!parsed.success || parsed.data.provider === '' || parsed.data.model === '') return null
+  if (!parsed.success || !nonEmptyModel(parsed.data)) return null
   return parsed.data
 }
 

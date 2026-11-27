@@ -244,9 +244,9 @@ export function openRosterStore(scope, status) {
       noteCloseFailure(error)
       return
     }
-    if (closing !== null && closing !== undefined && typeof closing.then === 'function') {
-      closing.catch(noteCloseFailure)
-    }
+    // Promise.resolve adopts any thenable (a bare { then } has no .catch of
+    // its own); the sync try above already handled a throw before return.
+    Promise.resolve(closing).catch(noteCloseFailure)
   }
   const release = (p) => {
     p
