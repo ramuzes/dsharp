@@ -20,6 +20,7 @@ import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protoc
 import { readString } from './wire.js'
 import { ModelRef, RoleTemplate, freshId } from './store.js'
 import { parseModelChoice, resolveTemplateRef } from './spawn.js'
+import { usableModel } from './tiers.js'
 
 /**
  * The WRITE schema: the stored record shape plus the rule that a default model
@@ -31,6 +32,8 @@ import { parseModelChoice, resolveTemplateRef } from './spawn.js'
  */
 const RoleTemplateInput = RoleTemplate.extend({
   defaultModel: ModelRef.refine((ref) => ref.provider !== '' && ref.model !== '',
+    { message: 'provider and model must be non-empty' }).nullable().default(null),
+  highTierModel: ModelRef.refine((ref) => ref.provider !== '' && ref.model !== '',
     { message: 'provider and model must be non-empty' }).nullable().default(null),
 })
 
@@ -66,7 +69,12 @@ export class AgentRosterService extends TypertRemoteService {
    * patch-semantics: omitted keys keep their stored values on update (an
    * explicit value — including `null` — always applies), so a caller that
    * sends only `prompt` does not silently reset `description`/`defaultModel`.
-   * @param {{ id?: string, name: string, description?: string, prompt: string, defaultModel?: import('zod').z.infer<typeof ModelRef> | null }} input
+   * The tier fields follow the same rule. One pair-level rule is enforced on
+   * the EFFECTIVE values after the merge: a high-tier model needs a usable
+   * base model (`roster/bad-request`, field `highTierModel`), so the high
+   * tier is always an escalation FROM a configured route — never off the
+   * inherited parent model.
+   * @param {{ id?: string, name: string, description?: string, prompt: string, defaultModel?: import('zod').z.infer<typeof ModelRef> | null, highTierModel?: import('zod').z.infer<typeof ModelRef> | null, reuse?: 'role' | 'task' }} input
    * @Remote
    */
   async saveTemplate(input) {
@@ -88,6 +96,16 @@ export class AgentRosterService extends TypertRemoteService {
         `Template name "${name}" is already taken / 模板名称 "${name}" 已被占用`, { name })
     }
     const now = new Date().toISOString()
+    // Patch semantics: an omitted key keeps the stored value, an explicit
+    // value (null included) always applies — same as defaultModel.
+    const highTierModel = input?.highTierModel === undefined ? existing?.highTierModel ?? null : input.highTierModel
+    const defaultModel = input?.defaultModel === undefined ? existing?.defaultModel ?? null : input.defaultModel
+    // usableModel is the spawn's own "is this a route" read (lib/tiers.js):
+    // a legacy record whose stored base has empty parts counts as no base.
+    if (usableModel(highTierModel) !== null && usableModel(defaultModel) === null) {
+      throw new RemoteError('roster/bad-request',
+        'a high-tier model requires a base model / 配置高阶模型前请先配置基础模型', { field: 'highTierModel' })
+    }
     let record
     try {
       record = RoleTemplateInput.parse({
@@ -95,13 +113,16 @@ export class AgentRosterService extends TypertRemoteService {
         name,
         description: input?.description === undefined ? existing?.description ?? '' : readString(input.description),
         prompt,
-        defaultModel: input?.defaultModel === undefined ? existing?.defaultModel ?? null : input.defaultModel,
+        defaultModel,
+        highTierModel,
+        reuse: input?.reuse === undefined ? existing?.reuse ?? 'role' : input.reuse,
         id: targetId,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       })
     } catch (error) {
-      // Shape/length failures (name > 64, malformed defaultModel, …).
+      // Shape/length failures (name > 64, malformed defaultModel or
+      // highTierModel, reuse outside the enum, …).
       const issues = error?.issues?.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
       throw new RemoteError('roster/bad-request',
         `Template fields rejected / 模板字段不合法: ${issues?.map((i) => `${i.path}: ${i.message}`).join('; ') ?? String(error)}`,
@@ -109,6 +130,17 @@ export class AgentRosterService extends TypertRemoteService {
     }
     await this.store.put(record)
     return record
+  }
+
+  /**
+   * The newest high-tier dispatch records (template, member, reason), as the
+   * Settings card lists them: a fixed 50-row window straight from the store
+   * log, which already returns newest first.
+   * @returns {Promise<import('./store.js').HighTierUse[]>}
+   * @Remote
+   */
+  async listHighTierUse() {
+    return this.store.log.list(50)
   }
 
   /**
@@ -165,6 +197,7 @@ export class AgentRosterService extends TypertRemoteService {
         Object.freeze({ method: 'saveTemplate', invocation: direct }),
         Object.freeze({ method: 'deleteTemplate', invocation: direct }),
         Object.freeze({ method: 'stageSpawn', invocation: direct }),
+        Object.freeze({ method: 'listHighTierUse', invocation: direct }),
       ]),
     }),
   })

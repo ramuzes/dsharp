@@ -333,6 +333,122 @@ test('saveTemplate rejects invalid input with roster/bad-request', async () => {
   )
 })
 
+test('saveTemplate stores highTierModel and reuse, patch-semantics on update', async () => {
+  const { service } = await makeRoster()
+  const BASE = { provider: 'acme', model: 'cheap' }
+  const HIGH = { provider: 'acme', model: 'capable', reasoningEffort: 'max' }
+  // Create without the tier fields: zod defaults fill them.
+  const bare = await service.saveTemplate({ name: 'Writer', prompt: 'p' })
+  assert.equal(bare.highTierModel, null, 'zod default fills highTierModel')
+  assert.equal(bare.reuse, 'role', "zod default fills reuse")
+  // Create with both: stored verbatim and visible through the read side.
+  const created = await service.saveTemplate({
+    name: 'Reviewer', prompt: 'v1', defaultModel: BASE, highTierModel: HIGH, reuse: 'task',
+  })
+  assert.deepEqual(created.highTierModel, HIGH)
+  assert.equal(created.reuse, 'task')
+  const [stored] = (await service.listTemplates()).filter((rec) => rec.id === created.id)
+  assert.deepEqual(stored.highTierModel, HIGH, 'highTierModel is persisted, not just echoed')
+  assert.equal(stored.reuse, 'task')
+
+  // Patch semantics, same as defaultModel: omitted keys keep stored values.
+  const touched = await service.saveTemplate({ id: created.id, name: 'Reviewer', prompt: 'v2' })
+  assert.deepEqual(touched.highTierModel, HIGH, 'omitted highTierModel preserved')
+  assert.equal(touched.reuse, 'task', 'omitted reuse preserved')
+  // An explicit value always applies.
+  const other = { provider: 'acme', model: 'swift' }
+  const changed = await service.saveTemplate({
+    id: created.id, name: 'Reviewer', prompt: 'v3', highTierModel: other, reuse: 'role',
+  })
+  assert.deepEqual(changed.highTierModel, other)
+  assert.equal(changed.reuse, 'role')
+  // Including an explicit null.
+  const cleared = await service.saveTemplate({ id: created.id, name: 'Reviewer', prompt: 'v4', highTierModel: null })
+  assert.equal(cleared.highTierModel, null, 'explicit null clears the high-tier model')
+  assert.equal(cleared.reuse, 'role', 'clearing one field leaves the other')
+  assert.deepEqual(cleared.defaultModel, BASE, 'base model untouched')
+  // A reuse outside the enum is a shape failure with the field named.
+  await assert.rejects(
+    () => service.saveTemplate({ name: 'X', prompt: 'p', reuse: 'sometimes' }),
+    (error) => remoteErrorOf(error)?.code === 'roster/bad-request'
+      && remoteErrorOf(error).details.issues.some((issue) => issue.path === 'reuse'),
+  )
+  assert.equal((await service.listTemplates()).length, 2, 'the refused create stored nothing')
+})
+
+test('saveTemplate refuses a high-tier model without a base model and one with empty parts', async () => {
+  const { service } = await makeRoster()
+  const BASE = { provider: 'acme', model: 'cheap' }
+  const HIGH = { provider: 'acme', model: 'capable' }
+  const requiresBase = (error) => {
+    const remote = remoteErrorOf(error)
+    return remote?.code === 'roster/bad-request'
+      && remote.details?.field === 'highTierModel'
+      && /requires a base model/.test(remote.message)
+      && /配置高阶模型前请先配置基础模型/.test(remote.message)
+  }
+  // Create: no base model at all.
+  await assert.rejects(
+    () => service.saveTemplate({ name: 'Reviewer', prompt: 'p', highTierModel: HIGH }),
+    requiresBase,
+  )
+  // Update: the stored base model is an explicit null.
+  const noBase = await service.saveTemplate({ name: 'Writer', prompt: 'p', defaultModel: null })
+  await assert.rejects(
+    () => service.saveTemplate({ id: noBase.id, name: 'Writer', prompt: 'p', highTierModel: HIGH }),
+    requiresBase,
+  )
+  // Update: clearing the base model under the stored high-tier model — the
+  // rule is on the EFFECTIVE pair after the patch merges, not the input alone.
+  const tiered = await service.saveTemplate({
+    name: 'Auditor', prompt: 'p', defaultModel: BASE, highTierModel: HIGH,
+  })
+  await assert.rejects(
+    () => service.saveTemplate({ id: tiered.id, name: 'Auditor', prompt: 'p', defaultModel: null }),
+    requiresBase,
+  )
+  // The refused write left the stored record intact.
+  const [auditor] = (await service.listTemplates()).filter((rec) => rec.id === tiered.id)
+  assert.deepEqual(auditor.defaultModel, BASE)
+  assert.deepEqual(auditor.highTierModel, HIGH)
+
+  // Empty provider or model: an unusable route, refused with the field named.
+  for (const highTierModel of [{ provider: '', model: 'capable' }, { provider: 'acme', model: '' }]) {
+    await assert.rejects(
+      () => service.saveTemplate({ name: 'Broken', prompt: 'p', defaultModel: BASE, highTierModel }),
+      (error) => {
+        const remote = remoteErrorOf(error)
+        return remote?.code === 'roster/bad-request'
+          && remote.details?.issues?.some((issue) => issue.path === 'highTierModel')
+      },
+      `expected roster/bad-request naming highTierModel for ${JSON.stringify(highTierModel)}`,
+    )
+  }
+  assert.equal((await service.listTemplates()).length, 2, 'no refused create stored a record')
+})
+
+test('listHighTierUse returns the newest records from the store log', async () => {
+  const { service, store } = await makeRoster()
+  const entry = (i) => ({
+    id: `u${i}`,
+    at: `2026-11-22T12:0${i}:00.000Z`,
+    sessionId: 's1',
+    templateId: 't1',
+    templateName: 'Reviewer',
+    memberName: 'reviewer',
+    reason: 'template pins a high-tier model',
+  })
+  for (let i = 1; i <= 3; i++) await store.log.add(entry(i))
+  // The remote is a fixed-size window: record the limit it asks the store for.
+  const limits = []
+  const list = store.log.list
+  store.log.list = async (limit) => { limits.push(limit); return list(limit) }
+  const rows = await service.listHighTierUse()
+  assert.deepEqual(rows.map((row) => row.id), ['u3', 'u2', 'u1'], 'newest first, straight from the store log')
+  assert.deepEqual(limits, [50])
+  assert.deepEqual(await service.listHighTierUse(), rows, 'a read with no side effects')
+})
+
 test('degrades to memory store with storage-degraded status', async () => {
   // A real ctx always provides get(); an absent service resolves undefined.
   const status = recordingStatus()
@@ -386,14 +502,15 @@ test('the store keeps high-tier use in its own domain, newest first', async () =
   assert.equal((await store.log.list(2)).length, 2)
 })
 
-test('AgentRosterService carries Remote markers for template CRUD and stageSpawn', () => {
+test('AgentRosterService carries Remote markers for template CRUD, stageSpawn and listHighTierUse', () => {
   // remoteMethods reads markers off getPrototypeOf(service): pass an instance.
   const markers = remoteMethods(Object.create(AgentRosterService.prototype))
   // ADR-0011 kept the remote surface to template CRUD (spawn is an agent
   // tool); ADR-0012 adds stageSpawn — the dialog stages its request here and
-  // the /roster command consumes it. Nothing spawns through the remote.
+  // the /roster command consumes it — and the tiers change adds the read-only
+  // high-tier dispatch log. Nothing spawns through the remote.
   assert.deepEqual(markers.map((m) => m.method).sort(),
-    ['deleteTemplate', 'listTemplates', 'saveTemplate', 'stageSpawn'])
+    ['deleteTemplate', 'listHighTierUse', 'listTemplates', 'saveTemplate', 'stageSpawn'])
   for (const marker of markers) {
     assert.deepEqual(marker.invocation, { kind: 'direct' }, `${marker.method} is a direct invocation`)
     assert.equal(marker.mode, undefined, 'unary method')

@@ -429,23 +429,19 @@ test('exposeAgentTools false still injects and registers roster_spawn alone', as
 // ---------------------------------------------------------------------------
 
 /**
- * Seed a store with one template and wire the spawn tool over it.
- * `stored` overrides fields on the seeded record straight through the store
- * — the tier fields, until the service's saveTemplate carries them.
+ * Seed a store with one template and wire the spawn tool over it. The seed
+ * goes through the REAL service's saveTemplate, so the tier fields are stored
+ * by the service's own write rules.
  */
-async function spawnToolHarness({ template = { name: 'Researcher', description: 'Finds sources', prompt: 'You research thoroughly.' }, stored, subagents } = {}) {
+async function spawnToolHarness({ template = { name: 'Researcher', description: 'Finds sources', prompt: 'You research thoroughly.' }, subagents } = {}) {
   const { store } = makeRoster()
-  const saved = await (async () => {
-    const service = Object.create(AgentRosterService.prototype)
-    service.store = store
-    return service.saveTemplate(template)
-  })()
-  const record = { ...saved, ...stored }
-  if (stored !== undefined) await store.put(record)
+  const service = Object.create(AgentRosterService.prototype)
+  service.store = store
+  const saved = await service.saveTemplate(template)
   const scope = makeToolsScope()
   scope.subagents = subagents ?? makeSubagents()
   registerRosterTools(scope, makeRecordingService(), { store, subagents: scope.subagents })
-  return { tool: toolOf(scope, 'roster_spawn'), store, saved: record, subagents: scope.subagents }
+  return { tool: toolOf(scope, 'roster_spawn'), store, saved, subagents: scope.subagents }
 }
 
 test('roster_spawn resolves a template by exact name and creates the member', async () => {
@@ -514,7 +510,7 @@ test('roster_spawn is not concurrency-safe; the authoring list tool is', async (
 /** A template with both tiers configured (invented provider/model ids). */
 const BASE_ONLY = { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'acme', model: 'cheap' } }
 const HIGH = { provider: 'acme', model: 'capable', reasoningEffort: 'max' }
-const tiered = () => spawnToolHarness({ template: BASE_ONLY, stored: { highTierModel: HIGH } })
+const tiered = () => spawnToolHarness({ template: { ...BASE_ONLY, highTierModel: HIGH } })
 const CALLER = { id: 'root-1', name: 'lead' }
 
 test('roster_spawn has no model parameter; tier and reason are the only model inputs', () => {
