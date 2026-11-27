@@ -77,6 +77,8 @@ function SegmentedControl(props) {
       type: 'button',
       role: 'tab',
       'aria-selected': option.value === value,
+      'aria-controls': `${id}-${option.value}-panel`,
+      tabIndex: option.value === value ? 0 : -1,
       disabled: disabled || option.disabled === true,
       onClick: () => { if (option.value !== value) onChange(option.value) },
     }, option.label)))
@@ -946,11 +948,22 @@ test('the form saves a high-tier model and the reuse policy', async () => {
   assert.deepEqual(
     reuseTabs().map((tab) => texts(tab).find((text) => text.startsWith('t:'))), ['t:card.reuse.role', 't:card.reuse.task'])
   assert.equal(find(reuse(), (node) => node.props?.role === 'tablist').props['aria-label'], 't:card.reuse')
+  const hint = () => find(reuse(), (node) => node.props?.['data-agent-roster-reuse-hint'] !== undefined)
+  const hintText = () => texts(hint()).find((text) => text.startsWith('t:card.reuse.hint.'))
+  assert.equal(hintText(), 't:card.reuse.hint.role', 'the panel shows the selected mode\'s hint')
+  assert.equal(hint().props.id, 'agent-roster-card-reuse-role-panel', 'the panel id matches the selected tab\'s aria-controls')
+  assert.equal(hint().props.role, 'tabpanel')
+  assert.equal(hint().props['aria-labelledby'], 'agent-roster-card-reuse-role')
+  const roleTab = reuseTabs().find((tab) => texts(tab).includes('t:card.reuse.role'))
+  assert.equal(roleTab.props['aria-controls'], 'agent-roster-card-reuse-role-panel', 'the selected tab controls the rendered panel')
   await pickMenuOption(view, 'data-agent-roster-card-model', JSON.stringify(['deepseek', 'chat']))
   await pickMenuOption(view, 'data-agent-roster-high-model', JSON.stringify(['deepseek', 'reasoner']))
   // Drive the real control: click the segment labelled with the task label.
   await view.interact(() => { reuseTabs().find((tab) => texts(tab).includes('t:card.reuse.task')).props.onClick() })
   assert.deepEqual(reuseTabs().map((tab) => tab.props['aria-selected']), [false, true])
+  assert.equal(hintText(), 't:card.reuse.hint.task', 'the hint follows the switch')
+  assert.equal(hint().props.id, 'agent-roster-card-reuse-task-panel')
+  assert.equal(hint().props['aria-labelledby'], 'agent-roster-card-reuse-task')
   const save = find(view.vdom, (node) => node.props?.['data-agent-roster-card-save'] !== undefined)
   await view.interact(() => { save.props.onClick() })
   assert.deepEqual(view.roster.saved[0].defaultModel, { provider: 'deepseek', model: 'chat' })
@@ -1034,6 +1047,8 @@ test('the high-tier none label and the reuse labels read as real bilingual copy 
     assert.equal(dict['card.reuse.role'], role)
     assert.equal(dict['card.reuse.task'], task)
     assert.equal(dict['card.use.title'], title)
+    assert.equal(dict['card.reuse.hint.role'], dict === zh ? '按角色复用时，该角色的空闲成员接手下一个任务，忙碌时才新建成员' : 'With by-role reuse, the role\'s idle member takes the next task; a new member is created only when it is busy')
+    assert.equal(dict['card.reuse.hint.task'], dict === zh ? '按任务复用时，每个任务都会新建一个成员' : 'With by-task reuse, every task gets a new member')
     assert.equal(dict['card.model.chip.high'], '{model} → ' + (dict === zh ? '高阶' : 'high'))
   }
 })

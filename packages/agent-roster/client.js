@@ -149,6 +149,8 @@ window.__ModuleLoader__.load({
       'card.reuse': '成员复用方式',
       'card.reuse.role': '按角色复用',
       'card.reuse.task': '按任务复用',
+      'card.reuse.hint.role': '按角色复用时，该角色的空闲成员接手下一个任务，忙碌时才新建成员',
+      'card.reuse.hint.task': '按任务复用时，每个任务都会新建一个成员',
       'card.model.chip.high': '{model} → 高阶',
       'card.use.title': '高阶使用记录',
       'card.use.empty': '还没有高阶调用记录',
@@ -209,6 +211,8 @@ window.__ModuleLoader__.load({
       'card.reuse': 'Reuse members',
       'card.reuse.role': 'By role',
       'card.reuse.task': 'By task',
+      'card.reuse.hint.role': 'With by-role reuse, the role\'s idle member takes the next task; a new member is created only when it is busy',
+      'card.reuse.hint.task': 'With by-task reuse, every task gets a new member',
       'card.model.chip.high': '{model} → high',
       'card.use.title': 'High-tier use',
       'card.use.empty': 'No high-tier dispatches yet',
@@ -1383,7 +1387,17 @@ window.__ModuleLoader__.load({
             onChange: setReuseChoice,
             label: t('card.reuse'),
             disabled: saving,
-          })),
+          }),
+          // The control's documented panel contract (SegmentedControl.tsx
+          // doc block): the owner renders `<id>-<value>-panel` for the
+          // selected mode, labelled by its tab — here the per-mode hint.
+          h('p', {
+            id: `agent-roster-card-reuse-${reuseChoice}-panel`,
+            role: 'tabpanel',
+            'aria-labelledby': `agent-roster-card-reuse-${reuseChoice}`,
+            className: 'agent-roster-hint',
+            'data-agent-roster-reuse-hint': '',
+          }, t(`card.reuse.hint.${reuseChoice}`))),
         outcome === null ? null : h('div', {
           className: 'agent-roster-banner agent-roster-banner-error',
           'data-agent-roster-card-form-error': '',
