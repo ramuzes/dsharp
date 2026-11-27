@@ -30,6 +30,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { requireReason } from './tiers.js'
+import { freshId } from './store.js'
 import { resolveTemplateRef, spawnFromTemplate } from './spawn.js'
 import { failureText as failure } from './wire.js'
 
@@ -76,7 +77,7 @@ function toModelRef(value) {
  *   listTemplates(): Promise<import('./store.js').RoleTemplate[]>,
  * }} service - the `agentRoster` remote (lib/roster-service.js); only the
  *   two methods above are called.
- * @param {{ store: { all(): Promise<object[]>, byId(id: string): Promise<object | undefined> }, subagents: object }} deps
+ * @param {{ store: { all(): Promise<object[]>, byId(id: string): Promise<object | undefined>, log: { add(record: { id: string, at: string, sessionId: string, templateId: string, templateName: string, memberName: string, reason: string }): Promise<void> } }, subagents: object }} deps
  *   - the roster store (template resolution) and the subagents runtime the
  *     spawn tool creates members through. Both are passed explicitly because
  *     this callback's inject list is `['tools', 'subagents']` — services not
@@ -138,6 +139,25 @@ export function registerRosterTools(scope, service, deps, options = {}) {
           ...(args?.tier === undefined ? {} : { tier: args.tier }),
           signal: exec?.signal,
         })
+        // High-tier use is audited (ADR-0013): every successful high
+        // dispatch appends one record to the store's dispatch log with the
+        // escalation basis. A log write failure must not undo a member that
+        // already started, so it maps to a warning on the result instead of
+        // failing the dispatch — reported, not swallowed.
+        let warning
+        if (args?.tier === 'high') {
+          try {
+            await store.log.add({
+              id: freshId(),
+              at: new Date().toISOString(),
+              sessionId: String(exec?.agent?.session?.id ?? ''),
+              templateId: template.id,
+              templateName: template.name,
+              memberName: result.name,
+              reason,
+            })
+          } catch { warning = 'high-tier use was not recorded' }
+        }
         return bounded({
           name: result.name,
           template: template.name,
@@ -145,6 +165,7 @@ export function registerRosterTools(scope, service, deps, options = {}) {
           reused: result.reused,
           model: result.model ?? 'inherited from the parent agent',
           ...(reason === undefined ? {} : { reason }),
+          ...(warning === undefined ? {} : { warning }),
         })
       } catch (error) {
         return failure(error)

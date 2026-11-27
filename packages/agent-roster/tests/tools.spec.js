@@ -583,6 +583,83 @@ test('a tier outside the enum is rejected by the real tools library before the t
   assert.equal(ctx.subagents.calls.startActivation.length, 0)
 })
 
+// ---------------------------------------------------------------------------
+// roster_spawn: the high-tier dispatch log (Task 1 store.log + ADR-0013)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a harness store's `log` with a strict recording stand-in: the exact
+ * same call shape as the real store handle (add/list), recording every add,
+ * delegating to the real one unless told to reject.
+ */
+function recordingLog(store, { reject = false } = {}) {
+  const calls = { add: [] }
+  const real = store.log
+  store.log = {
+    add: async (record) => {
+      calls.add.push(record)
+      if (reject) throw new Error('log storage unavailable')
+      return real.add(record)
+    },
+    list: real.list.bind(store),
+  }
+  return { calls }
+}
+
+test('a high-tier dispatch writes a record with the reason and session', async () => {
+  const ctx = await tiered()
+  ctx.subagents.rootOf = () => CALLER
+  // The calling agent carries a session id, like a real exec does
+  // (exec.agent.session.id) — invented id, no private detail.
+  const exec = { agent: { id: 'root-1', name: 'lead', session: { id: 'caller-session-1' } }, callId: 'c1' }
+  const log = recordingLog(ctx.store)
+  const out = await ctx.tool.execute(
+    { template: ctx.saved.id, task: 'the hard part', tier: 'high', reason: 'base rework failed once' },
+    exec,
+  )
+  assert.equal(log.calls.add.length, 1, 'exactly one record per successful high dispatch')
+  const record = log.calls.add[0]
+  assert.deepEqual(Object.keys(record).sort(),
+    ['at', 'id', 'memberName', 'reason', 'sessionId', 'templateId', 'templateName'])
+  assert.equal(record.sessionId, 'caller-session-1')
+  assert.equal(record.templateId, ctx.saved.id)
+  assert.equal(record.templateName, 'Researcher')
+  assert.equal(record.memberName, 'researcher')
+  assert.equal(record.reason, 'base rework failed once')
+  assert.match(record.id, /^[0-9a-f]{10}$/, 'fresh short-random hex id')
+  assert.doesNotThrow(() => new Date(record.at), 'at is a parseable timestamp')
+  assert.equal(JSON.parse(out).warning, undefined, 'a successful write adds no warning')
+})
+
+test('a base dispatch writes no record', async () => {
+  const ctx = await tiered()
+  ctx.subagents.rootOf = () => CALLER
+  const log = recordingLog(ctx.store)
+  await ctx.tool.execute(
+    { template: ctx.saved.id, task: 'the easy part' },
+    { agent: CALLER, callId: 'c1' },
+  )
+  assert.equal(log.calls.add.length, 0, 'only high-tier dispatches are recorded')
+})
+
+test('a failed record write reports a warning and keeps the result', async () => {
+  const ctx = await tiered()
+  ctx.subagents.rootOf = () => CALLER
+  const exec = { agent: { id: 'root-1', name: 'lead', session: { id: 'caller-session-1' } }, callId: 'c1' }
+  recordingLog(ctx.store, { reject: true })
+  const out = await ctx.tool.execute(
+    { template: ctx.saved.id, task: 'the hard part', tier: 'high', reason: 'base rework failed once' },
+    exec,
+  )
+  const parsed = JSON.parse(out)
+  // The dispatch itself succeeded: the full result stays, the log loss is
+  // reported — never swallowed, never thrown into the caller.
+  assert.equal(parsed.name, 'researcher')
+  assert.equal(parsed.tier, 'high')
+  assert.equal(parsed.reason, 'base rework failed once')
+  assert.equal(parsed.warning, 'high-tier use was not recorded')
+})
+
 test('roster_template_save refuses a default model with an empty provider or model', async () => {
   // The real service over the real store: a stored ref with empty parts is
   // unusable as a route, so the write boundary rejects it instead of leaving a
