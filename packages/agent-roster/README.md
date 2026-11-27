@@ -26,22 +26,29 @@ model.
 the tier from the template: `base` (the default) is the base model, or the
 session model when the template has none. `high` needs a one-line `reason`
 and a template with a high-tier model; otherwise the call is refused before
-anything starts. The tool's description states the basis on every call: every
+anything starts. A template accepts a high-tier model only together with a
+usable base model (Settings and `roster_template_save` refuse it otherwise). The tool's description states the basis on every call: every
 new task starts on the base model; a task moves to the high tier only after
 one rework on the base model failed to pass, or when the task brief itself
 names the high tier. The tier follows the task, never the role — a high-tier
 task does not make the next task high-tier. Every high-tier dispatch is
-recorded (time, session, template, member, reason) and listed under the
-template manager in Settings.
+recorded (time, session, template, member, reason; Settings lists the newest
+50) under the template manager in Settings. A failed record write is reported
+as a warning on the tool result instead of a record.
 
 **Resident reuse.** A template's reuse policy is `role` (the default) or
-`task`. Under `role`, a spawn with a task — `roster_spawn`, or the dialog — hands
-the task to an idle member of the same template and model route and creates a
-member only when there is none —
+`task`. Under `role`, a spawn with a task — `roster_spawn`, the "+" dialog, or the
+typed `/roster` command, which share one member registry — hands the task to
+an idle member of the same template and model route in the caller's own team
+tree and creates a member only when there is none —
 including when the only member is busy, so parallel work never queues behind a
 resident member. A high-tier member of a role is therefore a separate member.
-Under `task`, every spawn creates a member. The member registry lives in
-memory: after a host restart the first request for a role creates a member.
+The command node then says the member is already in the team. A request
+without a task adds no member either: it returns that idle member's name
+("is already in the team and standing by") and wakes nobody. Under `task`,
+every spawn creates a member. The member registry lives for one plugin mount:
+a host restart or a plugin reload clears it, after which the first request for
+a role creates a member.
 
 **Yield after dispatch.** The tool description tells the lead to end its turn
 once nothing is left but waiting — a member's completion notice starts the

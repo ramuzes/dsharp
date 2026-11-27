@@ -73,7 +73,7 @@ export function createRosterCommand({ store, staging, spawn }) {
       try {
         let template
         if (staged === undefined) {
-          // Typed use: that template, its default model, no task.
+          // Typed use: that template, its base model, no task.
           template = await resolveTemplateRef(store, typed)
         } else {
           // A typed argument beside a pending dialog request must name the same
@@ -98,7 +98,7 @@ export function createRosterCommand({ store, staging, spawn }) {
         const result = await spawn({
           agent: invocation.agent,
           template,
-          // An unstaged (typed) run leaves both unset: template default model, no task.
+          // An unstaged (typed) run leaves both unset: template base model, no task.
           ...(staged === undefined ? {} : { task: readString(staged.task), model: staged.model }),
           signal: invocation.signal,
         })
