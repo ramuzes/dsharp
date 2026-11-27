@@ -24,9 +24,11 @@ reuse policy `role` was saved through `roster_template_save` with the two new fi
 | 3 | `roster_spawn` high, no `reason` | refused `roster/bad-request` ("reason is required with tier high"); nothing created |
 | 4 | `roster_spawn` high with a reason | `{ name: probe-2, tier: "high", reused: false }`; a sibling on the high-tier model at the high effort; one record written to the log domain (`storages/agent_roster_log.json`, a separate file — the templates storage untouched) |
 | 5 | `roster_spawn` base, a task that takes ~25 s, then the lead **ended its turn** | lead log: `turn/end`, then 25 s later the settle notice spliced into `next-turn`, `turn/start`, then the `subagent-settled` message |
+| 6 | `roster_spawn` base with a ~30 s task (reused: the member took it), then **at once** a second base task | `{ name: probe-3, reused: false }` — a sibling on the base model in a new session directory, because the resident member was still running; the resident's log shows four requests and its fourth turn ending after the sibling's |
 
 `wait_agent` was not called once in the window (0 calls in the lead's log). Step 5 is the path the
 tool description asks for: an idle lead is resumed by the member's completion, with no polling. Steps
+Step 6 is the busy-member rule: work is never queued behind a resident member.
 1–4 arrived while the lead was still working and were delivered at its next step, as the runtime
 documented (`manager.ts:1151`).
 
