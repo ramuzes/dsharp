@@ -80,9 +80,9 @@ export function assembleTaskMessage(task) {
 /**
  * The first member registered for (root, template, model route) that the
  * runtime lists as an idle child — or null when none stands by.
- * @param {{ subagents: object, registry: ReturnType<createMemberRegistry> }} deps
- *   - the subagents runtime and the lead's member registry.
- * @param {{ rootId: string, templateId: string, modelKey: string }} key - what to reuse.
+ * @param {{ subagents: object, registry: ReturnType<createMemberRegistry>, rootId: string, templateId: string, modelKey: string }} query
+ *   - the subagents runtime, the lead's member registry, and the tree root,
+ *     template and model route to reuse under.
  * @returns {Promise<{ childId: string, name: string } | null>}
  */
 export async function findIdleMember({ subagents, registry, rootId, templateId, modelKey }) {

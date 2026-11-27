@@ -229,6 +229,14 @@ export async function spawnFromTemplate(scope, deps, input) {
   // Resident reuse (ADR-0013): a role's idle member takes the next task
   // before a sibling is created. Only a registered member of the same
   // template and model route in this tree, listed as inactive by the runtime.
+  //
+  // The window between the `inactive` match and the delivered message is NOT
+  // closed by a claim: it is closed by the `roster_spawn` tool's exclusive
+  // execution (isConcurrencySafe: false → { kind: 'exclusive' }, dsh
+  // packages/core/tools/src/pipeline.ts:108; "exclusive runs alone and forms
+  // an ordering barrier", packages/core/tools/src/contracts.ts:207), so two
+  // spawns of one agent never overlap. A concurrent caller in ANOTHER agent
+  // of the same tree is not protected.
   const registry = service(scope, deps, 'registry')
   if (template.reuse === 'role' && registry !== undefined) {
     const idle = await findIdleMember({
@@ -282,7 +290,9 @@ export async function spawnFromTemplate(scope, deps, input) {
   // without one it could never be addressed, so it is not a candidate.
   if (registry !== undefined && typeof activation.childId === 'string') {
     registry.remember(root.id, activation.childId, {
-      templateId: template.id, modelKey: modelKeyOf(model), name: activation.name, tier,
+      templateId: template.id, modelKey: modelKeyOf(model), name: activation.name,
+      // Informational only: reuse matches on the model key, never on the tier.
+      tier,
     })
   }
   return {

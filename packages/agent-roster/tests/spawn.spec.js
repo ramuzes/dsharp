@@ -656,13 +656,28 @@ test('diagnostic entries are skipped and a failing delivery is reported, not ret
   const boom = new Error('inbox closed')
   const { subagents, spawn } = reuseHarness()
   const first = await spawn({ task: 'first' })
-  subagents.children.push({ kind: 'diagnostic', id: 'ghost', reason: 'unavailable' })
+  // A diagnostic row for the SAME session id, ahead of the real child row:
+  // it must neither count as the idle member nor hide it.
+  subagents.children.unshift({ kind: 'diagnostic', id: first.childSessionId, reason: 'corrupt' })
+  assert.equal(subagents.children[0].kind, 'diagnostic')
   subagents.sendMessage = async (sender, targetId, content, options) => {
     options.signal.throwIfAborted()
     throw boom
   }
+  // The member was still chosen (the delivery was attempted and is the
+  // caller's error), and no second member was started in its place.
   await assert.rejects(() => spawn({ task: 'second' }), (error) => error === boom)
   assert.equal(subagents.activations.length, 1)
+})
+
+test('a member listed only as a diagnostic row is not reused: a sibling is created', async () => {
+  const { subagents, spawn } = reuseHarness()
+  const first = await spawn({ task: 'first' })
+  subagents.children.splice(0, subagents.children.length, { kind: 'diagnostic', id: first.childSessionId, reason: 'corrupt' })
+  const second = await spawn({ task: 'second' })
+  assert.equal(second.reused, false)
+  assert.equal(subagents.messages.length, 0, 'an unreachable member is never messaged')
+  assert.equal(subagents.activations.length, 2)
 })
 
 test('the registry is scoped to the caller\'s tree root', async () => {

@@ -34,7 +34,7 @@ const USAGE = 'Usage: /roster <template name or id> — adds a member from a rol
 /**
  * The command/done text for a created — or reused (ADR-0013) — member. A
  * reused member was already in the team; the text must not say "created".
- * @param {{ name: string, model?: object | null }} result - the spawn result.
+ * @param {{ name: string, model?: object | null, reused?: boolean }} result - the spawn result.
  * @param {{ name: string }} template - the resolved template.
  * @param {unknown} task - the first task, if any.
  * @returns {string}
