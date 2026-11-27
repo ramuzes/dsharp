@@ -2,7 +2,7 @@
 
 ## Change 2026-11-27 — model tiers, resident members, yield after dispatch
 
-Evidence: session `b5f74b49` (2026-11-26, 17:50–23:10). The lead created six Senior Developers for six task dispatches (plus one code reviewer), passed an explicit model on five of the eight spawns (the template's base model on none of those five) and never returned to it, and held one turn for 5 h 20 min with 28 `wait_agent` calls (11 at the 10-minute cap).
+Evidence: one implementation session (2026-11-26). The lead created six developer members for six task dispatches (plus one code reviewer), passed an explicit model on five of the eight spawns (the template's base model on none of those five) and never returned to it, and held one turn for 5 h 20 min with 28 `wait_agent` calls (11 at the 10-minute cap).
 
 - ADDED: **model tiers.** A template carries a *base model* (the existing `defaultModel`, unchanged in storage) and an optional *high-tier model*. The agent-facing `roster_spawn` no longer accepts a model; the lead chooses a **tier** and the plugin resolves it from the template.
 - MODIFIED: `roster_spawn` parameters are `{ template, task?, tier?: 'base' | 'high', reason? }`. `tier: 'high'` requires a non-empty `reason` and a template that has a high-tier model; otherwise it is refused. The result reports the member name, whether an existing member was reused, and the model applied.

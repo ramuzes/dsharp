@@ -4,7 +4,7 @@ Status: Accepted (2026-11-25) · Revises the dialog half of ADR-0011
 
 ## Context
 
-ADR-0011 made the "+" dialog inject an instruction into the conversation and let the lead agent call `roster_spawn`. Two problems surfaced in real use (session `c2b1fbc6`, 2026-11-25):
+ADR-0011 made the "+" dialog inject an instruction into the conversation and let the lead agent call `roster_spawn`. Two problems surfaced in real use (one session, 2026-11-25):
 
 1. The instruction is a `user/message` with `source.kind: "user"`, because the composer path (`session.prompt`) is by definition the user speaking. It rendered as a long user bubble and cost a turn of the lead.
 2. The member misbehaved on arrival. Its standing prompt reached it as "Agent lead sent a message: …" plus the runtime's result-delivery guidance, so a role definition read as a first task; DSH also injects the creating session's timeline tree title into the child's context, which the member took as its topic. It produced an unsolicited report, and its settlement notice ("Background subagent X finished…") woke the lead for a turn that could only call that report irrelevant.

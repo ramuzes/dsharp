@@ -4,10 +4,10 @@ Status: Accepted (2026-11-27) · Revises the `roster_spawn` half of ADR-0011 and
 
 ## Context
 
-Session `b5f74b49` (2026-11-26, 17:50–23:10) ran seven implementation tasks through the roster with a "Senior Developer" template whose default model was glm-5.3-flash. The session logs show three deviations from how the user wanted the roster used:
+One implementation session (2026-11-26) ran six tasks through the roster with a developer template whose default model was a small, cheap one. The session logs show three deviations from how the user wanted the roster used:
 
-1. **The lead chose the model.** `roster_spawn` exposed the per-spawn `model` argument to the agent (0.2.1). After the first two tasks, the lead listed the available models and passed glm-5.4 high on five of its eight spawns, and never returned to the template's model — including for a routine task. The one defect found by an audit in that session had been fixed by the base model itself a minute later.
-2. **A new member per task.** Six task dispatches produced six Senior Developers (plus one code reviewer). Nothing in the tool said a member could be reused, so the lead followed the host's `subagent` idiom of a fresh context per task.
+1. **The lead chose the model.** `roster_spawn` exposed the per-spawn `model` argument to the agent (0.2.1). After the first two tasks, the lead listed the available models and passed a large model at high reasoning effort on five of its eight spawns, and never returned to the template's model — including for a routine task. The one defect found by an audit in that session had been fixed by the base model itself a minute later.
+2. **A new member per task.** Six task dispatches produced six developer members (plus one code reviewer). Nothing in the tool said a member could be reused, so the lead followed the host's `subagent` idiom of a fresh context per task.
 3. **Waiting online.** The lead held one turn for 5 h 20 min with 28 `wait_agent` calls, 11 of them at the 10-minute cap (about 3.2 h waiting in total). The other 17 returned on 12 settle notices and 7 member messages — the very events the runtime already delivers to an idle lead as its next turn (`packages/subagent/subagent/src/manager.ts:1151`: `queue` when the parent is idle, `steer` when it works). The host's team guidance says the lead "must wait for required teammates before giving the final answer" (`packages/team/tool-agent-team/src/index.ts:31`), which the lead read as a literal wait.
 
 DSH facts that decide the shape (v0.2.3-alpha.2 source):
