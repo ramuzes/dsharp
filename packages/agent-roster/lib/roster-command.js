@@ -32,7 +32,8 @@ const NAME = 'roster'
 const USAGE = 'Usage: /roster <template name or id> — adds a member from a role template; it stands by until it is given work. / 用法：/roster <模板名或 id>：按角色模板添加一名成员，待命等待派活。'
 
 /**
- * The command/done text for a created member.
+ * The command/done text for a created — or reused (ADR-0013) — member. A
+ * reused member was already in the team; the text must not say "created".
  * @param {{ name: string, model?: object | null }} result - the spawn result.
  * @param {{ name: string }} template - the resolved template.
  * @param {unknown} task - the first task, if any.
@@ -43,7 +44,9 @@ function successText(result, template, task) {
   const route = model === null || model === undefined
     ? 'inherits the session model'
     : `${model.provider} / ${model.model}` + (model.reasoningEffort ? ` · ${model.reasoningEffort}` : '')
-  const what = readString(task).trim() === '' ? 'created and standing by' : 'created and given its first task'
+  const what = readString(task).trim() === ''
+    ? (result.reused ? 'is already in the team and standing by' : 'created and standing by')
+    : (result.reused ? 'is already in the team and was given its first task' : 'created and given its first task')
   return `Member "${result.name}" (${template.name}) ${what}. Model: ${route}.`
 }
 
@@ -116,7 +119,7 @@ export function createRosterCommand({ store, staging, spawn }) {
  *
  * @param {object} scope - inject scope carrying `commands` and `subagents`
  *   (accessing a service a scope did not inject throws — AGENTS.md 3).
- * @param {{ store: object, staging: object }} deps
+ * @param {{ store: object, staging: object, registry?: object }} deps
  * @returns {() => Promise<void>} disposer for the inject callback.
  */
 export function registerRosterCommand(scope, deps) {
@@ -124,7 +127,7 @@ export function registerRosterCommand(scope, deps) {
   const command = createRosterCommand({
     store: deps.store,
     staging: deps.staging,
-    spawn: (input) => spawnFromTemplate(scope, { subagents: scope.subagents }, input),
+    spawn: (input) => spawnFromTemplate(scope, { subagents: scope.subagents, registry: deps.registry }, input),
   })
   const handler = (invocation) => {
     const operation = command.handler(invocation)

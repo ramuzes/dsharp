@@ -14,6 +14,9 @@
  *   (packages/subagent/subagent/src/names.ts SiblingNameReservations.reserve:
  *   1–32 lower-case letters/digits/hyphens starting with a letter, other than
  *   `lead`, unique among the creator's children — duplicate → error).
+ * - `sendMessage` fake mirrors SubagentManager.sendMessage (manager.ts:568):
+ *   the exact live root as sender, a text ContentBlock[], and `options.signal`
+ *   dereferenced first; it records the call and returns a message id.
  * - `rootOf` fake throws for an unknown caller, mirroring "when the caller or
  *   its runtime owner is unavailable" (subagent src/index.ts:296-302).
  * - Strict scopes expose ONLY the sanctioned get() name lookup; every other
@@ -23,6 +26,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import { slugify, allocateName, assembleMemberOpening, spawnDeliveryOf, resolveTemplateRef, spawnFromTemplate } from '../lib/spawn.js'
+import { modelKeyOf, createMemberRegistry, assembleTaskMessage, findIdleMember } from '../lib/members.js'
 import { openRosterStore, RoleTemplate } from '../lib/store.js'
 import { TIERS, usableModel, sameModel, resolveMemberModel, requireReason } from '../lib/tiers.js'
 
@@ -70,16 +74,21 @@ async function makeStore(...templates) {
  * root's direct-child names. `startActivation` records every spec and applies
  * the real admission strictness (see file header).
  */
-function fakeSubagents({ root, known = [root], children = [], activations = [] }) {
+function fakeSubagents({ root, known = [root], children = [], activations = [], messages = [], activityOf, childIdOf }) {
+  // Default: a created member stands by (inactive) until something wakes it.
+  const activity = activityOf ?? ((childId) => (children.some((entry) => entry.id === childId) ? 'inactive' : undefined))
+  const idOf = childIdOf ?? ((ordinal) => `cs-${ordinal}`)
   return {
     activations,
+    messages,
+    children,
     rootOf(caller) {
       if (!known.includes(caller)) throw new Error(`rootOf: unknown caller ${String(caller?.id)}`)
       return root
     },
     async listDescendants(rootSessionId) {
       if (rootSessionId !== root.id) throw new Error('listDescendants: not the root session')
-      return children
+      return children.map((entry) => (entry.kind === 'child' ? { ...entry, activity: activity(entry.id) ?? entry.activity } : entry))
     },
     async startActivation(spec) {
       // Mirror the real admission checks before recording success.
@@ -97,13 +106,31 @@ function fakeSubagents({ root, known = [root], children = [], activations = [] }
       const taken = children.filter((e) => e.depth === 1 && typeof e.path === 'string').map((e) => e.path)
       if (spec.name !== undefined && taken.includes(spec.name)) throw new Error('DUPLICATE_AGENT_NAME')
       activations.push(spec)
+      const childId = idOf(activations.length)
+      // As in the runtime, a local child enters the parent catalog at once.
+      if (childId !== undefined) children.push(child1(spec.name, childId))
       return {
-        childId: `cs-${activations.length}`,
+        ...(childId !== undefined ? { childId } : {}),
         name: spec.name,
         messageId: `m-${activations.length}`,
         result: Promise.resolve({ output: [], stopReason: 'completed' }),
         dispose: async () => {},
       }
+    },
+    // Mirrors SubagentManager.sendMessage (manager.ts:568): the sender is the
+    // exact live tree root, the content is a text ContentBlock[], and
+    // `options.signal` is a required member (it is dereferenced first).
+    async sendMessage(sender, targetId, content, options) {
+      options.signal.throwIfAborted()
+      if (!known.some((agent) => agent.id === root.id) || sender !== root) {
+        throw new Error('UNAUTHORIZED: sendMessage requires the exact live root agent')
+      }
+      if (typeof targetId !== 'string' || targetId === '') throw new Error('send_message requires another agent in the subagent tree')
+      if (!Array.isArray(content) || content.some((block) => block?.type !== 'text' || typeof block.text !== 'string')) {
+        throw new Error('content must be an array of text ContentBlocks')
+      }
+      messages.push({ sender, targetId, content, options })
+      return 'm1'
     },
   }
 }
@@ -500,4 +527,178 @@ test('requireReason trims and refuses blank', () => {
   assert.equal(requireReason('  concurrency  '), 'concurrency')
   assert.throws(() => requireReason('  '), (error) => remoteErrorOf(error)?.code === 'roster/bad-request')
   assert.throws(() => requireReason(undefined), (error) => remoteErrorOf(error)?.code === 'roster/bad-request')
+})
+
+// ---------------------------------------------------------------------------
+// Resident reuse (ADR-0013): a role's idle member takes the next task before
+// a sibling is created. Fakes: a created member enters the catalog at once.
+// ---------------------------------------------------------------------------
+
+test('modelKeyOf: inherit is one route; a route is provider/model@effort', () => {
+  assert.equal(modelKeyOf(null), 'inherit')
+  assert.equal(modelKeyOf(undefined), 'inherit')
+  assert.equal(modelKeyOf({ provider: 'acme', model: 'cheap' }), 'acme/cheap@')
+  assert.equal(modelKeyOf({ provider: 'acme', model: 'cheap', reasoningEffort: 'low' }), 'acme/cheap@low')
+})
+
+test('assembleTaskMessage frames the task as new work under an unchanged role, verbatim and trimmed', () => {
+  const text = assembleTaskMessage('  review the payments module  ')
+  assert.equal(text, 'A new task from the lead of your team. Your standing role is unchanged; this task is what to do now:\n\nreview the payments module')
+})
+
+test('createMemberRegistry keeps candidates per tree root and template route, in insertion order', () => {
+  const registry = createMemberRegistry()
+  const entry = (name) => ({ templateId: 't1', modelKey: 'inherit', name, tier: 'base' })
+  registry.remember('root-1', 'cs-1', entry('researcher'))
+  registry.remember('root-1', 'cs-2', entry('reviewer'))
+  registry.remember('root-1', 'cs-3', { templateId: 't1', modelKey: 'acme/cheap@low', name: 'scout', tier: 'custom' })
+  registry.remember('root-2', 'cs-9', entry('elsewhere'))
+  assert.deepEqual(registry.candidates('root-1', 't1', 'inherit'), ['cs-1', 'cs-2'])
+  assert.deepEqual(registry.candidates('root-1', 't1', 'acme/cheap@low'), ['cs-3'])
+  assert.deepEqual(registry.candidates('root-1', 't2', 'inherit'), [], 'another template')
+  assert.deepEqual(registry.candidates('root-3', 't1', 'inherit'), [])
+})
+
+/** A role-template spawn with a registry, against one shared fake runtime. */
+function reuseHarness(options = {}) {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root, ...options })
+  const registry = createMemberRegistry()
+  const spawn = (extra = {}) => spawnFromTemplate(strictScope(), { subagents, registry }, {
+    agent: root, template: RoleTemplate.parse(RESEARCHER), ...extra,
+  })
+  return { root, subagents, registry, spawn }
+}
+
+test('role reuse hands a second task to the idle member and starts no activation', async () => {
+  const { subagents, spawn } = reuseHarness()
+  const controller = new AbortController()
+  const first = await spawn({ task: 'review the payments module' })
+  const second = await spawn({ task: '  review the orders module  ', signal: controller.signal })
+  assert.equal(first.reused, false)
+  assert.deepEqual({ reused: second.reused, name: second.name, childSessionId: second.childSessionId },
+    { reused: true, name: first.name, childSessionId: first.childSessionId })
+  assert.equal(subagents.activations.length, 1)
+  assert.equal(subagents.messages.length, 1)
+  const [message] = subagents.messages
+  assert.equal(message.sender, subagents.activations[0].parent, 'the sender is the tree root')
+  assert.equal(message.targetId, first.childSessionId)
+  const text = message.content[0].text
+  assert.ok(text.startsWith('A new task from the lead of your team.'), text)
+  assert.ok(text.endsWith('review the orders module'))
+  assert.equal(message.options.signal, controller.signal)
+})
+
+test('a busy member is not reused: a sibling is created', async () => {
+  const { subagents, spawn } = reuseHarness({ activityOf: () => 'running' })
+  await spawn({ task: 'first' })
+  await spawn({ task: 'second' })
+  assert.equal(subagents.activations.length, 2)
+  assert.equal(subagents.messages.length, 0)
+})
+
+test('reuse policy task creates a member every time', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const registry = createMemberRegistry()
+  const template = RoleTemplate.parse({ ...RESEARCHER, reuse: 'task' })
+  const spawn = () => spawnFromTemplate(strictScope(), { subagents, registry }, { agent: root, template, task: 'go' })
+  const results = [await spawn(), await spawn()]
+  assert.equal(subagents.activations.length, 2)
+  assert.equal(subagents.messages.length, 0)
+  assert.deepEqual(results.map((result) => result.reused), [false, false])
+})
+
+test('another model route is another member', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const registry = createMemberRegistry()
+  const template = RoleTemplate.parse(TIERED)
+  const spawn = (extra) => spawnFromTemplate(strictScope(), { subagents, registry }, { agent: root, template, ...extra })
+  const base = await spawn({ task: 'first' })
+  const high = await spawn({ task: 'second', tier: 'high' })
+  assert.equal(subagents.activations.length, 2)
+  assert.equal(subagents.messages.length, 0)
+  assert.deepEqual([base.tier, high.tier], ['base', 'high'])
+})
+
+test('a standby request for a role that already stands by returns the member and wakes nobody', async () => {
+  const { spawn, subagents } = reuseHarness()
+  const first = await spawn()
+  const second = await spawn()
+  assert.equal(subagents.activations.length, 1)
+  assert.equal(subagents.messages.length, 0, 'no task, no message')
+  assert.deepEqual({ reused: second.reused, name: second.name, childSessionId: second.childSessionId },
+    { reused: true, name: first.name, childSessionId: first.childSessionId })
+})
+
+test('a model-less template inherits one route and is reused', async () => {
+  const { spawn, subagents } = reuseHarness()
+  const first = await spawn({ model: null })
+  const second = await spawn({ tier: 'base' })
+  assert.equal(subagents.activations.length, 1)
+  assert.deepEqual({ reused: second.reused, name: second.name, model: second.model, tier: second.tier },
+    { reused: true, name: first.name, model: null, tier: 'base' })
+})
+
+test('a member without an exposed session id is never reused and nothing throws', async () => {
+  const { spawn, subagents, registry } = reuseHarness({ childIdOf: () => undefined })
+  const first = await spawn({ task: 'first' })
+  const second = await spawn({ task: 'second' })
+  assert.equal('childSessionId' in first, false)
+  assert.equal(subagents.activations.length, 2)
+  assert.equal(subagents.messages.length, 0)
+  assert.deepEqual(registry.candidates('root-1', 't1', 'inherit'), [])
+  assert.equal(second.reused, false)
+})
+
+test('diagnostic entries are skipped and a failing delivery is reported, not retried with a second member', async () => {
+  const boom = new Error('inbox closed')
+  const { subagents, spawn } = reuseHarness()
+  const first = await spawn({ task: 'first' })
+  subagents.children.push({ kind: 'diagnostic', id: 'ghost', reason: 'unavailable' })
+  subagents.sendMessage = async (sender, targetId, content, options) => {
+    options.signal.throwIfAborted()
+    throw boom
+  }
+  await assert.rejects(() => spawn({ task: 'second' }), (error) => error === boom)
+  assert.equal(subagents.activations.length, 1)
+})
+
+test('the registry is scoped to the caller\'s tree root', async () => {
+  const rootA = { id: 'root-1', name: LEAD }
+  const rootB = { id: 'root-2', name: LEAD }
+  const activations = []
+  const subA = fakeSubagents({ root: rootA, activations })
+  const subB = fakeSubagents({ root: rootB, activations })
+  const registry = createMemberRegistry()
+  const template = RoleTemplate.parse(RESEARCHER)
+  const first = await spawnFromTemplate(strictScope(), { subagents: subA, registry }, { agent: rootA, template })
+  const second = await spawnFromTemplate(strictScope(), { subagents: subB, registry }, { agent: rootB, template })
+  assert.equal(activations.length, 2)
+  assert.equal(second.reused, false)
+  assert.notEqual(second.childSessionId, first.childSessionId)
+})
+
+test('findIdleMember: the first registered candidate listed as an inactive child; nothing else', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root, activityOf: (childId) => (childId === 'busy' ? 'running' : 'inactive') })
+  const registry = createMemberRegistry()
+  const entry = (name) => ({ templateId: 't1', modelKey: 'inherit', name, tier: 'base' })
+  registry.remember('root-1', 'gone', entry('gone'))
+  registry.remember('root-1', 'busy', entry('busy'))
+  registry.remember('root-1', 'idle', entry('idle'))
+  subagents.children.push(child1('busy', 'busy'), { ...child1('idle', 'idle'), path: 'team/idle', depth: 2 })
+  assert.deepEqual(await findIdleMember({ subagents, registry, rootId: 'root-1', templateId: 't1', modelKey: 'inherit' }),
+    { childId: 'idle', name: 'idle' })
+  assert.deepEqual(await findIdleMember({ subagents, registry, rootId: 'root-1', templateId: 't2', modelKey: 'inherit' }), null)
+})
+
+test('without a registry a role template still creates a member every time', async () => {
+  const root = { id: 'root-1', name: LEAD }
+  const subagents = fakeSubagents({ root })
+  const spawn = () => spawnFromTemplate(strictScope(), { subagents }, { agent: root, template: RoleTemplate.parse(RESEARCHER), task: 'go' })
+  await spawn()
+  await spawn()
+  assert.equal(subagents.activations.length, 2)
 })

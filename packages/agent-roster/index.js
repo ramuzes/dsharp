@@ -21,6 +21,7 @@ import { readBoolean } from './lib/wire.js'
 import { openStatus } from './lib/status.js'
 import { openRosterStore } from './lib/store.js'
 import { createStaging } from './lib/staging.js'
+import { createMemberRegistry } from './lib/members.js'
 import { registerRosterCommand } from './lib/roster-command.js'
 import { AgentRosterService } from './lib/roster-service.js'
 import { registerRosterTools } from './lib/agent-tools.js'
@@ -88,6 +89,10 @@ export function apply(ctx, config) {
       // The dialog stages its member request here; the /roster command (its
       // own inject callback below) takes it (ADR-0012).
       const staging = createStaging()
+      // The lead's created members, for resident reuse (ADR-0013): one
+      // registry per mount, shared by the tool and the command so a member
+      // either of them created can take the other's next task.
+      const registry = createMemberRegistry()
       const mounted = { tools: false, command: false }
       const factory = serviceFactory ?? ((ctx2, store2, staging2) => new AgentRosterService(ctx2, store2, staging2))
       const roster = factory(ctx, store, staging)
@@ -123,7 +128,7 @@ export function apply(ctx, config) {
           // never sit at `done` over a dead registration (engram
           // index.js:257-259 / airboard index.js:262-265 pattern).
           try {
-            const offTools = registerRosterTools(toolScope, roster, { store, subagents: toolScope.subagents }, { authoring: exposeAgentTools })
+            const offTools = registerRosterTools(toolScope, roster, { store, subagents: toolScope.subagents, registry }, { authoring: exposeAgentTools })
             mounted.tools = true
             status.write('tools-registered', { authoring: exposeAgentTools, command: mounted.command })
             return () => { offTools() }
@@ -143,7 +148,7 @@ export function apply(ctx, config) {
       // spawns through `subagents`.
       ctx.inject(['commands', 'subagents'], (commandScope) => {
         try {
-          const offCommand = registerRosterCommand(commandScope, { store, staging })
+          const offCommand = registerRosterCommand(commandScope, { store, staging, registry })
           mounted.command = true
           // One terminal record names both mounts, whichever lands last.
           status.write(mounted.tools ? 'tools-registered' : 'command-registered',

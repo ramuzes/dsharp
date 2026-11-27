@@ -19,6 +19,7 @@
  * template's standing prompt is passed verbatim.
  */
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import { assembleTaskMessage, findIdleMember, modelKeyOf } from './members.js'
 import { resolveMemberModel } from './tiers.js'
 import { readString } from './wire.js'
 
@@ -184,7 +185,9 @@ export async function resolveTemplateRef(store, reference) {
  * so not awaiting it here cannot dangle an unhandled rejection.
  *
  * @param {object} scope - plugin ctx; only its get() name lookup is touched.
- * @param {{ subagents?: object }} deps - optional host services (test seam/DI).
+ * @param {{ subagents?: object, registry?: object }} deps - optional host services
+ *   (test seam/DI); `registry` is the lead's created-member registry
+ *   (lib/members.js). Without it nothing is ever reused.
  * @param {{ agent?: object, template: object, task?: unknown, tier?: 'base' | 'high', model?: import('./store.js').ModelRef | null }} input - the
  *   calling agent, the resolved template record, the optional task, the
  *   optional tier (default base), and the dialog's optional per-spawn model
@@ -192,7 +195,7 @@ export async function resolveTemplateRef(store, reference) {
  * @returns {Promise<{ name: string, childSessionId?: string, model: object | null, tier: 'base' | 'high' | 'custom', reused: boolean }>}
  *   the activation's model-facing name, the child session id when exposed,
  *   the applied model (null = inherited), the tier it resolved to, and
- *   `reused` (always false until resident reuse lands).
+ *   `reused` (true when an idle resident member took the request).
  * @throws {RemoteError} `roster/no-subagents`, `roster/bad-request`,
  *   `roster/no-high-tier-model`.
  * @throws {Error} when `input.agent` is absent (tool misuse, not a data error).
@@ -216,6 +219,34 @@ export async function spawnFromTemplate(scope, deps, input) {
   const { model, tier } = resolveMemberModel(template, { tier: input?.tier, model: input?.model })
 
   const root = subagents.rootOf(agent)
+
+  // `signal` is a required spec member (types.ts:43) owning cancellation
+  // BEFORE publication. A tool call has a caller signal; when it fires, the
+  // spawn is abandoned before publication.
+  const signal = input?.signal instanceof AbortSignal ? input.signal : new AbortController().signal
+  const task = readString(input?.task).trim()
+
+  // Resident reuse (ADR-0013): a role's idle member takes the next task
+  // before a sibling is created. Only a registered member of the same
+  // template and model route in this tree, listed as inactive by the runtime.
+  const registry = service(scope, deps, 'registry')
+  if (template.reuse === 'role' && registry !== undefined) {
+    const idle = await findIdleMember({
+      subagents, registry, rootId: root.id, templateId: template.id, modelKey: modelKeyOf(model),
+    })
+    if (idle !== null) {
+      if (task !== '') {
+        // SubagentManager.sendMessage (dsh
+        // packages/subagent/subagent/src/manager.ts:568): the sender is the
+        // tree's live root Agent, content is a ContentBlock[], and
+        // `options.signal` is dereferenced first. A rejected delivery is the
+        // caller's error: it is not retried with a second member.
+        await subagents.sendMessage(root, idle.childId, [{ type: 'text', text: assembleTaskMessage(task) }], { signal })
+      }
+      return { name: idle.name, childSessionId: idle.childId, model, tier, reused: true }
+    }
+  }
+
   // Free-name allocation against the root's committed direct-child names
   // (listDescendants depth-1 paths — the exact sibling set the runtime's own
   // reservation checks; the list is advisory, the runtime reservation is
@@ -226,11 +257,6 @@ export async function spawnFromTemplate(scope, deps, input) {
     .map((entry) => entry.path)
   const name = allocateName(template.name, taken)
 
-  // `signal` is a required spec member (types.ts:43) owning cancellation
-  // BEFORE publication. A tool call has a caller signal; when it fires, the
-  // spawn is abandoned before publication.
-  const signal = input?.signal instanceof AbortSignal ? input.signal : new AbortController().signal
-  const task = readString(input?.task).trim()
   const activation = await subagents.startActivation({
     provider: SPAWN_PROVIDER,
     parent: root,
@@ -252,12 +278,19 @@ export async function spawnFromTemplate(scope, deps, input) {
     // A first task reports to the lead; a standby member settles silently.
     delivery: spawnDeliveryOf(task),
   })
+  // A created member is remembered for reuse when its session id is exposed;
+  // without one it could never be addressed, so it is not a candidate.
+  if (registry !== undefined && typeof activation.childId === 'string') {
+    registry.remember(root.id, activation.childId, {
+      templateId: template.id, modelKey: modelKeyOf(model), name: activation.name, tier,
+    })
+  }
   return {
     name: activation.name,
     ...(activation.childId !== undefined ? { childSessionId: activation.childId } : {}),
     model,
     tier,
-    // Resident reuse arrives with ADR-0013's next step; a creation is never a reuse.
+    // A creation is never a reuse.
     reused: false,
   }
 }

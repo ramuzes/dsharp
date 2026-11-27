@@ -27,7 +27,7 @@ async function makeStore(...templates) {
 }
 
 /** Recording spawn: the command's only side effect, with the real result shape. */
-function makeSpawn(result = { name: 'researcher', childSessionId: 'cs-1', model: null }) {
+function makeSpawn(result = { name: 'researcher', childSessionId: 'cs-1', model: null, tier: 'base', reused: false }) {
   const calls = []
   return { calls, spawn: async (input) => { calls.push(input); return result } }
 }
@@ -309,4 +309,32 @@ test('the disposer unregisters first and only then waits for an in-flight handle
   assert.equal((await inFlight).kind, 'success')
   await disposing
   assert.equal(disposed, true)
+})
+
+// ---------------------------------------------------------------------------
+// resident reuse (ADR-0013): the command must not claim it created a member
+// ---------------------------------------------------------------------------
+
+test('the command reports a reused standby member without "created"', async () => {
+  const store = await makeStore(RESEARCHER)
+  const command = createRosterCommand({
+    store, staging: createStaging({ ttlMs: 1, now: () => 0 }),
+    spawn: makeSpawn({ name: 'researcher', childSessionId: 'cs-1', model: null, tier: 'base', reused: true }).spawn,
+  })
+  const out = await command.handler(invocationOf('sess-1', 'Researcher'))
+  assert.equal(out.kind, 'success')
+  assert.equal(out.text, 'Member "researcher" (Researcher) is already in the team and standing by. Model: inherits the session model.')
+})
+
+test('the command reports a reused member that was given its first task', async () => {
+  const store = await makeStore(RESEARCHER)
+  const staging = createStaging({ ttlMs: 120_000, now: () => 0 })
+  staging.put('sess-1', { templateRef: 't1', model: { provider: 'acme', model: 'cheap' }, task: 'review payments' })
+  const command = createRosterCommand({
+    store, staging,
+    spawn: makeSpawn({ name: 'researcher', childSessionId: 'cs-1', model: { provider: 'acme', model: 'cheap' }, tier: 'custom', reused: true }).spawn,
+  })
+  const out = await command.handler(invocationOf('sess-1'))
+  assert.equal(out.kind, 'success')
+  assert.equal(out.text, 'Member "researcher" (Researcher) is already in the team and was given its first task. Model: acme / cheap.')
 })
