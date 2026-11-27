@@ -106,7 +106,7 @@ _Avoid_: auto-save, capture-all
 
 ### Role template (角色模板)
 
-A persisted, reusable blueprint for a team member: display name, one-line description, a standing prompt (the role's duties and constraints), and an optional default model preference. It is exactly what the user would otherwise type to the lead agent when asking for that member, configured once per profile and instantiable in any session.
+A persisted, reusable blueprint for a team member: display name, one-line description, a standing prompt (the role's duties and constraints), an optional base model, an optional high-tier model, and a reuse policy (`role` or `task`). It is exactly what the user would otherwise type to the lead agent when asking for that member, configured once per profile and instantiable in any session.
 _Avoid_: agent preset (DSH's own composition mechanism, a different layer), assistant (CherryStudio's term), persona (vague)
 
 ### Roster (成员名册)
@@ -116,17 +116,27 @@ _Avoid_: team (DSH team mode is the per-session coordination flag), library, reg
 
 ### Member spawn (成员生成)
 
-Creating a team member by instantiating a role template as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. Two ways in: the "+" dialog stages its request and runs the `roster` command, and the lead agent may call the `roster_spawn` tool from the conversation — both through one host-side spawn. The standing prompt is framed in the child's opening message as its role (frozen — the model never rewrites it), never as a task. The member's model defaults to the template's and may be overridden for that one spawn (a spawn override), including back to inheriting the session model; a spawn override never edits the template.
+Creating a team member by instantiating a role template as an ordinary subagent under the current tree's root, through the same subagent runtime the `subagent` tool uses. Two ways in: the "+" dialog stages its request and runs the `roster` command, and the lead agent may call the `roster_spawn` tool from the conversation — both through one host-side spawn. The standing prompt is framed in the child's opening message as its role (frozen — the model never rewrites it), never as a task. A spawn resolves a model route: `roster_spawn` names a model tier (`base`, the default, or `high` — which requires a stated reason and a template high-tier model), never a model, and the route comes from the template; the dialog may override it for that one spawn (a spawn override), including back to inheriting the session model. A spawn override never edits the template and is not a tier decision. Under the template's `role` reuse policy, a spawn with a task hands it to a resident member of the same template and model route that is idle, and creates a member only otherwise.
 _Avoid_: agent creation (that is sessionController's ordinary-session path), preset selection, injection (the dialog never puts words in the user's mouth)
 
 ### Roster command (/roster)
 
-The host command that creates a member. The transcript records it like `/compact`: a compact command entry with its outcome, no user message, no model turn. Typed with a template name it adds a standby member with that template's defaults; run by the dialog it uses the request the dialog staged for that session.
+The host command that gives a task to, or creates, a member. The transcript records it like `/compact`: a compact command entry with its outcome, no user message, no model turn. Typed with a template name it adds a standby member with that template's defaults; run by the dialog it uses the request the dialog staged for that session.
 _Avoid_: slash-command UI only (the dialog runs it too), agent tool (that is `roster_spawn`)
 
 ### Standby member (待命成员)
 
-A member created without a first task. Its opening tells it that inherited context is not an assignment and to reply once and wait; it settles without notifying the lead, stays in the parent catalog, and is given work later through messages or the shared task board.
+A member created without a first task. Its opening tells it that inherited context is not an assignment and to reply once and wait; it settles without notifying the lead, stays in the parent catalog, and is given work later through messages, the shared task board, or a `roster_spawn` dispatch under role reuse.
 _Avoid_: idle agent (it is resident and continuable, not stopped), background task (nothing is being computed)
+
+### Model tier (模型档位)
+
+Which of a template's two stored models a task runs on: `base` (the template's base model, or the session model when it has none) or `high` (its high-tier model). The lead names the tier, never the model, and states a reason for `high`; the plugin does not judge the reason but records every high-tier dispatch. The tier follows the task, never the role.
+_Avoid_: model override (that is the dialog's per-spawn choice), escalation level (nothing is measured)
+
+### Resident member (常驻成员)
+
+A member a role keeps between tasks under the `role` reuse policy: created from a template on one model route, given its next task through a message when idle. The plugin remembers which member belongs to which role in memory only, so the registry is lost on a host restart.
+_Avoid_: standby member (a resident member is one whether or not it currently has a task), session (a member's session persists in the host regardless)
 
 _Avoid_: system prompt (the child's system prompt comes from its own composition, never from the template), task description (that is only the optional part)

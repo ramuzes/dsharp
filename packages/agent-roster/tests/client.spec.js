@@ -61,7 +61,6 @@ function MenuGroup(props) {
   return ReactReal.createElement('div', { 'data-agent-roster-fake-group': String(props?.label ?? '') }, props?.children)
 }
 
-/** The primitives module the factory's require hands out: the real export names we consume. */
 /**
  * SegmentedControl stand-in mirroring the REAL contract
  * (ui-primitives src/SegmentedControl.tsx): a labelled tablist of role=tab
@@ -84,6 +83,7 @@ function SegmentedControl(props) {
     }, option.label)))
 }
 
+/** The primitives module the factory's require hands out: the real export names we consume. */
 function primitives() {
   return { Modal, IconPlusOutlineRegular, MenuSurface, MenuGroup, IconChevronDownOutlineRegular, IconCheckOutlineRegular, SegmentedControl }
 }

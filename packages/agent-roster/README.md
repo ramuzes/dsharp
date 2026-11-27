@@ -3,8 +3,9 @@
 A dsh plugin that keeps a **profile-wide roster of role templates** and turns
 it into one-click team building. A template is exactly what you would
 otherwise type to the lead agent: a name, a one-line description, the
-standing instruction (responsibility boundary and main goal), and an
-optional model. From the composer's "+" menu you pick a template, optionally
+standing instruction (responsibility boundary and main goal), an optional
+base model, an optional high-tier model, and a reuse policy. From the
+composer's "+" menu you pick a template, optionally
 override the model and add a first task, and confirm — the plugin runs the
 `/roster` command, which the transcript records the way it records
 `/compact` (a compact command entry: no message from you, no turn of the
@@ -15,16 +16,47 @@ typed directly. The lead agent can create members itself with the
 `roster_spawn` tool.
 
 The member's model and reasoning effort can be overridden for a single spawn
-from the same dialog — the picker starts from the template's default, and
+from the same dialog — the picker starts from the template's base model, and
 choosing "inherit the session model" clears it — without editing the template.
+A member created this way is not subject to the tier rules: you chose its
+model.
+
+**Model tiers.** The lead does not choose a model. `roster_spawn` takes
+`{ template, task?, tier?: 'base' | 'high', reason? }` and the plugin resolves
+the tier from the template: `base` (the default) is the base model, or the
+session model when the template has none. `high` needs a one-line `reason`
+and a template with a high-tier model; otherwise the call is refused before
+anything starts. The tool's description states the basis on every call: every
+new task starts on the base model; a task moves to the high tier only after
+one rework on the base model failed to pass, or when the task brief itself
+names the high tier. The tier follows the task, never the role — a high-tier
+task does not make the next task high-tier. Every high-tier dispatch is
+recorded (time, session, template, member, reason) and listed under the
+template manager in Settings.
+
+**Resident reuse.** A template's reuse policy is `role` (the default) or
+`task`. Under `role`, a spawn with a task — `roster_spawn`, or the dialog — hands
+the task to an idle member of the same template and model route and creates a
+member only when there is none —
+including when the only member is busy, so parallel work never queues behind a
+resident member. A high-tier member of a role is therefore a separate member.
+Under `task`, every spawn creates a member. The member registry lives in
+memory: after a host restart the first request for a role creates a member.
+
+**Yield after dispatch.** The tool description tells the lead to end its turn
+once nothing is left but waiting — a member's completion notice starts the
+lead's next turn, so there is no polling.
 
 Also included: the model-facing `roster_template_save` / `roster_template_list`
-authoring tools, and an **Agent roster** manager page in Settings (create /
-edit / delete, per-template default model). Members are ordinary subagents —
-the plugin never renders member lists itself.
+authoring tools (the save takes `default_model`, `high_tier_model` and
+`reuse`; the list returns them), and an **Agent roster** manager page in
+Settings (create / edit / delete, per-template base and high-tier model, reuse
+policy). Members are ordinary subagents — the plugin never renders member
+lists itself.
 
 Design and full spec: see `docs/specs/2026-11-22-agent-roster-design.md` and
-`docs/plan/2026-11-22-agent-roster.md` in the repository root.
+`docs/plan/2026-11-22-agent-roster.md` in the repository root; tiers, reuse
+and yield are decided in `docs/adr/0013-model-tiers-and-resident-members.md`.
 Live-host verification runbook (recorded evidence): `scripts/live-verify.md`.
 
 ## Install
