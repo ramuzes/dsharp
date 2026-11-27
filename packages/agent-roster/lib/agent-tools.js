@@ -20,9 +20,16 @@
  * own read (listTemplates + exact match, the store's byName semantics) and
  * a match reuses the existing record's id, so the save updates instead of
  * tripping roster/name-taken; omitted optional fields keep their stored
- * values (service patch semantics), default_model null clears them.
+ * values (service patch semantics), default_model / high_tier_model null
+ * clears them.
+ *
+ * roster_spawn takes a model TIER, never a model (ADR-0013): the lead names
+ * `base` or `high` and, for `high`, states the escalation basis; the route
+ * itself is resolved from the template's stored models by lib/tiers.js, so
+ * the lead can no longer pick an arbitrary route or inherit its own.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { requireReason } from './tiers.js'
 import { resolveTemplateRef, spawnFromTemplate } from './spawn.js'
 import { failureText as failure } from './wire.js'
 
@@ -45,7 +52,7 @@ function bounded(payload) {
 
 
 /**
- * Map the tool-facing default_model parameter to the service's ModelRef key
+ * Map a tool-facing model parameter (default_model, high_tier_model) to the service's ModelRef key
  * spelling (reasoning_effort → reasoningEffort). undefined stays undefined
  * (omit → patch-semantics preserve) and null stays null (explicit clear).
  */
@@ -65,7 +72,7 @@ function toModelRef(value) {
  * @param {object} scope - inject scope with `tools` injected (accessing it
  *   on a scope that did not inject it throws in cordis — AGENTS.md 3).
  * @param {{
- *   saveTemplate(input: { id?: string, name: string, description?: string, prompt: string, defaultModel?: import('./store.js').ModelRef | null }): Promise<import('./store.js').RoleTemplate>,
+ *   saveTemplate(input: { id?: string, name: string, description?: string, prompt: string, defaultModel?: import('./store.js').ModelRef | null, highTierModel?: import('./store.js').ModelRef | null, reuse?: 'role' | 'task' }): Promise<import('./store.js').RoleTemplate>,
  *   listTemplates(): Promise<import('./store.js').RoleTemplate[]>,
  * }} service - the `agentRoster` remote (lib/roster-service.js); only the
  *   two methods above are called.
@@ -89,7 +96,7 @@ export function registerRosterTools(scope, service, deps, options = {}) {
   // ---- spawn (the single creation path, ADR-0011) ---------------------------
   register(defineTool({
     name: 'roster_spawn',
-    description: 'Create one team member from a configured role template. The template carries the member\'s standing instruction (its responsibility boundary and main goal) and an optional model; pass the template id from the instruction that asked for this member, or its exact display name. The optional task points this member at the current work. Returns the created member\'s name. Do not restate the template yourself — the template text is used verbatim.',
+    description: 'Give a task to a team member of a configured role template, creating the member when the role has no idle one. The template carries the member\'s standing instruction and its models; pass the template id from the instruction that asked for this member, or its exact display name. Model tier — every new task starts on the base model; move to high only after one rework on the base model failed to pass, or when the task brief itself names the high tier. The tier follows the task, never the role. Do not restate the template yourself — the template text is used verbatim. Once nothing is left but waiting for members, end your turn: a member\'s completion notice starts your next turn, so do not poll with wait_agent.',
     parameters: {
       template: {
         type: 'string',
@@ -100,20 +107,14 @@ export function registerRosterTools(scope, service, deps, options = {}) {
         type: 'string',
         description: 'Optional one-off task for this member, taken from the current conversation (e.g. "review the payments module").',
       },
-      model: {
-        description: 'Model for this member only. An object overrides the template default; null makes the member inherit the session model; omit it to keep the template default',
-        oneOf: [
-          {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              provider: { type: 'string', required: true, description: 'Provider id.' },
-              model: { type: 'string', required: true, description: 'Model id within the provider.' },
-              reasoning_effort: { type: 'string', description: 'Optional reasoning effort id.' },
-            },
-          },
-          { type: 'null' },
-        ],
+      tier: {
+        type: 'string',
+        enum: ['base', 'high'],
+        description: 'Model tier for this task. Default base. high requires reason.',
+      },
+      reason: {
+        type: 'string',
+        description: 'One line stating the escalation basis (required with tier high).',
       },
     },
     output: TEXT_OUTPUT,
@@ -125,20 +126,25 @@ export function registerRosterTools(scope, service, deps, options = {}) {
           return 'roster_spawn failed: it requires a calling agent (this tool runs inside an agent only)'
         }
         if (store === undefined) throw new Error('roster store is unavailable')
+        // A high dispatch is refused before anything is looked up or
+        // spawned: the basis is checked first, so nothing runs unexplained.
+        const reason = args?.tier === 'high' ? requireReason(args?.reason) : undefined
         const template = await resolveTemplateRef(store, args?.template)
         const result = await spawnFromTemplate(scope, deps, {
           agent,
           template,
           task: args?.task,
-          // `undefined` (omitted) must stay omitted: it means "keep the
-          // template default", while `null` means "inherit the session model".
-          ...(args?.model === undefined ? {} : { model: toModelRef(args.model) }),
+          // Omitted stays omitted: spawnFromTemplate defaults it to `base`.
+          ...(args?.tier === undefined ? {} : { tier: args.tier }),
           signal: exec?.signal,
         })
         return bounded({
-          created: result.name,
+          name: result.name,
           template: template.name,
+          tier: result.tier,
+          reused: result.reused,
           model: result.model ?? 'inherited from the parent agent',
+          ...(reason === undefined ? {} : { reason }),
         })
       } catch (error) {
         return failure(error)
@@ -151,13 +157,13 @@ export function registerRosterTools(scope, service, deps, options = {}) {
   // ---- save (upsert by exact name) -----------------------------------------
   register(defineTool({
     name: 'roster_template_save',
-    description: 'Create or update one roster role template (upsert by exact name: an existing template with the same name is updated in place, reusing its id). Omitted optional fields keep their stored values on update; default_model null clears the stored model.',
+    description: 'Create or update one roster role template (upsert by exact name: an existing template with the same name is updated in place, reusing its id). Omitted optional fields keep their stored values on update; default_model / high_tier_model null clears the stored model.',
     parameters: {
       name: { type: 'string', required: true, description: 'Template name, unique across the roster.' },
       description: { type: 'string', description: 'Short human-facing description. Omit to keep the stored value when updating.' },
       prompt: { type: 'string', required: true, description: 'The system prompt members spawned from this template run with.' },
       default_model: {
-        description: 'Default model for members spawned from this template. Omit to keep the stored value when updating; null clears it.',
+        description: 'Default (base tier) model for members spawned from this template. Omit to keep the stored value when updating; null clears it.',
         oneOf: [
           {
             type: 'object',
@@ -170,6 +176,26 @@ export function registerRosterTools(scope, service, deps, options = {}) {
           },
           { type: 'null' },
         ],
+      },
+      high_tier_model: {
+        description: 'High-tier model a member runs on when the lead escalates a task to tier high. Omit to keep the stored value when updating; null clears it.',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              provider: { type: 'string', required: true, description: 'Provider id.' },
+              model: { type: 'string', required: true, description: 'Model id within the provider.' },
+              reasoning_effort: { type: 'string', description: 'Optional reasoning effort id.' },
+            },
+          },
+          { type: 'null' },
+        ],
+      },
+      reuse: {
+        type: 'string',
+        enum: ['role', 'task'],
+        description: 'What an idle member of this role is reused for: role (any task of this template, the default) or task (one task, then a new member per task). Omit to keep the stored value when updating.',
       },
     },
     output: TEXT_OUTPUT,
@@ -185,6 +211,8 @@ export function registerRosterTools(scope, service, deps, options = {}) {
           description: args.description,
           prompt: args.prompt,
           defaultModel: toModelRef(args.default_model),
+          ...(args.high_tier_model === undefined ? {} : { highTierModel: toModelRef(args.high_tier_model) }),
+          ...(args.reuse === undefined ? {} : { reuse: args.reuse }),
         })
         return bounded({ id: saved.id, name: saved.name, updatedAt: saved.updatedAt })
       } catch (error) { return failure(error) }
@@ -194,7 +222,7 @@ export function registerRosterTools(scope, service, deps, options = {}) {
   // ---- list (prompt omitted) ------------------------------------------------
   register(defineTool({
     name: 'roster_template_list',
-    description: "List the roster's role templates as { id, name, description, defaultModel, updatedAt } — prompt is deliberately omitted to keep context light. Read-only.",
+    description: "List the roster's role templates as { id, name, description, defaultModel, highTierModel, reuse, updatedAt } — prompt is deliberately omitted to keep context light. Read-only.",
     parameters: {},
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
@@ -206,6 +234,8 @@ export function registerRosterTools(scope, service, deps, options = {}) {
           name: rec.name,
           description: rec.description,
           defaultModel: rec.defaultModel,
+          highTierModel: rec.highTierModel,
+          reuse: rec.reuse,
           updatedAt: rec.updatedAt,
         })))
       } catch (error) { return failure(error) }

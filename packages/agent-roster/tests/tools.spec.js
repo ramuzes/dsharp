@@ -13,6 +13,9 @@
  * non-injected service access). The upsert and list tests drive the REAL
  * AgentRosterService over the REAL store in memory mode, so name-taken and
  * patch-semantics enforcement is the production one, not a fake's.
+ *
+ * roster_spawn takes a model TIER and the escalation basis, never a model
+ * (ADR-0013): the lead cannot pick an arbitrary route or inherit its own.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -72,7 +75,8 @@ function makeRecordingService(overrides = {}) {
       calls.saveTemplate.push(input)
       return overrides.saveTemplate ? overrides.saveTemplate(input) : {
         id: 't1', name: input.name, description: '', prompt: input.prompt,
-        defaultModel: null, createdAt: T0, updatedAt: T0,
+        defaultModel: null, highTierModel: null, reuse: 'role',
+        createdAt: T0, updatedAt: T0,
       }
     },
     async listTemplates() {
@@ -239,7 +243,7 @@ test('save calls the service method with the mapped input and summarizes its ret
   assert.deepEqual(JSON.parse(result), { id: 't1', name: 'Writer', updatedAt: T0 })
 })
 
-test('list omits prompt: records carry exactly id, name, description, defaultModel, updatedAt', async () => {
+test('list omits prompt: records carry exactly id, name, description, defaultModel, highTierModel, reuse, updatedAt', async () => {
   const { service } = makeRoster()
   await service.saveTemplate({
     name: 'Reviewer', prompt: 'Review diffs.', description: 'desc',
@@ -252,12 +256,74 @@ test('list omits prompt: records carry exactly id, name, description, defaultMod
   assert.equal(records.length, 2)
   assert.deepEqual(records.map((r) => r.name), ['Reviewer', 'Writer'], 'insertion order')
   assert.deepEqual(Object.keys(records[0]).sort(),
-    ['defaultModel', 'description', 'id', 'name', 'updatedAt'])
+    ['defaultModel', 'description', 'highTierModel', 'id', 'name', 'reuse', 'updatedAt'])
   for (const rec of records) {
     assert.equal('prompt' in rec, false, 'prompt deliberately omitted to keep context light')
   }
   assert.deepEqual(records[0].defaultModel, { provider: 'p', model: 'm' })
   assert.equal(records[1].defaultModel, null)
+  // Both rows were stored without the tier fields: the read schema fills
+  // them in, and the list carries them (a lead reads a role's high tier
+  // and reuse policy before it decides how to dispatch).
+  assert.equal(records[0].highTierModel, null)
+  assert.equal(records[0].reuse, 'role')
+})
+
+test('roster_template_save passes high_tier_model and reuse; list rows carry highTierModel and reuse', async () => {
+  // Pass-through half: the tool maps the snake_case arguments onto the
+  // service's input (storing them is the service's job).
+  const recording = makeRecordingService()
+  const scope = makeToolsScope()
+  registerRosterTools(scope, recording)
+  const save = toolOf(scope, 'roster_template_save')
+  await save.execute(
+    { name: 'Reviewer', prompt: 'v1', high_tier_model: { provider: 'acme', model: 'capable', reasoning_effort: 'max' }, reuse: 'task' },
+    EXEC)
+  assert.deepEqual(recording.calls.saveTemplate[0], {
+    name: 'Reviewer',
+    description: undefined,
+    prompt: 'v1',
+    defaultModel: undefined,
+    highTierModel: { provider: 'acme', model: 'capable', reasoningEffort: 'max' },
+    reuse: 'task',
+  }, 'high_tier_model maps like default_model; reuse passes as the enum value')
+  // `high_tier_model: null` is the explicit clear, like default_model.
+  await save.execute({ name: 'Reviewer', prompt: 'v2', high_tier_model: null }, EXEC)
+  assert.equal(recording.calls.saveTemplate[1].highTierModel, null)
+  assert.equal(recording.calls.saveTemplate[1].reuse, undefined, 'omitted reuse stays undefined (patch semantics)')
+
+  // Row half: the list tool renders both fields of a stored template,
+  // including a high-tier route and a non-default reuse policy.
+  const rows = makeRecordingService({
+    listTemplates: () => [{
+      id: 't1', name: 'Reviewer', description: '', prompt: 'p',
+      defaultModel: { provider: 'acme', model: 'cheap' },
+      highTierModel: { provider: 'acme', model: 'capable', reasoningEffort: 'max' },
+      reuse: 'task', createdAt: T0, updatedAt: T0,
+    }],
+  })
+  const scope2 = makeToolsScope()
+  registerRosterTools(scope2, rows)
+  const listed = JSON.parse(await toolOf(scope2, 'roster_template_list').execute({}, EXEC))
+  assert.deepEqual(listed[0].highTierModel, { provider: 'acme', model: 'capable', reasoningEffort: 'max' })
+  assert.equal(listed[0].reuse, 'task')
+})
+
+test('roster_template_save with a misspelled reuse is rejected by the tools library', async () => {
+  // The REAL @deepseek-ai/dsh-tools validates arguments against the
+  // parameter schema before execute (lib/index.js:864): a value outside the
+  // enum throws ToolArgsError (INVALID_ARGS) and never reaches the plugin,
+  // so a typo cannot be stored as a policy.
+  const { service } = makeRoster()
+  const scope = makeToolsScope()
+  registerRosterTools(scope, service)
+  const save = toolOf(scope, 'roster_template_save')
+  await assert.rejects(
+    () => save.execute({ name: 'Reviewer', prompt: 'p', reuse: 'tasks' }, EXEC),
+    (error) => error?.code === 'INVALID_ARGS' && /"reuse"/.test(String(error?.message)),
+    'expected INVALID_ARGS for a reuse value outside the enum',
+  )
+  assert.equal((await service.listTemplates()).length, 0, 'nothing stored')
 })
 
 test('save with default_model: null clears the stored model through the tool schema', async () => {
@@ -362,18 +428,24 @@ test('exposeAgentTools false still injects and registers roster_spawn alone', as
 // roster_spawn — the single creation path (ADR-0011)
 // ---------------------------------------------------------------------------
 
-/** Seed a store with one template and wire the spawn tool over it. */
-async function spawnToolHarness({ template = { name: 'Researcher', description: 'Finds sources', prompt: 'You research thoroughly.' }, subagents } = {}) {
+/**
+ * Seed a store with one template and wire the spawn tool over it.
+ * `stored` overrides fields on the seeded record straight through the store
+ * — the tier fields, until the service's saveTemplate carries them.
+ */
+async function spawnToolHarness({ template = { name: 'Researcher', description: 'Finds sources', prompt: 'You research thoroughly.' }, stored, subagents } = {}) {
   const { store } = makeRoster()
   const saved = await (async () => {
     const service = Object.create(AgentRosterService.prototype)
     service.store = store
     return service.saveTemplate(template)
   })()
+  const record = { ...saved, ...stored }
+  if (stored !== undefined) await store.put(record)
   const scope = makeToolsScope()
   scope.subagents = subagents ?? makeSubagents()
   registerRosterTools(scope, makeRecordingService(), { store, subagents: scope.subagents })
-  return { tool: toolOf(scope, 'roster_spawn'), store, saved, subagents: scope.subagents }
+  return { tool: toolOf(scope, 'roster_spawn'), store, saved: record, subagents: scope.subagents }
 }
 
 test('roster_spawn resolves a template by exact name and creates the member', async () => {
@@ -388,20 +460,27 @@ test('roster_spawn resolves a template by exact name and creates the member', as
   assert.equal(spec.prompt[0].text, assembleMemberOpening('researcher', 'You research thoroughly.', 'review payments'))
   assert.equal(spec.delivery, 'parent')
   const parsed = JSON.parse(out)
-  assert.equal(parsed.created, 'researcher')
-  assert.equal(parsed.template, 'Researcher')
-  assert.equal(parsed.model, 'inherited from the parent agent')
+  assert.deepEqual(parsed, {
+    name: 'researcher',
+    template: 'Researcher',
+    tier: 'base',
+    reused: false,
+    model: 'inherited from the parent agent',
+  }, 'no `reason` key on a base dispatch')
 })
 
-test('roster_spawn resolves a template by id and applies its model', async () => {
+test('roster_spawn resolves a template by id and runs the member on the base model', async () => {
   const ctx = await spawnToolHarness({
-    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
+    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'acme', model: 'cheap' } },
   })
   const caller = { id: 'root-1', name: 'lead' }
   ctx.subagents.rootOf = () => caller
   const out = await ctx.tool.execute({ template: ctx.saved.id }, { agent: caller, callId: 'c1' })
-  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions, { provider: 'deepseek', model: 'chat' })
-  assert.deepEqual(JSON.parse(out).model, { provider: 'deepseek', model: 'chat' })
+  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions, { provider: 'acme', model: 'cheap' })
+  assert.deepEqual(JSON.parse(out), {
+    name: 'researcher', template: 'Researcher', tier: 'base', reused: false,
+    model: { provider: 'acme', model: 'cheap' },
+  })
 })
 
 test('roster_spawn maps an unknown template to model-facing text instead of throwing', async () => {
@@ -429,83 +508,82 @@ test('roster_spawn is not concurrency-safe; the authoring list tool is', async (
 })
 
 // ---------------------------------------------------------------------------
-// roster_spawn: the per-spawn model argument (2026-11-25)
+// roster_spawn: the tier argument (ADR-0013)
 // ---------------------------------------------------------------------------
 
-test('roster_spawn applies the model argument over the template default and reports it', async () => {
-  const ctx = await spawnToolHarness({
-    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
-  })
-  const caller = { id: 'root-1', name: 'lead' }
-  ctx.subagents.rootOf = () => caller
+/** A template with both tiers configured (invented provider/model ids). */
+const BASE_ONLY = { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'acme', model: 'cheap' } }
+const HIGH = { provider: 'acme', model: 'capable', reasoningEffort: 'max' }
+const tiered = () => spawnToolHarness({ template: BASE_ONLY, stored: { highTierModel: HIGH } })
+const CALLER = { id: 'root-1', name: 'lead' }
+
+test('roster_spawn has no model parameter; tier and reason are the only model inputs', () => {
+  const scope = makeToolsScope()
+  registerRosterTools(scope, makeRecordingService(), { store: makeRoster().store, subagents: makeSubagents() })
+  const spawn = toolOf(scope, 'roster_spawn')
+  // defineTool compiles the parameter definitions into one JSON schema
+  // ({ type, properties, required }) that the tools library validates with.
+  const params = spawn.parameters.properties
+  assert.deepEqual(Object.keys(params).sort(), ['reason', 'task', 'template', 'tier'])
+  assert.deepEqual(spawn.parameters.required, ['template'])
+  assert.deepEqual(params.tier.enum, ['base', 'high'])
+  assert.equal(spawn.description,
+    "Give a task to a team member of a configured role template, creating the member when the role has no idle one. The template carries the member's standing instruction and its models; pass the template id from the instruction that asked for this member, or its exact display name. Model tier — every new task starts on the base model; move to high only after one rework on the base model failed to pass, or when the task brief itself names the high tier. The tier follows the task, never the role. Do not restate the template yourself — the template text is used verbatim. Once nothing is left but waiting for members, end your turn: a member's completion notice starts your next turn, so do not poll with wait_agent.")
+})
+
+test('roster_spawn tier high passes the reason-checked tier and reports it', async () => {
+  const ctx = await tiered()
+  ctx.subagents.rootOf = () => CALLER
   const out = await ctx.tool.execute(
-    { template: ctx.saved.id, model: { provider: 'acme', model: 'cheap', reasoning_effort: 'low' } },
-    { agent: caller, callId: 'c1' },
+    { template: ctx.saved.id, task: 'the hard part', tier: 'high', reason: '  the base model failed rework once  ' },
+    { agent: CALLER, callId: 'c1' },
   )
-  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions, { provider: 'acme', model: 'cheap', reasoningEffort: 'low' })
-  assert.deepEqual(JSON.parse(out).model, { provider: 'acme', model: 'cheap', reasoningEffort: 'low' })
+  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions,
+    { provider: 'acme', model: 'capable', reasoningEffort: 'max' }, 'the member runs on the high-tier model')
+  assert.deepEqual(JSON.parse(out), {
+    name: 'researcher',
+    template: 'Researcher',
+    tier: 'high',
+    reused: false,
+    model: { provider: 'acme', model: 'capable', reasoningEffort: 'max' },
+    reason: 'the base model failed rework once',
+  }, 'the reason is reported trimmed')
 })
 
-test('roster_spawn with model null makes the member inherit despite a template default', async () => {
-  const ctx = await spawnToolHarness({
-    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
-  })
-  const caller = { id: 'root-1', name: 'lead' }
-  ctx.subagents.rootOf = () => caller
-  const out = await ctx.tool.execute({ template: ctx.saved.id, model: null }, { agent: caller, callId: 'c1' })
-  assert.equal('agentOptions' in ctx.subagents.calls.startActivation[0], false)
-  assert.equal(JSON.parse(out).model, 'inherited from the parent agent')
-})
-
-test('roster_spawn without a model argument keeps the template default', async () => {
-  const ctx = await spawnToolHarness({
-    template: { name: 'Researcher', prompt: 'You research.', defaultModel: { provider: 'deepseek', model: 'chat' } },
-  })
-  const caller = { id: 'root-1', name: 'lead' }
-  ctx.subagents.rootOf = () => caller
-  await ctx.tool.execute({ template: ctx.saved.id }, { agent: caller, callId: 'c1' })
-  assert.deepEqual(ctx.subagents.calls.startActivation[0].agentOptions, { provider: 'deepseek', model: 'chat' })
-})
-
-test('an invalid model argument maps to model-facing text instead of throwing', async () => {
-  const ctx = await spawnToolHarness()
-  const caller = { id: 'root-1', name: 'lead' }
-  ctx.subagents.rootOf = () => caller
-  const out = await ctx.tool.execute({ template: ctx.saved.id, model: { provider: '', model: 'x' } }, { agent: caller, callId: 'c1' })
-  assert.match(out, /roster call failed \(roster\/bad-request\)/)
-  assert.equal(ctx.subagents.calls.startActivation.length, 0)
-})
-
-test('a wrong-typed model argument is rejected by the real tools library before the tool runs', async () => {
-  // The REAL @deepseek-ai/dsh-tools validates arguments against the parameter
-  // schema in its execute wrapper (lib/index.js:864): a value matching no
-  // `oneOf` branch throws ToolArgsError (INVALID_ARGS) and never reaches the
-  // plugin. This is the evidence that the nullable-object schema is accepted
-  // and enforced by the framework the host runs.
-  const ctx = await spawnToolHarness()
-  const caller = { id: 'root-1', name: 'lead' }
-  ctx.subagents.rootOf = () => caller
-  for (const model of ['acme/cheap', 42, { provider: 'acme' }]) {
-    await assert.rejects(
-      () => ctx.tool.execute({ template: ctx.saved.id, model }, { agent: caller, callId: 'c1' }),
-      (error) => error?.code === 'INVALID_ARGS' && /"model" must match exactly one oneOf branch/.test(String(error?.message)),
-      `expected INVALID_ARGS for ${JSON.stringify(model)}`,
-    )
+test('roster_spawn tier high without a reason is refused and spawns nothing', async () => {
+  const ctx = await tiered()
+  ctx.subagents.rootOf = () => CALLER
+  for (const reason of [undefined, '', '   ']) {
+    const args = { template: ctx.saved.id, tier: 'high', ...(reason === undefined ? {} : { reason }) }
+    const out = await ctx.tool.execute(args, { agent: CALLER, callId: 'c1' })
+    assert.match(out, /roster\/bad-request/, JSON.stringify(args))
   }
   assert.equal(ctx.subagents.calls.startActivation.length, 0)
 })
 
-test('roster_spawn refuses a schema-valid but empty reasoning effort without spawning', async () => {
-  // Schema-valid (a string), so it reaches the plugin: an empty effort is no
-  // usable effort and must not quietly become "no effort".
-  const ctx = await spawnToolHarness()
-  const caller = { id: 'root-1', name: 'lead' }
-  ctx.subagents.rootOf = () => caller
+test('roster_spawn high on a template without a high-tier model reports roster/no-high-tier-model', async () => {
+  const ctx = await spawnToolHarness({ template: BASE_ONLY })
+  ctx.subagents.rootOf = () => CALLER
   const out = await ctx.tool.execute(
-    { template: ctx.saved.id, model: { provider: 'acme', model: 'cheap', reasoning_effort: '' } },
-    { agent: caller, callId: 'c1' },
+    { template: ctx.saved.id, tier: 'high', reason: 'the brief names the high tier' },
+    { agent: CALLER, callId: 'c1' },
   )
-  assert.match(out, /roster call failed \(roster\/bad-request\)/)
+  assert.match(out, /roster\/no-high-tier-model/, out)
+  assert.equal(ctx.subagents.calls.startActivation.length, 0)
+})
+
+test('a tier outside the enum is rejected by the real tools library before the tool runs', async () => {
+  // The REAL @deepseek-ai/dsh-tools validates arguments against the
+  // parameter schema in its execute wrapper (lib/index.js:864): a value
+  // outside the enum throws ToolArgsError (INVALID_ARGS) and never reaches
+  // the plugin — the lead cannot name a tier of its own invention.
+  const ctx = await tiered()
+  ctx.subagents.rootOf = () => CALLER
+  await assert.rejects(
+    () => ctx.tool.execute({ template: ctx.saved.id, tier: 'ultra', reason: 'why not' }, { agent: CALLER, callId: 'c1' }),
+    (error) => error?.code === 'INVALID_ARGS' && /"tier"/.test(String(error?.message)),
+    'expected INVALID_ARGS for tier ultra',
+  )
   assert.equal(ctx.subagents.calls.startActivation.length, 0)
 })
 
